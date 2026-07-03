@@ -59,6 +59,10 @@ type BuyOrder struct {
 	PixPayload        json.RawMessage `json:"pix_payload,omitempty"`
 	TxHashOut         *string         `json:"tx_hash_out,omitempty"`
 	Error             *string         `json:"error,omitempty"`
+	RequestID         *string         `json:"request_id,omitempty"`
+	PaidAt            *time.Time      `json:"paid_at,omitempty"`
+	SettledAt         *time.Time      `json:"settled_at,omitempty"`
+	DeliveredAt       *time.Time      `json:"delivered_at,omitempty"`
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
 }
@@ -98,7 +102,7 @@ type Sweep struct {
 
 func ConnectPostgres(cfg *config.Config) (*DB, error) {
 	if cfg.DatabaseURL == "" {
-		return nil, fmt.Errorf("DATABASE_URL não configurado")
+		return nil, fmt.Errorf("DATABASE_URL nÃ£o configurado")
 	}
 
 	db, err := sql.Open("postgres", cfg.DatabaseURL)
@@ -126,7 +130,7 @@ func ConnectPostgres(cfg *config.Config) (*DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	log.Println("Conexão com PostgreSQL estabelecida com sucesso!")
+	log.Println("ConexÃ£o com PostgreSQL estabelecida com sucesso!")
 	return wrapped, nil
 }
 
@@ -149,6 +153,9 @@ func (db *DB) CreateOrder(ctx context.Context, order OrderInput) (*models.Order,
 	if order.ID == "" {
 		order.ID = NewID()
 	}
+	if (order.PixCpf != "" || order.PixPhone != "") && db.privacy == nil {
+		return nil, fmt.Errorf("LGPD_SECRET nao configurado para salvar dados pessoais")
+	}
 	pixCpfHash := privacy.Hash(order.PixCpf, db.cfg.LGPDSecret)
 	pixPhoneHash := privacy.Hash(order.PixPhone, db.cfg.LGPDSecret)
 	_, err := db.SQL.ExecContext(ctx, `
@@ -161,9 +168,6 @@ func (db *DB) CreateOrder(ctx context.Context, order OrderInput) (*models.Order,
 		return nil, err
 	}
 	if order.PixCpf != "" || order.PixPhone != "" {
-		if db.privacy == nil {
-			return nil, fmt.Errorf("LGPD_SECRET nao configurado para salvar dados pessoais")
-		}
 		pixCpfEnc, err := db.privacy.Encrypt(order.PixCpf)
 		if err != nil {
 			return nil, err
@@ -243,9 +247,10 @@ func (db *DB) UpdateOrderStatus(ctx context.Context, id, status string, extra ma
 
 func (db *DB) AddEvent(ctx context.Context, orderID, eventType string, payload any) error {
 	raw, _ := json.Marshal(payload)
+	requestID := requestIDFromPayload(payload)
 	_, err := db.SQL.ExecContext(ctx,
-		`INSERT INTO order_events (id, order_id, type, payload) VALUES ($1,$2,$3,$4)`,
-		NewID(), orderID, eventType, raw)
+		`INSERT INTO order_events (id, order_id, request_id, type, payload) VALUES ($1,$2,$3,$4,$5)`,
+		NewID(), orderID, nullableString(requestID), eventType, raw)
 	return err
 }
 
@@ -280,7 +285,7 @@ func (db *DB) CountCompletedOrdersForPix(ctx context.Context, pixCpf, pixPhone s
 	pixPhoneHash := privacy.Hash(pixPhone, db.cfg.LGPDSecret)
 	err := db.SQL.QueryRowContext(ctx, `
 		SELECT COUNT(*)::int FROM orders
-		WHERE status IN ('concluida','conclu�da')
+		WHERE status IN ('concluida','concluída')
 		  AND (($1 <> '' AND pix_cpf_hash = $1) OR ($2 <> '' AND pix_phone_hash = $2))`,
 		pixCpfHash, pixPhoneHash).Scan(&count)
 	return count, err
@@ -350,8 +355,9 @@ func (db *DB) OrdersToSweep(ctx context.Context) ([]models.Order, error) {
 	rows, err := db.SQL.QueryContext(ctx, `
 		SELECT id, status, amount_brl, btc_amount, COALESCE(fee_brl,0), COALESCE(payout_brl,0), address, asset, network,
 		       rate_locked, rate_lock_expires_at, created_at, COALESCE(updated_at, created_at), tx_hash, error,
-		       deposit_tx, deposit_amount, pix_cpf, pix_phone, derivation_index
+		       deposit_tx, deposit_amount, op.pix_cpf_enc, op.pix_phone_enc, derivation_index
 		FROM orders o
+		LEFT JOIN order_private op ON op.order_id = o.id
 		WHERE o.status = 'pago'
 		  AND o.derivation_index IS NOT NULL
 		  AND NOT EXISTS (SELECT 1 FROM sweeps s WHERE s.order_id = o.id AND s.status IN ('pending','sent','confirmed'))`)
@@ -361,7 +367,7 @@ func (db *DB) OrdersToSweep(ctx context.Context) ([]models.Order, error) {
 	defer rows.Close()
 	var out []models.Order
 	for rows.Next() {
-		o, err := scanOrder(rows)
+		o, err := db.scanOrder(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -377,9 +383,9 @@ func (db *DB) CreateBuyOrder(ctx context.Context, buy BuyOrderInput) (*BuyOrder,
 		return nil, err
 	}
 	_, err = db.SQL.ExecContext(ctx, `
-		INSERT INTO buy_orders (id, status, amount_brl, amount_fiat, fiat_currency, payment_method, provider_payment_id, fee_brl, payout_brl, crypto_amount, asset, dest_address, rate_locked, rate_lock_expires_at, pix_payload)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-		id, buy.Status, buy.AmountBRL, buy.AmountFiat, buy.FiatCurrency, buy.PaymentMethod, nullableString(buy.ProviderPaymentID),
+		INSERT INTO buy_orders (id, request_id, status, amount_brl, amount_fiat, fiat_currency, payment_method, provider_payment_id, fee_brl, payout_brl, crypto_amount, asset, dest_address, rate_locked, rate_lock_expires_at, pix_payload)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		id, nullableString(buy.RequestID), buy.Status, buy.AmountBRL, buy.AmountFiat, buy.FiatCurrency, buy.PaymentMethod, nullableString(buy.ProviderPaymentID),
 		buy.FeeBRL, buy.PayoutBRL, buy.CryptoAmount, buy.Asset, buy.DestAddress, buy.RateLocked, buy.RateLockExpiresAt, rawPayload)
 	if err != nil {
 		return nil, err
@@ -390,17 +396,18 @@ func (db *DB) CreateBuyOrder(ctx context.Context, buy BuyOrderInput) (*BuyOrder,
 
 func (db *DB) GetBuyOrder(ctx context.Context, id string) (*BuyOrder, error) {
 	row := db.SQL.QueryRowContext(ctx, `
-		SELECT id, status, amount_brl::float8, COALESCE(amount_fiat, amount_brl)::float8,
+		SELECT id, request_id, status, amount_brl::float8, COALESCE(amount_fiat, amount_brl)::float8,
 		       COALESCE(fiat_currency, 'BRL'), COALESCE(payment_method, 'pix'), provider_payment_id,
 		       COALESCE(fee_brl,0)::float8, COALESCE(payout_brl,0)::float8,
 		       crypto_amount::float8, asset, dest_address, rate_locked::float8, rate_lock_expires_at,
-		       COALESCE(pix_payload, '{}'::jsonb), tx_hash_out, error, created_at, updated_at
+		       COALESCE(pix_payload, '{}'::jsonb), tx_hash_out, error, paid_at, settled_at, delivered_at, created_at, updated_at
 		FROM buy_orders WHERE id = $1`, id)
 	var buy BuyOrder
-	var providerPaymentID, txHashOut, errMsg sql.NullString
-	if err := row.Scan(&buy.ID, &buy.Status, &buy.AmountBRL, &buy.AmountFiat, &buy.FiatCurrency, &buy.PaymentMethod, &providerPaymentID,
+	var requestID, providerPaymentID, txHashOut, errMsg sql.NullString
+	var paidAt, settledAt, deliveredAt sql.NullTime
+	if err := row.Scan(&buy.ID, &requestID, &buy.Status, &buy.AmountBRL, &buy.AmountFiat, &buy.FiatCurrency, &buy.PaymentMethod, &providerPaymentID,
 		&buy.FeeBRL, &buy.PayoutBRL, &buy.CryptoAmount, &buy.Asset,
-		&buy.DestAddress, &buy.RateLocked, &buy.RateLockExpiresAt, &buy.PixPayload, &txHashOut, &errMsg, &buy.CreatedAt, &buy.UpdatedAt); err != nil {
+		&buy.DestAddress, &buy.RateLocked, &buy.RateLockExpiresAt, &buy.PixPayload, &txHashOut, &errMsg, &paidAt, &settledAt, &deliveredAt, &buy.CreatedAt, &buy.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -409,11 +416,23 @@ func (db *DB) GetBuyOrder(ctx context.Context, id string) (*BuyOrder, error) {
 	if txHashOut.Valid {
 		buy.TxHashOut = &txHashOut.String
 	}
+	if requestID.Valid {
+		buy.RequestID = &requestID.String
+	}
 	if providerPaymentID.Valid {
 		buy.ProviderPaymentID = &providerPaymentID.String
 	}
 	if errMsg.Valid {
 		buy.Error = &errMsg.String
+	}
+	if paidAt.Valid {
+		buy.PaidAt = &paidAt.Time
+	}
+	if settledAt.Valid {
+		buy.SettledAt = &settledAt.Time
+	}
+	if deliveredAt.Valid {
+		buy.DeliveredAt = &deliveredAt.Time
 	}
 	return &buy, nil
 }
@@ -427,6 +446,9 @@ func (db *DB) UpdateBuyOrderStatus(ctx context.Context, id, status string, extra
 			tx_hash_out = COALESCE(NULLIF($3,''), tx_hash_out),
 			provider_payment_id = COALESCE(NULLIF($4,''), provider_payment_id),
 			error = COALESCE(NULLIF($5,''), error),
+			paid_at = CASE WHEN $2 IN ('pago_fiat','pago_pix') AND paid_at IS NULL THEN now() ELSE paid_at END,
+			settled_at = CASE WHEN $2 IN ('pago_fiat','pago_pix') AND settled_at IS NULL THEN now() ELSE settled_at END,
+			delivered_at = CASE WHEN $2 IN ('enviado','delivered','confirmado') AND delivered_at IS NULL THEN now() ELSE delivered_at END,
 			updated_at = now()
 		WHERE id = $1`, id, status, txHashOut, providerPaymentID, errMsg)
 	if err != nil {
@@ -437,9 +459,10 @@ func (db *DB) UpdateBuyOrderStatus(ctx context.Context, id, status string, extra
 
 func (db *DB) AddBuyEvent(ctx context.Context, buyOrderID, eventType string, payload any) error {
 	raw, _ := json.Marshal(payload)
+	requestID := requestIDFromPayload(payload)
 	_, err := db.SQL.ExecContext(ctx,
-		`INSERT INTO buy_order_events (id, buy_order_id, type, payload) VALUES ($1,$2,$3,$4)`,
-		NewID(), buyOrderID, eventType, raw)
+		`INSERT INTO buy_order_events (id, buy_order_id, request_id, type, payload) VALUES ($1,$2,$3,$4,$5)`,
+		NewID(), buyOrderID, nullableString(requestID), eventType, raw)
 	return err
 }
 
@@ -453,11 +476,11 @@ func (db *DB) HasBuyEvent(ctx context.Context, buyOrderID, eventType, field, val
 
 func (db *DB) ListPendingBuys(ctx context.Context) ([]BuyOrder, error) {
 	rows, err := db.SQL.QueryContext(ctx, `
-		SELECT id, status, amount_brl::float8, COALESCE(amount_fiat, amount_brl)::float8,
+		SELECT id, request_id, status, amount_brl::float8, COALESCE(amount_fiat, amount_brl)::float8,
 		       COALESCE(fiat_currency, 'BRL'), COALESCE(payment_method, 'pix'), provider_payment_id,
 		       COALESCE(fee_brl,0)::float8, COALESCE(payout_brl,0)::float8,
 		       crypto_amount::float8, asset, dest_address, rate_locked::float8, rate_lock_expires_at,
-		       COALESCE(pix_payload, '{}'::jsonb), tx_hash_out, error, created_at, updated_at
+		       COALESCE(pix_payload, '{}'::jsonb), tx_hash_out, error, paid_at, settled_at, delivered_at, created_at, updated_at
 		FROM buy_orders WHERE status IN ('pago_fiat','pago_pix')`)
 	if err != nil {
 		return nil, err
@@ -466,11 +489,15 @@ func (db *DB) ListPendingBuys(ctx context.Context) ([]BuyOrder, error) {
 	var out []BuyOrder
 	for rows.Next() {
 		var buy BuyOrder
-		var providerPaymentID, txHashOut, errMsg sql.NullString
-		if err := rows.Scan(&buy.ID, &buy.Status, &buy.AmountBRL, &buy.AmountFiat, &buy.FiatCurrency, &buy.PaymentMethod, &providerPaymentID,
+		var requestID, providerPaymentID, txHashOut, errMsg sql.NullString
+		var paidAt, settledAt, deliveredAt sql.NullTime
+		if err := rows.Scan(&buy.ID, &requestID, &buy.Status, &buy.AmountBRL, &buy.AmountFiat, &buy.FiatCurrency, &buy.PaymentMethod, &providerPaymentID,
 			&buy.FeeBRL, &buy.PayoutBRL, &buy.CryptoAmount, &buy.Asset,
-			&buy.DestAddress, &buy.RateLocked, &buy.RateLockExpiresAt, &buy.PixPayload, &txHashOut, &errMsg, &buy.CreatedAt, &buy.UpdatedAt); err != nil {
+			&buy.DestAddress, &buy.RateLocked, &buy.RateLockExpiresAt, &buy.PixPayload, &txHashOut, &errMsg, &paidAt, &settledAt, &deliveredAt, &buy.CreatedAt, &buy.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if requestID.Valid {
+			buy.RequestID = &requestID.String
 		}
 		if txHashOut.Valid {
 			buy.TxHashOut = &txHashOut.String
@@ -480,6 +507,15 @@ func (db *DB) ListPendingBuys(ctx context.Context) ([]BuyOrder, error) {
 		}
 		if errMsg.Valid {
 			buy.Error = &errMsg.String
+		}
+		if paidAt.Valid {
+			buy.PaidAt = &paidAt.Time
+		}
+		if settledAt.Valid {
+			buy.SettledAt = &settledAt.Time
+		}
+		if deliveredAt.Valid {
+			buy.DeliveredAt = &deliveredAt.Time
 		}
 		out = append(out, buy)
 	}
@@ -500,7 +536,7 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-func scanOrder(row scanner) (*models.Order, error) {
+func (db *DB) scanOrder(row scanner) (*models.Order, error) {
 	var o models.Order
 	var status string
 	var txHash, errMsg, depositTx, pixCpf, pixPhone sql.NullString
@@ -516,11 +552,15 @@ func scanOrder(row scanner) (*models.Order, error) {
 	}
 	o.Status = models.OrderStatus(status)
 	o.TronAddress = o.Address
-	if pixCpf.Valid {
-		o.PixCpf = pixCpf.String
+	if pixCpf.Valid && pixCpf.String != "" && db.privacy != nil {
+		if plain, err := db.privacy.Decrypt(pixCpf.String); err == nil {
+			o.PixCpf = plain
+		}
 	}
-	if pixPhone.Valid {
-		o.PixPhone = pixPhone.String
+	if pixPhone.Valid && pixPhone.String != "" && db.privacy != nil {
+		if plain, err := db.privacy.Decrypt(pixPhone.String); err == nil {
+			o.PixPhone = plain
+		}
 	}
 	if txHash.Valid {
 		o.TxHash = &txHash.String
@@ -548,11 +588,27 @@ func nullableString(value string) any {
 	return value
 }
 
+func requestIDFromPayload(payload any) string {
+	if payload == nil {
+		return ""
+	}
+	if data, ok := payload.(map[string]any); ok {
+		if value, ok := data["requestId"].(string); ok {
+			return value
+		}
+		if value, ok := data["request_id"].(string); ok {
+			return value
+		}
+	}
+	return ""
+}
+
 const schemaSQL = `
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS orders (
   id UUID PRIMARY KEY,
+  request_id TEXT,
   status VARCHAR(32) NOT NULL,
   amount_brl NUMERIC(18,2) NOT NULL,
   btc_amount NUMERIC(28,8) NOT NULL,
@@ -571,16 +627,32 @@ CREATE TABLE IF NOT EXISTS orders (
   deposit_amount NUMERIC(28,8),
   pix_cpf TEXT,
   pix_phone TEXT,
+  pix_cpf_hash TEXT,
+  pix_phone_hash TEXT,
   derivation_index INT
 );
+
+CREATE TABLE IF NOT EXISTS order_private (
+  order_id UUID PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+  pix_cpf_enc TEXT,
+  pix_phone_enc TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS request_id TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS pix_cpf_hash TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS pix_phone_hash TEXT;
 
 CREATE TABLE IF NOT EXISTS order_events (
   id UUID PRIMARY KEY,
   order_id UUID REFERENCES orders(id),
+  request_id TEXT,
   type VARCHAR(64) NOT NULL,
   payload JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE order_events ADD COLUMN IF NOT EXISTS request_id TEXT;
 
 CREATE TABLE IF NOT EXISTS payouts (
   id UUID PRIMARY KEY,
@@ -617,6 +689,7 @@ CREATE TABLE IF NOT EXISTS sweeps (
 
 CREATE TABLE IF NOT EXISTS buy_orders (
   id UUID PRIMARY KEY,
+  request_id TEXT,
   status VARCHAR(32) NOT NULL,
   amount_brl NUMERIC(18,2) NOT NULL,
   amount_fiat NUMERIC(18,2),
@@ -633,21 +706,31 @@ CREATE TABLE IF NOT EXISTS buy_orders (
   pix_payload JSONB,
   tx_hash_out TEXT,
   error TEXT,
+  paid_at TIMESTAMPTZ,
+  settled_at TIMESTAMPTZ,
+  delivered_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 ALTER TABLE buy_orders ADD COLUMN IF NOT EXISTS amount_fiat NUMERIC(18,2);
+ALTER TABLE buy_orders ADD COLUMN IF NOT EXISTS request_id TEXT;
 ALTER TABLE buy_orders ADD COLUMN IF NOT EXISTS fiat_currency VARCHAR(8) NOT NULL DEFAULT 'BRL';
 ALTER TABLE buy_orders ADD COLUMN IF NOT EXISTS payment_method VARCHAR(32) NOT NULL DEFAULT 'pix';
 ALTER TABLE buy_orders ADD COLUMN IF NOT EXISTS provider_payment_id TEXT;
+ALTER TABLE buy_orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ;
+ALTER TABLE buy_orders ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
+ALTER TABLE buy_orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
 UPDATE buy_orders SET amount_fiat = amount_brl WHERE amount_fiat IS NULL;
 
 CREATE TABLE IF NOT EXISTS buy_order_events (
   id UUID PRIMARY KEY,
   buy_order_id UUID REFERENCES buy_orders(id),
+  request_id TEXT,
   type VARCHAR(64) NOT NULL,
   payload JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE buy_order_events ADD COLUMN IF NOT EXISTS request_id TEXT;
 `
