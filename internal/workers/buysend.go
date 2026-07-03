@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"payment-gateway/internal/config"
@@ -22,6 +23,8 @@ type BuySendWorker struct {
 	db     *database.DB
 	cfg    *config.Config
 	client *http.Client
+	mu     sync.Mutex
+	active map[string]struct{}
 }
 
 func NewBuySendWorker(bus *EventBus, db *database.DB, cfg *config.Config) *BuySendWorker {
@@ -30,25 +33,72 @@ func NewBuySendWorker(bus *EventBus, db *database.DB, cfg *config.Config) *BuySe
 		db:     db,
 		cfg:    cfg,
 		client: &http.Client{Timeout: 15 * time.Second},
+		active: make(map[string]struct{}),
 	}
 }
 
 func (bw *BuySendWorker) Start(ctx context.Context) {
 	buyChan := bw.bus.Subscribe("buy.paid")
 	slog.Info("BuySendWorker escutando eventos 'buy.paid'")
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("Desligando BuySendWorker")
 			return
+		case <-ticker.C:
+			bw.recoverPendingBuys(ctx)
 		case event, ok := <-buyChan:
 			if !ok {
 				return
 			}
-			go bw.processBuyOnchainSend(event)
+			bw.dispatch(event)
 		}
 	}
+}
+
+func (bw *BuySendWorker) dispatch(event Event) {
+	if !bw.markActive(event.OrderID) {
+		return
+	}
+	go func() {
+		defer bw.clearActive(event.OrderID)
+		bw.processBuyOnchainSend(event)
+	}()
+}
+
+func (bw *BuySendWorker) recoverPendingBuys(ctx context.Context) {
+	scanCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	buys, err := bw.db.ListPendingBuys(scanCtx)
+	if err != nil {
+		slog.Error("Erro ao varrer BUYs pendentes para recovery", "error", err)
+		return
+	}
+	for _, buy := range buys {
+		bw.dispatch(Event{Type: "buy.recovery", OrderID: buy.ID})
+	}
+	if len(buys) > 0 {
+		slog.Info("Recovery BUY varreu ordens pagas pendentes", "count", len(buys))
+	}
+}
+
+func (bw *BuySendWorker) markActive(orderID string) bool {
+	bw.mu.Lock()
+	defer bw.mu.Unlock()
+	if _, exists := bw.active[orderID]; exists {
+		return false
+	}
+	bw.active[orderID] = struct{}{}
+	return true
+}
+
+func (bw *BuySendWorker) clearActive(orderID string) {
+	bw.mu.Lock()
+	defer bw.mu.Unlock()
+	delete(bw.active, orderID)
 }
 
 func (bw *BuySendWorker) processBuyOnchainSend(event Event) {
