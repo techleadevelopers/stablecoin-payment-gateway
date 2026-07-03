@@ -114,10 +114,10 @@ func ConnectPostgres(cfg *config.Config) (*DB, error) {
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(30 * time.Minute)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	log.Println("Conectando ao banco de dados PostgreSQL...")
-	if err := db.PingContext(ctx); err != nil {
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer pingCancel()
+	if err := db.PingContext(pingCtx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -127,7 +127,9 @@ func ConnectPostgres(cfg *config.Config) (*DB, error) {
 		wrapped.privacy = codec
 	}
 	wrapped.cfg = cfg
-	if err := wrapped.InitSchema(ctx); err != nil {
+	schemaCtx, schemaCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer schemaCancel()
+	if err := wrapped.InitSchema(schemaCtx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
