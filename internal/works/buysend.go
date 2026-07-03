@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"meu-gateway-go/internal/config"
-	"meu-gateway-go/internal/database"
+	"payment-gateway/internal/config"
+	"payment-gateway/internal/database"
 )
 
 type BuySendWorker struct {
@@ -36,7 +36,7 @@ func (bw *BuySendWorker) Start(ctx context.Context) {
 			if !ok {
 				return
 			}
-			
+
 			go bw.processBuyOnchainSend(event)
 		}
 	}
@@ -50,9 +50,9 @@ func (bw *BuySendWorker) processBuyOnchainSend(event Event) {
 
 	// TODO: Na Parte 5 implementaremos a assinatura HMAC exigida pelo Signer do projeto:
 	// 'x-signer-hmac', 'x-ts', 'x-nonce' e o POST para o microsserviço isolado.
-	
-	slog.Info("Envio cripto (Buy) simulado/processado", 
-		"buy_order_id", orderID, 
+
+	slog.Info("Envio cripto (Buy) simulado/processado",
+		"buy_order_id", orderID,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
 }
