@@ -12,11 +12,13 @@ import (
 	"payment-gateway/internal/config"
 	"payment-gateway/internal/database"
 	"payment-gateway/internal/email"
+	"payment-gateway/internal/logger"
 	"payment-gateway/internal/server"
 	"payment-gateway/internal/workers"
 )
 
 func main() {
+	logger.Configure()
 	log.Println("Iniciando o ecossistema concorrente em Go...")
 
 	cfg := config.LoadConfig()
