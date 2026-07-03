@@ -29,6 +29,7 @@ type SweepPayload struct {
 	To              string `json:"to"`
 	Amount          string `json:"amount"`
 	TokenContract   string `json:"tokenContract"`
+	Network         string `json:"network"`
 	IdempotencyKey  string `json:"idempotencyKey"`
 }
 
@@ -62,6 +63,10 @@ func (sw *SweepWorker) Start(ctx context.Context) {
 
 func (sw *SweepWorker) executeSweeps(ctx context.Context) {
 	if sw.cfg.EnableSweepStub {
+		if sw.cfg.IsProduction() || !sw.cfg.AllowSimulations {
+			slog.Error("Sweep stub bloqueado por configuracao de producao")
+			return
+		}
 		pending, err := sw.db.ListPendingSweeps(ctx)
 		if err != nil {
 			slog.Error("Erro ao listar sweeps pendentes", "error", err)
@@ -113,6 +118,7 @@ func (sw *SweepWorker) sendSweep(ctx context.Context, sweep database.Sweep) {
 		To:              sweep.ToAddr,
 		Amount:          fmt.Sprintf("%.8f", sweep.Amount),
 		TokenContract:   sw.cfg.TronUsdtContract,
+		Network:         "TRON",
 		IdempotencyKey:  sweep.ID,
 	}
 	bodyBytes, _ := json.Marshal(payload)
