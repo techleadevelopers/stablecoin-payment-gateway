@@ -27,8 +27,8 @@ type Order struct {
 	Status            OrderStatus `json:"status"`   // Status atual (enum)
 	PixKey            string      `json:"pix_key"`  // Chave PIX de destino (CPF ou Telefone)
 	PixType           string      `json:"pix_type"` // "cpf" ou "phone"
-	PixCpf            string      `json:"pix_cpf,omitempty"`
-	PixPhone          string      `json:"pix_phone,omitempty"`
+	PixCpf            string      `json:"-"`
+	PixPhone          string      `json:"-"`
 	TronAddress       string      `json:"tron_address"` // Endereço gerado/derivado via XPUB para ele depositar
 	Address           string      `json:"address"`
 	Asset             string      `json:"asset"`
