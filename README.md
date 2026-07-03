@@ -353,6 +353,31 @@ Tambem ha microbenchmark do barramento interno:
 go test ./internal/workers -bench BenchmarkEventBus -benchmem
 ```
 
+### Resultado de Benchmark Local
+
+Data do teste: **03/07/2026**
+
+Ambiente:
+
+- OS: Windows
+- Go arch: `386`
+- CPU: Intel(R) Core(TM) i3-7100 CPU @ 3.90GHz
+- Comando: `go test ./internal/workers -bench BenchmarkEventBus -benchtime=100ms -count=1`
+
+Resultado:
+
+```text
+BenchmarkEventBusPublishNoSubscriber-4       27.23 ns/op    0 B/op    0 allocs/op
+BenchmarkEventBusPublishSingleSubscriber-4   93.10 ns/op    0 B/op    0 allocs/op
+BenchmarkEventBusPublishManySubscribers-4    1367 ns/op     0 B/op    0 allocs/op
+```
+
+Leitura operacional:
+
+- O barramento interno nao e gargalo relevante no caminho `webhook -> buy.paid -> BuySendWorker`.
+- O ACK do webhook e o delivery E2E ainda devem ser medidos em staging com Postgres, signer TRON, secrets reais e uma lista de `buy_ids` valida.
+- Benchmark E2E ainda nao foi executado neste ambiente porque a API/staging real, signer TRON e `buy_ids` de teste nao estavam disponiveis nesta sessao.
+
 ## Nota Operacional
 
 O caminho rapido da UX fica no quote e na criacao da intencao de compra. Confirmacao fiat e delivery cripto rodam em workers para manter baixa latencia no frontend e preservar consistencia financeira no backend.
