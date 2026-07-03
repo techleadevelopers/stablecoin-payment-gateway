@@ -25,7 +25,7 @@
 ### Informe o valor e visualize a cotação
 
 <div align="center">
-  <img src="https://res.cloudinary.com/limpeja/image/upload/v1783058374/compra-removebg-preview_ikab4t.png" alt="Swappy - Tela de Compra" width="600" />
+  <img src="https://res.cloudinary.com/limpeja/image/upload/v1783058374/compra-removebg-preview_ikab4t.png" alt="Swappy - Tela de Compra" width="300" />
 </div>
 
 **Como funciona:**
@@ -42,7 +42,7 @@
 ### Insira sua wallet e escolha o método de pagamento
 
 <div align="center">
-  <img src="https://res.cloudinary.com/limpeja/image/upload/v1783058436/sp2-removebg-preview_iarh45.png" alt="Swappy - Tela de Pagamento" width="600" />
+  <img src="https://res.cloudinary.com/limpeja/image/upload/v1783058436/sp2-removebg-preview_iarh45.png" alt="Swappy - Tela de Pagamento" width="300" />
 </div>
 
 **Como funciona:**
