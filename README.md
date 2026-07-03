@@ -21,7 +21,6 @@ O **Swappy Financial Core** é uma stack transacional de nível industrial desen
 
 ---
 
-## 2. Porquê Go? (Decisões de Engenharia de Produção)
 
 A infraestrutura original em Node.js (Express) apresentava gargalos críticos para a escala financeira real que foram mitigados pela migração para Go:
 
@@ -35,55 +34,44 @@ A infraestrutura original em Node.js (Express) apresentava gargalos críticos pa
 
 ### Autenticação HMAC-SHA256 Baseada em Chave Simétrica
 
-Para impedir adulterações e garantir autenticidade entre o Core e o serviço `signer`, toda requisição é protegida utilizando **HMAC-SHA256**, um algoritmo de autenticação criptográfica baseado em chave simétrica.
+Toda comunicação entre o **Core** e o serviço `signer` é autenticada utilizando **HMAC-SHA256**, um algoritmo de autenticação baseado em chave simétrica. Cada requisição gera um *digest* único calculado a partir do corpo da requisição e dos metadados enviados nos cabeçalhos HTTP.
 
 $$
 \text{Digest} =
-\operatorname{HMAC}_{SHA256}
-\left(
+\text{HMAC-SHA256}
+(
 \text{HMAC\_SECRET},
-\text{x-ts} \; || \; "." \; || \; \text{x-nonce} \; || \; "." \; || \; \text{RawBody}
-\right)
+\text{x-ts} || "." || \text{x-nonce} || "." || \text{RawBody}
+)
 $$
 
 Onde:
 
-- `||` representa a concatenação binária dos componentes.
+- `HMAC_SECRET` é a chave secreta compartilhada entre o Core e o Signer.
+- `||` representa a concatenação binária dos campos.
 - `x-ts` corresponde ao Unix Timestamp da requisição.
 - `x-nonce` identifica unicamente cada requisição.
+- `RawBody` representa o payload bruto transmitido.
 
-O Signer rejeita qualquer requisição cuja diferença entre o horário atual e o timestamp recebido exceda:
+Para eliminar **Replay Attacks**, o Signer aceita apenas requisições cuja diferença entre o horário atual e o timestamp recebido seja inferior a **60 segundos**.
 
 $$
-|t_{now}-t_{request}|>60\,s
+|t_{now}-t_{request}|<60s
 $$
 
-eliminando ataques de replay.
-
-Cada `x-nonce` também é persistido com restrição `UNIQUE`, impedindo que uma mesma assinatura seja reutilizada dentro da janela válida.
-
-### O Escudo HMAC-SHA256 Ponta a Ponta
-Para impedir interceptações na rede interna, qualquer comunicação da API Core em direção ao `/hd/transfer` do `signer` é assinada usando uma equação de criptografia simétrica:
-
-$$\text{Digest} = \text{HMAC-SHA256}\Big(\text{HMAC\_SECRET}, \; \text{x-ts} \parallel \text{"."} \parallel \text{x-nonce} \parallel \text{"."} \parallel \text{RawBody}\Big)$$
-
-Onde:
-* $\parallel$ representa a concatenação binária exata dos componentes.
-* `x-ts` é o Unix Timestamp da requisição. O Signer rejeita requisições onde:
-
-$$| \text{Tempo\_Atual} - \text{x-ts} | > 60\text{s}$$
-
-eliminando **Ataques de Replay**.
-* `x-nonce` é um identificador único de 16 caracteres. O Signer salva cada nonce no banco com índice `UNIQUE`. Se o mesmo nonce for enviado duas vezes na janela válida de tempo, a transação sofre um *abort* imediato no banco de dados.
-
-### Derivação de Carteiras Determinísticas (Padrão BIP44)
-O sistema não gera um endereço estático para os usuários depositarem, evitando correlação pública de balanço. O `SweepWorker` utiliza a chave estendida privada (`TRON_XPRV`) para derivar caminhos matemáticos exclusivos por usuário:
-
-$$\text{Endereço} = \text{Derivar}\big(\text{XPRV}, \; m/44'/195'/0'/0/\text{index}\big)$$
-
-Isso permite gerar bilhões de endereços de depósitos monitorados pelo `OnchainWorker`, mantendo o controle centralizado sob uma única semente (*Seed Master*).
+Além disso, cada `x-nonce` é persistido utilizando uma restrição `UNIQUE`. Caso um mesmo nonce seja reutilizado durante a janela válida de autenticação, a transação é imediatamente rejeitada.
 
 ---
+
+### Derivação Determinística de Carteiras (BIP-44)
+
+O sistema utiliza uma única chave estendida privada (`TRON_XPRV`) para derivar endereços determinísticos exclusivos para cada usuário, evitando reutilização de endereços e reduzindo correlação pública entre depósitos.
+
+$$
+Address=Derive(XPRV,m/44'/195'/0'/0/index)
+$$
+
+Essa abordagem permite gerar bilhões de endereços independentes mantendo uma única **Seed Master** como raiz criptográfica do sistema. Todos os endereços derivados são monitorados continuamente pelo **Onchain Worker**, enquanto o **Sweep Worker** consolida automaticamente os ativos para a carteira principal de liquidação.
 
 ## 4. Ciclo de Vida Transacional (Idempotência Célula-Mãe)
 
