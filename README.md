@@ -306,6 +306,53 @@ Para subir a API:
 go run ./cmd/api
 ```
 
+## Benchmark do Fluxo PIX -> Delivery
+
+O fluxo critico esperado e:
+
+```text
+Cliente paga Pix -> Webhook confirma -> BuySendWorker dispara da wallet Swappy -> USDT chega na wallet do cliente
+```
+
+Use `cmd/benchflow` em staging para medir percentis de latencia:
+
+```bash
+go run ./cmd/benchflow \
+  -api http://localhost:3000 \
+  -secret "$PIX_WEBHOOK_SECRET" \
+  -buy-ids ./buy_ids.txt \
+  -count 50 \
+  -concurrency 8 \
+  -mode ack \
+  -json bench-ack.json \
+  -csv bench-ack.csv
+```
+
+Para medir ate o status final `enviado`:
+
+```bash
+go run ./cmd/benchflow \
+  -api http://localhost:3000 \
+  -secret "$PIX_WEBHOOK_SECRET" \
+  -buy-ids ./buy_ids.txt \
+  -count 20 \
+  -concurrency 4 \
+  -mode e2e \
+  -json bench-e2e.json
+```
+
+Saida principal:
+
+- `webhook_ack_ms`: tempo para validar HMAC, idempotencia, persistir `pago_fiat` e publicar `buy.paid`.
+- `delivery_ms`: tempo ate `/api/buy/{id}` chegar em `enviado`, `delivered` ou `confirmado`.
+- Percentis emitidos: `p50`, `p55`, `p90`, `p95`, `p99`, alem de `min`, `max` e `avg`.
+
+Tambem ha microbenchmark do barramento interno:
+
+```bash
+go test ./internal/workers -bench BenchmarkEventBus -benchmem
+```
+
 ## Nota Operacional
 
 O caminho rapido da UX fica no quote e na criacao da intencao de compra. Confirmacao fiat e delivery cripto rodam em workers para manter baixa latencia no frontend e preservar consistencia financeira no backend.
