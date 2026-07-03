@@ -608,27 +608,20 @@ func (s *Server) handlePixWebhookBuy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "payload invÃ¡lido"})
 		return
 	}
-	if req.ProviderID != "" {
-		duplicate, err := s.db.HasBuyEvent(r.Context(), req.BuyID, "webhook.provider", "providerId", req.ProviderID)
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		if duplicate {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "duplicate": true})
-			return
-		}
-	}
 	status := settlement.PixWebhookStatus(req.Status)
 	extra := map[string]any{"requestId": requestID(r), "error": req.Error}
 	if settlement.ShouldPublishBuyPaid(status) {
 		extra = map[string]any{"requestId": requestID(r), "providerPaymentId": req.ProviderID}
 	}
-	if err := s.db.UpdateBuyOrderStatus(r.Context(), req.BuyID, status, extra); err != nil {
+	duplicate, err := s.db.ApplyBuyProviderWebhook(r.Context(), req.BuyID, req.ProviderID, req.Status, status, extra)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
-	_ = s.db.AddBuyEvent(r.Context(), req.BuyID, "webhook.provider", map[string]any{"requestId": requestID(r), "providerId": req.ProviderID, "status": req.Status})
+	if duplicate {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "duplicate": true})
+		return
+	}
 	if settlement.ShouldPublishBuyPaid(status) {
 		s.workers.Bus.Publish(workers.Event{Type: "buy.paid", OrderID: req.BuyID, Payload: map[string]any{"providerId": req.ProviderID}})
 	}
@@ -661,7 +654,12 @@ func (s *Server) handleStripeWebhookBuy(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "metadata.buyId obrigatorio"})
 		return
 	}
-	duplicate, err := s.db.HasBuyEvent(r.Context(), buyID, "webhook.provider", "providerId", event.ID)
+	status := settlement.StripeWebhookStatus(event.Type)
+	extra := map[string]any{"requestId": requestID(r), "providerPaymentId": event.ID, "stripeEventType": event.Type}
+	if !settlement.ShouldPublishBuyPaid(status) {
+		extra["error"] = "stripe event nao liquidado: " + event.Type
+	}
+	duplicate, err := s.db.ApplyBuyProviderWebhook(r.Context(), buyID, event.ID, event.Type, status, extra)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -670,16 +668,6 @@ func (s *Server) handleStripeWebhookBuy(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "duplicate": true})
 		return
 	}
-	status := settlement.StripeWebhookStatus(event.Type)
-	extra := map[string]any{"requestId": requestID(r), "providerPaymentId": event.ID, "stripeEventType": event.Type}
-	if !settlement.ShouldPublishBuyPaid(status) {
-		extra["error"] = "stripe event nao liquidado: " + event.Type
-	}
-	if err := s.db.UpdateBuyOrderStatus(r.Context(), buyID, status, extra); err != nil {
-		writeError(w, err)
-		return
-	}
-	_ = s.db.AddBuyEvent(r.Context(), buyID, "webhook.provider", map[string]any{"requestId": requestID(r), "providerId": event.ID, "status": event.Type})
 	if settlement.ShouldPublishBuyPaid(status) {
 		s.workers.Bus.Publish(workers.Event{Type: "buy.paid", OrderID: buyID, Payload: map[string]any{"providerId": event.ID, "rail": "stripe"}})
 	}
