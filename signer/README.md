@@ -1,3 +1,48 @@
+# Deploy separado
+
+Este servico pode subir como um segundo service no Railway usando:
+
+- `signer/Dockerfile`
+- `signer/railway.json`
+
+No Railway, crie um service separado para o signer e aponte o Dockerfile para:
+
+```text
+signer/Dockerfile
+```
+
+Healthcheck:
+
+```http
+GET /healthz
+```
+
+Variaveis obrigatorias:
+
+```env
+PORT=4010
+HMAC_SECRET=mesmo-valor-usado-no-core-como-SIGNER_HMAC_SECRET
+EVM_PRIVATE_KEY=0x...
+RPC_URL=https://...
+SIGNER_TOKEN_DECIMALS=18
+SIGNER_ALLOW_SIMULATION=false
+```
+
+Para staging sem envio real:
+
+```env
+SIGNER_ALLOW_SIMULATION=true
+```
+
+No service da API principal, configure:
+
+```env
+SIGNER_URL=https://url-privada-ou-publica-do-signer
+SIGNER_HMAC_SECRET=mesmo-valor-do-HMAC_SECRET
+```
+
+Nota: o signer atual implementa assinatura EVM e modo de simulacao. Para producao TRON real, usar signer TRON dedicado ou manter `SIGNER_ALLOW_SIMULATION=true` apenas em staging.
+
 # Swappy BSC/TRON Core Signer 🛡️
 ### Motor de Assinatura Criptográfica de Alta Performance e Isolamento de Chaves em Go
 
