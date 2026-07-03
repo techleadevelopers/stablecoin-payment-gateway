@@ -595,6 +595,45 @@ Leitura:
 - `webhook_ack_ms` e `delivery_ms` precisam ser medidos em staging com Postgres, signer TRON, secrets reais e `buy_ids` validos.
 - O benchmark E2E real nao foi executado neste ambiente porque signer TRON e IDs de teste nao estavam disponiveis na sessao.
 
+### Teste de fluxo com dinheiro ficticio
+
+Existe um teste automatizado em memoria para validar a reacao esperada do backend sem dinheiro real, provider real ou signer real:
+
+```bash
+go test ./internal/settlement
+```
+
+O teste cobre:
+
+- PIX ficticio confirmado.
+- Transicao `aguardando_pix -> pago_fiat`.
+- Publicacao do evento `buy.paid`.
+- Worker simulado entregando token.
+- Transicao final `pago_fiat -> enviado`.
+- Geracao de `txHashOut` simulado.
+- Bloqueio de webhook duplicado pelo mesmo `providerId`.
+- Status rejeitado nao publica `buy.paid`.
+
+Ultima execucao nesta sessao:
+
+```text
+go test ./...
+PASS
+```
+
+Observacao: a API HTTP completa nao foi iniciada localmente porque o `DATABASE_URL` do `.env` estava malformado e a autenticacao do Postgres local em `localhost:5432` falhou com credenciais padrao. Para rodar o fluxo HTTP completo, configurar um `DATABASE_URL` valido e repetir com `cmd/benchflow`.
+
+### Proximos gargalos provaveis
+
+| Gargalo | Onde aparece | Como medir | Mitigacao |
+| --- | --- | --- | --- |
+| Postgres lento | `webhook_ack_ms` alto | `cmd/benchflow -mode ack` | indices, pool, menor payload em transacao |
+| Provider enviando webhook duplicado | `duplicate=true` frequente | eventos `webhook.provider` | manter idempotencia e observar taxa |
+| Signer/RPC TRON lento | `delivery_ms` alto | `cmd/benchflow -mode e2e` | signer dedicado, timeout, retry controlado, RPC redundante |
+| EventBus cheio | drops ou delivery sem evento | metricas de fila | aumentar buffer, fila persistente se necessario |
+| CoinGecko/price indisponivel | quote 503 | logs `PriceWorker` | cache, fallback controlado, provider alternativo |
+| PagBank indisponivel | erro ao criar PIX/payout | logs provider e status 5xx | retry com idempotency key, circuit breaker |
+
 ## Troubleshooting
 
 ### API nao sobe
