@@ -31,32 +31,47 @@ A infraestrutura original em Node.js (Express) apresentava gargalos críticos pa
 
 ---
 
-## 🔐 3. Engenharia de Segurança e Equações Matemáticas
+## 🔐 3. Security Engineering & Mathematical Foundations
 
-### O Escudo HMAC-SHA256 Ponta a Ponta
-Para impedir interceptações na rede interna, qualquer comunicação da API Core em direção ao `/hd/transfer` do `signer` é assinada usando uma equação de criptografia simétrica:
+### End-to-End HMAC-SHA256 Authentication
 
-$$\text{Digest} = \text{HMAC-SHA256}\Big(\text{HMAC\_SECRET}, \; \text{x-ts} \parallel \text{"."} \parallel \text{x-nonce} \parallel \text{"."} \parallel \text{RawBody}\Big)$$
+Para impedir interceptações na rede interna, toda comunicação entre o Core e o serviço `signer` é autenticada utilizando HMAC-SHA256.
+
+```text
+digest = HMAC_SHA256(
+    HMAC_SECRET,
+    x-ts || "." || x-nonce || "." || RawBody
+)
+```
 
 Onde:
-* $\parallel$ representa a concatenação binária exata dos componentes.
-* `x-ts` é o Unix Timestamp da requisição. O Signer rejeita requisições onde:
 
-$$| \text{Tempo\_Atual} - \text{x-ts} | > 60\text{s}$$
+- `||` representa a concatenação binária dos campos.
+- `x-ts` corresponde ao Unix Timestamp da requisição.
+- `x-nonce` é um identificador aleatório utilizado para impedir reutilização da mesma requisição.
 
-eliminando **Ataques de Replay**.
-* `x-nonce` é um identificador único de 16 caracteres. O Signer salva cada nonce no banco com índice `UNIQUE`. Se o mesmo nonce for enviado duas vezes na janela válida de tempo, a transação sofre um *abort* imediato no banco de dados.
+O Signer rejeita automaticamente qualquer requisição cuja diferença entre o horário atual e o timestamp recebido seja superior a 60 segundos.
 
-### Derivação de Carteiras Determinísticas (Padrão BIP44)
-O sistema não gera um endereço estático para os usuários depositarem, evitando correlação pública de balanço. O `SweepWorker` utiliza a chave estendida privada (`TRON_XPRV`) para derivar caminhos matemáticos exclusivos por usuário:
+```text
+| current_time - x_ts | > 60 seconds
+```
 
-$$\text{Endereço} = \text{Derivar}\big(\text{XPRV}, \; m/44'/195'/0'/0/\text{index}\big)$$
-
-Isso permite gerar bilhões de endereços de depósitos monitorados pelo `OnchainWorker`, mantendo o controle centralizado sob uma única semente (*Seed Master*).
+Além disso, cada `x-nonce` é armazenado utilizando uma restrição `UNIQUE` no banco de dados. Caso o mesmo nonce seja reutilizado dentro da janela válida, a operação é imediatamente abortada, eliminando ataques de replay.
 
 ---
 
-## 4. Ciclo de Vida Transacional (Idempotência Célula-Mãe)
+### Deterministic Wallet Derivation (BIP-44)
+
+O sistema deriva endereços exclusivos para cada usuário utilizando uma única chave estendida privada (`TRON_XPRV`).
+
+```text
+Address = Derive(
+    XPRV,
+    m/44'/195'/0'/0/index
+)
+```
+
+Essa abordagem permite gerar bilhões de endereços determinísticos mantendo uma única Seed Master como raiz criptográfica do sistema. Cada endereço é monitorado continuamente pelo Onchain Worker até que seus fundos sejam automaticamente consolidados pelo Sweep Worker.
 
 Para evitar o pior cenário de um gateway financeiro — o **Duplo Gasto** ou **Dupla Liquidação** (enviar dois PIX para o mesmo depósito ou assinar duas transferências on-chain por instabilidade de rede), implementamos o padrão de **Idempotência Persistida**.
 
