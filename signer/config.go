@@ -8,11 +8,13 @@ import (
 )
 
 type SignerConfig struct {
-	EVMPrivateKey  string
-	RPCURL         string
-	HMACSecret     string
-	HMACMaxSkewSec int
-	Port           string
+	EVMPrivateKey   string
+	RPCURL          string
+	HMACSecret      string
+	HMACMaxSkewSec  int
+	TokenDecimals   int
+	AllowSimulation bool
+	Port            string
 }
 
 func LoadSignerConfig() *SignerConfig {
@@ -20,11 +22,13 @@ func LoadSignerConfig() *SignerConfig {
 	_ = godotenv.Load()
 
 	return &SignerConfig{
-		EVMPrivateKey:  getEnv("EVM_PRIVATE_KEY", ""),
-		RPCURL:         getEnv("RPC_URL", "https://bsc-dataseed.binance.org/"),
-		HMACSecret:     getEnv("HMAC_SECRET", ""),
-		HMACMaxSkewSec: getEnvAsInt("HMAC_MAX_SKEW_SEC", 60),
-		Port:           getEnv("PORT", "4010"),
+		EVMPrivateKey:   getEnv("EVM_PRIVATE_KEY", ""),
+		RPCURL:          getEnv("RPC_URL", "https://bsc-dataseed.binance.org/"),
+		HMACSecret:      getEnv("HMAC_SECRET", ""),
+		HMACMaxSkewSec:  getEnvAsInt("HMAC_MAX_SKEW_SEC", 60),
+		TokenDecimals:   getEnvAsInt("SIGNER_TOKEN_DECIMALS", 18),
+		AllowSimulation: getEnvAsBool("SIGNER_ALLOW_SIMULATION", false),
+		Port:            getEnv("PORT", "4010"),
 	}
 }
 
@@ -41,4 +45,16 @@ func getEnvAsInt(key string, defaultValue int) int {
 		return value
 	}
 	return defaultValue
+}
+
+func getEnvAsBool(key string, defaultValue bool) bool {
+	valueStr := getEnv(key, "")
+	if valueStr == "" {
+		return defaultValue
+	}
+	value, err := strconv.ParseBool(valueStr)
+	if err != nil {
+		return defaultValue
+	}
+	return value
 }
