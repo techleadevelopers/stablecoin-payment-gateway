@@ -42,19 +42,52 @@
 ### Insira sua wallet e escolha o método de pagamento
 
 <div align="center">
-  <img src="https://res.cloudinary.com/limpeja/image/upload/v1783058436/sp2-removebg-preview_iarh45.png" alt="Swappy - Tela de Pagamento" width="680" />
+  <img src="https://res.cloudinary.com/limpeja/image/upload/v1783064002/image-removebg-preview_6_ete3hd.png" alt="Swappy - Tela de Pagamento" width="680" />
 </div>
 
 **Como funciona:**
 
 1. **Informe sua Wallet** - Cole o endereço da sua carteira (ETH, BTC, USDT)
 2. **Escolha o método de pagamento**:
-   - 💰 **PIX** - Instantaneo com taxa de transacao 2% + US$2
+   - 💰 **PIX** - Instantâneo e sem taxas extras
    - 💳 **VISA** - Cartão de crédito internacional
    - 💳 **Mastercard** - Cartão de crédito internacional
 3. **Confirme a transação** e receba suas criptos em segundos
 
 ---
+
+## 💳 Fluxo de Pagamento - Step 3 (PIX)
+
+### Escaneie o QR Code e confirme o pagamento
+
+<div align="center">
+  <img src="https://res.cloudinary.com/limpeja/image/upload/v1783064178/image-removebg-preview_7_ighwcw.png" alt="Swappy - Tela de Pagamento PIX" width="680" />
+</div>
+
+**Como funciona:**
+
+1. **Escaneie o QR Code** - Utilize o app do seu banco para escanear o código PIX
+2. **Copie o código PIX** - Caso prefira, copie o código e cole no seu banco
+3. **Confirme o pagamento** - Realize o pagamento no valor exibido
+4. **Receba suas criptos** - Após a confirmação do pagamento, suas criptos serão entregues em segundos
+
+---
+
+## 💳 Fluxo de Pagamento - Step 3 (Cartão de Crédito - Stripe)
+
+### Integração em andamento!
+
+<div align="center">
+  <img src="https://res.cloudinary.com/limpeja/image/upload/v1783064734/998ededc-2291-40d7-86c9-6906faea7998_lsbpws.png" alt="Swappy - Tela de Pagamento" width="480" />
+</div>
+
+**Pagamento com cartão via Stripe estará disponível em breve.**
+
+- 💳 **VISA** - Cartão de crédito internacional
+- 💳 **Mastercard** - Cartão de crédito internacional
+
+*Por enquanto, utilize PIX para compras instantâneas.*
+
 
 ## 🔄 Fluxo de Venda (Sell)
 
@@ -257,8 +290,7 @@ SIGNER_HMAC_SECRET=...
 TRON_XPUB=...
 TRON_USDT_CONTRACT=...
 TRON_FULLNODE_URL=...
-FEE_BPS=200
-FEE_FIXED_USD=2
+FEE_BPS=0
 FEE_MIN_BRL=0
 ```
 
@@ -277,5 +309,3 @@ go run ./cmd/api
 ## Nota Operacional
 
 O caminho rapido da UX fica no quote e na criacao da intencao de compra. Confirmacao fiat e delivery cripto rodam em workers para manter baixa latencia no frontend e preservar consistencia financeira no backend.
-
-
