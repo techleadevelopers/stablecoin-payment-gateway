@@ -67,12 +67,17 @@ func (bw *BuySendWorker) processBuyOnchainSend(event Event) {
 	}
 
 	if bw.cfg.SignerUrl == "" || bw.cfg.SignerHmacSecret == "" {
-		txHash := "buy-sim-" + orderID
-		if err := bw.db.UpdateBuyOrderStatus(ctx, orderID, "enviado", map[string]any{"txHashOut": txHash}); err != nil {
-			slog.Error("Erro ao persistir envio BUY simulado", "buy_order_id", orderID, "error", err)
+		if bw.cfg.AllowSimulations && !bw.cfg.IsProduction() {
+			txHash := "buy-sim-" + orderID
+			if err := bw.db.UpdateBuyOrderStatus(ctx, orderID, "enviado", map[string]any{"txHashOut": txHash}); err != nil {
+				slog.Error("Erro ao persistir envio BUY simulado", "buy_order_id", orderID, "error", err)
+				return
+			}
+			slog.Warn("Signer nao configurado; envio BUY simulado", "buy_order_id", orderID, "tx_hash", txHash)
 			return
 		}
-		slog.Warn("Signer nao configurado; envio BUY simulado", "buy_order_id", orderID, "tx_hash", txHash)
+		_ = bw.db.UpdateBuyOrderStatus(ctx, orderID, "erro", map[string]any{"error": "SIGNER_URL ou SIGNER_HMAC_SECRET nao configurado"})
+		slog.Error("Envio BUY bloqueado: signer ausente", "buy_order_id", orderID)
 		return
 	}
 
@@ -80,6 +85,7 @@ func (bw *BuySendWorker) processBuyOnchainSend(event Event) {
 		"to":             buy.DestAddress,
 		"amount":         fmt.Sprintf("%.8f", buy.CryptoAmount),
 		"tokenContract":  bw.cfg.TronUsdtContract,
+		"network":        "TRON",
 		"idempotencyKey": "buy-" + buy.ID,
 	}
 	body, _ := json.Marshal(payload)
