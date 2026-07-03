@@ -3,56 +3,59 @@ package workers
 import (
 	"context"
 	"encoding/json"
-	"log/slog" // Logger estruturado nativo do Go (Substitui o Pino)
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
 
 type PriceWorker struct {
-	bus       *EventBus
-	client    *http.Client
-	mu        sync.RWMutex
-	lastPrice float64
+	bus    *EventBus
+	client *http.Client
+	mu     sync.RWMutex
+	prices map[string]float64
 }
 
 type CoinGeckoResponse struct {
 	Tether struct {
 		Brl float64 `json:"brl"`
+		Usd float64 `json:"usd"`
 	} `json:"tether"`
 }
 
 func NewPriceWorker(bus *EventBus) *PriceWorker {
 	return &PriceWorker{
-		bus: bus,
-		client: &http.Client{
-			Timeout: 5 * time.Second, // Hardening: Evita conexões presas consumindo RAM
-		},
+		bus:    bus,
+		client: &http.Client{Timeout: 5 * time.Second},
+		prices: make(map[string]float64),
 	}
 }
 
-// GetCurrentPrice permite que a API leia o cache em memória instantaneamente (Latência zero)
 func (pw *PriceWorker) GetCurrentPrice() float64 {
-	pw.mu.RLock()
-	defer pw.mu.RUnlock()
-	return pw.lastPrice
+	return pw.GetPrice("BRL")
 }
 
-// Start inicia o loop em background usando contextos para desligamento limpo (graceful shutdown)
-func (pw *PriceWorker) Start(ctx context.Context) {
-	slog.Info("PriceWorker inicializado com sucesso.")
+func (pw *PriceWorker) GetPrice(currency string) float64 {
+	pw.mu.RLock()
+	defer pw.mu.RUnlock()
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if currency == "" {
+		currency = "BRL"
+	}
+	return pw.prices[currency]
+}
 
-	// Executa a primeira carga imediatamente no boot
+func (pw *PriceWorker) Start(ctx context.Context) {
+	slog.Info("PriceWorker inicializado")
 	pw.fetchPrice()
 
-	// Ticker de 60 segundos (idêntico ao TTL do seu Node)
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("Desligando PriceWorker de forma segura...")
+			slog.Info("PriceWorker encerrado")
 			return
 		case <-ticker.C:
 			pw.fetchPrice()
@@ -62,44 +65,33 @@ func (pw *PriceWorker) Start(ctx context.Context) {
 
 func (pw *PriceWorker) fetchPrice() {
 	start := time.Now()
-
-	req, err := http.NewRequestWithContext(context.Background(), "GET", "https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=brl", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=brl,usd", nil)
 	if err != nil {
-		slog.Error("Erro ao criar requisição de preço", "error", err)
+		slog.Error("Erro ao criar request de preco", "error", err)
 		return
 	}
-
 	resp, err := pw.client.Do(req)
 	if err != nil {
-		slog.Error("Erro na requisição ao CoinGecko", "error", err)
+		slog.Error("Erro ao consultar CoinGecko", "error", err)
 		return
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		slog.Warn("CoinGecko retornou status inválido", "status", resp.StatusCode)
+		slog.Warn("CoinGecko retornou status invalido", "status", resp.StatusCode)
 		return
 	}
 
 	var data CoinGeckoResponse
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		slog.Error("Erro ao parsear JSON do preço", "error", err)
+		slog.Error("Erro ao parsear preco", "error", err)
 		return
 	}
-
 	pw.mu.Lock()
-	pw.lastPrice = data.Tether.Brl
+	pw.prices["BRL"] = data.Tether.Brl
+	pw.prices["USD"] = data.Tether.Usd
 	pw.mu.Unlock()
 
-	// Métrica de latência básica integrada nos logs estruturados
-	slog.Info("Preço USDT atualizado com sucesso",
-		"price", data.Tether.Brl,
-		"duration_ms", time.Since(start).Milliseconds(),
-	)
-
-	// Publica no barramento para quem quiser escutar
-	pw.bus.Publish(Event{
-		Type:    "price.updated",
-		Payload: map[string]interface{}{"price": data.Tether.Brl},
-	})
+	payload := map[string]any{"BRL": data.Tether.Brl, "USD": data.Tether.Usd}
+	slog.Info("Cotacao USDT atualizada", "brl", data.Tether.Brl, "usd", data.Tether.Usd, "duration_ms", time.Since(start).Milliseconds())
+	pw.bus.Publish(Event{Type: "price.updated", Payload: payload})
 }
