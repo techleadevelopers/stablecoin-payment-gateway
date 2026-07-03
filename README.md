@@ -1,14 +1,16 @@
 <div align="center">
 <img src="https://res.cloudinary.com/limpeja/image/upload/v1770993671/swap_1_mvctri.png" alt="Swappy Logo" width="320">
 <h3>Swappy Financial Core</h3>
-<p>Infraestrutura de Alta Performance para On/Off-Ramp Automatizado de Criptoativos (USDT/BRL)</p>
+<p>Sistema financeiro moderno e inteligente para compra de stablecoins com BRL via PIX</p>
 </div>
 
 ---
 
 ## 1. Visão Arquitetural do Ecossistema
 
-O **Swappy Financial Core** é uma stack transacional de nível industrial desenhada especificamente para operações de liquidação instantânea de criptoativos (*Sell/Off-ramp* e *Buy/On-ramp*). O sistema foi arquitetado sob o padrão de **Monorepo em Go**, separando estritamente a API pública de I/O, os Workers assíncronos orientados a eventos e o Cofre Criptográfico de Assinaturas (`signer`).
+O **Swappy Financial Core** é um sistema financeiro moderno e inteligente para operações com **stablecoins**, conectando **BRL via PIX** a ativos digitais como **USDT (Tether)** e, futuramente, **EURUSD (nova stablecoin)**. A primeira fase do produto prioriza a experiência de compra de stablecoins com cotação travada, validação de pagamento, envio on-chain e auditoria transacional.
+
+O sistema foi arquitetado sob o padrão de **Monorepo em Go**, separando estritamente a API pública de I/O, os Workers assíncronos orientados a eventos e o Cofre Criptográfico de Assinaturas (`signer`). Essa separação permite evoluir o produto com segurança para novos ativos, novas redes blockchain e integrações financeiras sem misturar regras de negócio, processamento assíncrono e custódia de chaves.
 
 ### Divisão de Responsabilidades (Isolamento de Processos)
 1. **API Gateway Core (`cmd/api`):** Camada de entrada pública, enxuta e endurecida. Responsável por expor endpoints REST, aplicar Rate Limiting, travar cotações com TTL estrito via cache em memória e persistir intenções de ordens no PostgreSQL com status `aguardando_deposito`.
