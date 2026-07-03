@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"meu-gateway-go/internal/config"
-	"meu-gateway-go/internal/database"
+	"payment-gateway/internal/config"
+	"payment-gateway/internal/database"
 )
 
 type PayoutWorker struct {
@@ -39,7 +39,7 @@ func (pw *PayoutWorker) Start(ctx context.Context) {
 			if !ok {
 				return
 			}
-			
+
 			// Dispara uma Goroutine por pagamento para que um PIX lento não trave os outros
 			go pw.processPayout(event)
 		}
@@ -55,10 +55,10 @@ func (pw *PayoutWorker) processPayout(event Event) {
 	// Simulação idêntica à lógica do seu Node.js quando falta o Token do PagBank
 	if pw.cfg.PagSeguroApiToken == "" {
 		slog.Warn("PagBank token não configurado, executando simulação de PIX", "order_id", orderID)
-		
+
 		// NOTA: Nas próximas etapas vamos criar as queries reais no DB.
 		// Aqui simulamos a atualização do status da ordem para 'concluida'.
-		
+
 		// Publica o encerramento do fluxo no barramento interno
 		pw.bus.Publish(Event{
 			Type:    "payout.settled",
@@ -69,8 +69,8 @@ func (pw *PayoutWorker) processPayout(event Event) {
 			},
 		})
 
-		slog.Info("Payout simulado concluído com sucesso", 
-			"order_id", orderID, 
+		slog.Info("Payout simulado concluído com sucesso",
+			"order_id", orderID,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 		return
