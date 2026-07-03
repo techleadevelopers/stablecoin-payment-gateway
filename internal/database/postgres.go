@@ -55,6 +55,19 @@ type BuyOrder struct {
 	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
+type BuyOrderInput struct {
+	Status            string
+	AmountBRL         float64
+	FeeBRL            float64
+	PayoutBRL         float64
+	CryptoAmount      float64
+	Asset             string
+	DestAddress       string
+	RateLocked        float64
+	RateLockExpiresAt time.Time
+	PixPayload        any
+}
+
 type PixStats struct {
 	Count int
 	Total float64
@@ -305,6 +318,107 @@ func (db *DB) OrdersToSweep(ctx context.Context) ([]models.Order, error) {
 			return nil, err
 		}
 		out = append(out, *o)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) CreateBuyOrder(ctx context.Context, buy BuyOrderInput) (*BuyOrder, error) {
+	id := NewID()
+	rawPayload, err := json.Marshal(buy.PixPayload)
+	if err != nil {
+		return nil, err
+	}
+	_, err = db.SQL.ExecContext(ctx, `
+		INSERT INTO buy_orders (id, status, amount_brl, fee_brl, payout_brl, crypto_amount, asset, dest_address, rate_locked, rate_lock_expires_at, pix_payload)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		id, buy.Status, buy.AmountBRL, buy.FeeBRL, buy.PayoutBRL, buy.CryptoAmount, buy.Asset, buy.DestAddress, buy.RateLocked, buy.RateLockExpiresAt, rawPayload)
+	if err != nil {
+		return nil, err
+	}
+	_ = db.AddBuyEvent(ctx, id, "buy.created", map[string]any{"amountBRL": buy.AmountBRL, "cryptoAmount": buy.CryptoAmount})
+	return db.GetBuyOrder(ctx, id)
+}
+
+func (db *DB) GetBuyOrder(ctx context.Context, id string) (*BuyOrder, error) {
+	row := db.SQL.QueryRowContext(ctx, `
+		SELECT id, status, amount_brl::float8, COALESCE(fee_brl,0)::float8, COALESCE(payout_brl,0)::float8,
+		       crypto_amount::float8, asset, dest_address, rate_locked::float8, rate_lock_expires_at,
+		       COALESCE(pix_payload, '{}'::jsonb), tx_hash_out, error, created_at, updated_at
+		FROM buy_orders WHERE id = $1`, id)
+	var buy BuyOrder
+	var txHashOut, errMsg sql.NullString
+	if err := row.Scan(&buy.ID, &buy.Status, &buy.AmountBRL, &buy.FeeBRL, &buy.PayoutBRL, &buy.CryptoAmount, &buy.Asset,
+		&buy.DestAddress, &buy.RateLocked, &buy.RateLockExpiresAt, &buy.PixPayload, &txHashOut, &errMsg, &buy.CreatedAt, &buy.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if txHashOut.Valid {
+		buy.TxHashOut = &txHashOut.String
+	}
+	if errMsg.Valid {
+		buy.Error = &errMsg.String
+	}
+	return &buy, nil
+}
+
+func (db *DB) UpdateBuyOrderStatus(ctx context.Context, id, status string, extra map[string]any) error {
+	txHashOut, _ := extra["txHashOut"].(string)
+	errMsg, _ := extra["error"].(string)
+	_, err := db.SQL.ExecContext(ctx, `
+		UPDATE buy_orders SET status = $2,
+			tx_hash_out = COALESCE(NULLIF($3,''), tx_hash_out),
+			error = COALESCE(NULLIF($4,''), error),
+			updated_at = now()
+		WHERE id = $1`, id, status, txHashOut, errMsg)
+	if err != nil {
+		return err
+	}
+	return db.AddBuyEvent(ctx, id, "buy."+status, extra)
+}
+
+func (db *DB) AddBuyEvent(ctx context.Context, buyOrderID, eventType string, payload any) error {
+	raw, _ := json.Marshal(payload)
+	_, err := db.SQL.ExecContext(ctx,
+		`INSERT INTO buy_order_events (id, buy_order_id, type, payload) VALUES ($1,$2,$3,$4)`,
+		NewID(), buyOrderID, eventType, raw)
+	return err
+}
+
+func (db *DB) HasBuyEvent(ctx context.Context, buyOrderID, eventType, field, value string) (bool, error) {
+	var exists bool
+	err := db.SQL.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM buy_order_events WHERE buy_order_id = $1 AND type = $2 AND payload ->> $3 = $4)`,
+		buyOrderID, eventType, field, value).Scan(&exists)
+	return exists, err
+}
+
+func (db *DB) ListPendingBuys(ctx context.Context) ([]BuyOrder, error) {
+	rows, err := db.SQL.QueryContext(ctx, `
+		SELECT id, status, amount_brl::float8, COALESCE(fee_brl,0)::float8, COALESCE(payout_brl,0)::float8,
+		       crypto_amount::float8, asset, dest_address, rate_locked::float8, rate_lock_expires_at,
+		       COALESCE(pix_payload, '{}'::jsonb), tx_hash_out, error, created_at, updated_at
+		FROM buy_orders WHERE status = 'pago_pix'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BuyOrder
+	for rows.Next() {
+		var buy BuyOrder
+		var txHashOut, errMsg sql.NullString
+		if err := rows.Scan(&buy.ID, &buy.Status, &buy.AmountBRL, &buy.FeeBRL, &buy.PayoutBRL, &buy.CryptoAmount, &buy.Asset,
+			&buy.DestAddress, &buy.RateLocked, &buy.RateLockExpiresAt, &buy.PixPayload, &txHashOut, &errMsg, &buy.CreatedAt, &buy.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if txHashOut.Valid {
+			buy.TxHashOut = &txHashOut.String
+		}
+		if errMsg.Valid {
+			buy.Error = &errMsg.String
+		}
+		out = append(out, buy)
 	}
 	return out, rows.Err()
 }
