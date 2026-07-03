@@ -5,7 +5,7 @@
 # Binários compilados pelo Go (Executáveis)
 /dist/
 /bin/
-meu-gateway-go
+payment-gateway
 *.exe
 *.exe~
 *.dll
