@@ -27,9 +27,16 @@ type SignerConfig struct {
 	AllowSimulation       bool
 	CustodyGuardEnabled   bool
 	CustodyGuardPollMs    int
+	CustodyMode           string
+	CustodyUnlockCooldown int
 	CustodyProtectedRaw   string
 	CustodyTrustedRaw     string
 	CustodySelectorsRaw   string
+	TreasuryMinUSDT       float64
+	TreasuryTargetUSDT    float64
+	TreasuryMaxUSDT       float64
+	TreasuryMaxDailyOut   float64
+	TreasuryLockThreshold float64
 	Port                  string
 }
 
@@ -79,10 +86,26 @@ func LoadSignerConfig() *SignerConfig {
 		AllowSimulation:       getEnvAsBool("SIGNER_ALLOW_SIMULATION", false),
 		CustodyGuardEnabled:   getEnvAsBool("CUSTODY_GUARD_ENABLED", false),
 		CustodyGuardPollMs:    getEnvAsInt("CUSTODY_GUARD_POLL_MS", 1500),
+		CustodyMode:           normalizeCustodyMode(getEnv("CUSTODY_MODE", "paper")),
+		CustodyUnlockCooldown: getEnvAsInt("CUSTODY_UNLOCK_COOLDOWN_SEC", 900),
 		CustodyProtectedRaw:   getEnv("CUSTODY_PROTECTED_WALLETS", ""),
 		CustodyTrustedRaw:     getEnv("CUSTODY_TRUSTED_DELEGATES", ""),
 		CustodySelectorsRaw:   getEnv("CUSTODY_ALLOWED_SELECTORS", ""),
+		TreasuryMinUSDT:       getEnvAsFloat("TREASURY_MIN_USDT", 0),
+		TreasuryTargetUSDT:    getEnvAsFloat("TREASURY_TARGET_USDT", 0),
+		TreasuryMaxUSDT:       getEnvAsFloat("TREASURY_MAX_USDT", 0),
+		TreasuryMaxDailyOut:   getEnvAsFloat("TREASURY_MAX_DAILY_OUTFLOW", 0),
+		TreasuryLockThreshold: getEnvAsFloat("TREASURY_LOCKDOWN_THRESHOLD", 0),
 		Port:                  getEnv("PORT", "4010"),
+	}
+}
+
+func normalizeCustodyMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "shadow", "paper", "live":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "paper"
 	}
 }
 
