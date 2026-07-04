@@ -5,8 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"payment-gateway/internal/config"
+	"payment-gateway/internal/workers"
 )
 
 func TestNormalizePaymentRailPixBRL(t *testing.T) {
@@ -52,6 +58,48 @@ func TestValidStripeSignatureRejectsExpiredTimestamp(t *testing.T) {
 	if validStripeSignature(secret, body, stripeHeader(secret, ts, body), 5*time.Minute) {
 		t.Fatal("expected expired stripe signature to be rejected")
 	}
+}
+
+func TestCustomerAccessTokenPrefersHeader(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/buy/id?accessToken=query-token", nil)
+	req.Header.Set("X-Customer-Access-Token", "header-token")
+
+	if got := customerAccessToken(req); got != "header-token" {
+		t.Fatalf("expected header token, got %q", got)
+	}
+}
+
+func TestPixBuyWebhookRequiresProviderID(t *testing.T) {
+	secret := "pix-secret"
+	body := []byte(`{"buyId":"00000000-0000-4000-8000-000000000001","status":"concluido"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/pix/webhook/buy", strings.NewReader(string(body)))
+	req.Header.Set("x-pagbank-signature", rawHMAC(secret, body))
+	rec := httptest.NewRecorder()
+
+	s := &Server{cfg: &config.Config{PixWebhookSecret: secret}, workers: &workers.WorkerManager{}}
+	s.handlePixWebhookBuy(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing providerId to be rejected with 400, got %d", rec.Code)
+	}
+}
+
+func TestEmailTestRequiresInternalHMAC(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/internal/email/test", strings.NewReader(`{"to":"ops@example.com"}`))
+	rec := httptest.NewRecorder()
+
+	s := &Server{cfg: &config.Config{SignerHmacSecret: "internal-secret"}}
+	s.handleEmailTest(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unsigned email test to be rejected, got %d", rec.Code)
+	}
+}
+
+func rawHMAC(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func stripeHeader(secret, ts string, body []byte) string {
