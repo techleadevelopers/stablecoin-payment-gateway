@@ -395,7 +395,7 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		PixCpf    string  `json:"pixCpf"`
 		PixPhone  string  `json:"pixPhone"`
 	}
-	if err := decodeJSON(r, &req); err != nil {
+	if err := json.Unmarshal(raw, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "JSON inválido"})
 		return
 	}
@@ -655,7 +655,7 @@ func (s *Server) handlePixWebhookBuy(w http.ResponseWriter, r *http.Request) {
 		ProviderID string `json:"providerId"`
 		Error      string `json:"error"`
 	}
-	if err := json.Unmarshal(raw, &req); err != nil || req.BuyID == "" {
+	if err := json.Unmarshal(raw, &req); err != nil || req.BuyID == "" || req.ProviderID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "payload invÃ¡lido"})
 		return
 	}
@@ -749,12 +749,17 @@ func (s *Server) handleInternalSweep(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
+	raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if !validHMAC(s.cfg.SignerHmacSecret, raw, r.Header.Get("x-internal-hmac")) {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "assinatura invalida"})
+		return
+	}
 	var req struct {
 		To      string `json:"to"`
 		Subject string `json:"subject"`
 		Body    string `json:"body"`
 	}
-	if err := decodeJSON(r, &req); err != nil {
+	if err := json.Unmarshal(raw, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "JSON inválido"})
 		return
 	}
