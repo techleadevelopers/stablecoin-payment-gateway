@@ -51,6 +51,14 @@ func main() {
 		slog.Error("EVM_PRIVATE_KEY obrigatorio para BSC/EVM")
 		os.Exit(1)
 	}
+	custodyGuard, err := NewCustodyGuard(cfg)
+	if err != nil && cfg.CustodyGuardEnabled {
+		slog.Error("falha ao inicializar custody guard", "error", err)
+		os.Exit(1)
+	}
+	if custodyGuard != nil && custodyGuard.Enabled() {
+		go custodyGuard.Start(context.Background())
+	}
 
 	storeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -67,7 +75,11 @@ func main() {
 	http.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
-		ready := map[string]any{"ok": true, "service": "signer", "network": cfg.DefaultNetwork}
+		locked, lockReason := custodyGuard.Locked()
+		ready := map[string]any{"ok": !locked, "service": "signer", "network": cfg.DefaultNetwork, "custodyGuard": cfg.CustodyGuardEnabled, "lockdown": locked}
+		if locked {
+			ready["lockReason"] = lockReason
+		}
 		if err := store.Ready(ctx); err != nil {
 			ready["ok"] = false
 			ready["storage"] = err.Error()
@@ -93,6 +105,11 @@ func main() {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
 			http.Error(w, "erro ao ler body", http.StatusBadRequest)
+			return
+		}
+		if locked, reason := custodyGuard.Locked(); locked {
+			slog.Error("transferencia bloqueada por custody guard", "reason", reason)
+			http.Error(w, "custody guard lockdown", http.StatusLocked)
 			return
 		}
 		if err := ValidateHMAC(cfg.HMACSecret, cfg.HMACMaxSkewSec, ts, nonce, hmacHeader, body); err != nil {
