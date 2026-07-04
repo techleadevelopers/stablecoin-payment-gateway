@@ -117,8 +117,8 @@ func (sw *SweepWorker) sendSweep(ctx context.Context, sweep database.Sweep) {
 		DerivationIndex: sweep.ChildIndex,
 		To:              sweep.ToAddr,
 		Amount:          fmt.Sprintf("%.8f", sweep.Amount),
-		TokenContract:   sw.cfg.TronUsdtContract,
-		Network:         "TRON",
+		TokenContract:   sw.cfg.BscUsdtContract,
+		Network:         "BSC",
 		IdempotencyKey:  sweep.ID,
 	}
 	bodyBytes, _ := json.Marshal(payload)
