@@ -25,6 +25,11 @@ type SignerConfig struct {
 	HMACMaxSkewSec        int
 	TokenDecimals         int
 	AllowSimulation       bool
+	CustodyGuardEnabled   bool
+	CustodyGuardPollMs    int
+	CustodyProtectedRaw   string
+	CustodyTrustedRaw     string
+	CustodySelectorsRaw   string
 	Port                  string
 }
 
@@ -72,6 +77,11 @@ func LoadSignerConfig() *SignerConfig {
 		HMACMaxSkewSec:        getEnvAsInt("HMAC_MAX_SKEW_SEC", 60),
 		TokenDecimals:         getEnvAsInt("SIGNER_TOKEN_DECIMALS", 18),
 		AllowSimulation:       getEnvAsBool("SIGNER_ALLOW_SIMULATION", false),
+		CustodyGuardEnabled:   getEnvAsBool("CUSTODY_GUARD_ENABLED", false),
+		CustodyGuardPollMs:    getEnvAsInt("CUSTODY_GUARD_POLL_MS", 1500),
+		CustodyProtectedRaw:   getEnv("CUSTODY_PROTECTED_WALLETS", ""),
+		CustodyTrustedRaw:     getEnv("CUSTODY_TRUSTED_DELEGATES", ""),
+		CustodySelectorsRaw:   getEnv("CUSTODY_ALLOWED_SELECTORS", ""),
 		Port:                  getEnv("PORT", "4010"),
 	}
 }
