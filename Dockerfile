@@ -26,10 +26,10 @@ WORKDIR /app
 COPY --from=builder /out/api /app/api
 
 ENV APP_ENV=production
-ENV PORT=3000
+ENV PORT=8080
 ENV TZ=UTC
 
-EXPOSE 3000
+EXPOSE 8080
 
 USER appuser
 
