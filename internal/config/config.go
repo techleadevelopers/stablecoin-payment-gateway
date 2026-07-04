@@ -177,6 +177,10 @@ func (c *Config) ValidateProduction() error {
 	if c.EnableSweepStub {
 		return fmt.Errorf("ENABLE_SWEEP_STUB deve ser false em producao")
 	}
+	signerURL := strings.ToLower(strings.TrimSpace(c.SignerUrl))
+	if strings.Contains(signerURL, "up.railway.app") {
+		return fmt.Errorf("SIGNER_URL deve usar rede privada em producao, nao dominio publico Railway")
+	}
 	return nil
 }
 
