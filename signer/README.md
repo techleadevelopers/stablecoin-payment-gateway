@@ -44,12 +44,36 @@ Custody guard opcional para EIP-7702:
 ```env
 CUSTODY_GUARD_ENABLED=true
 CUSTODY_GUARD_POLL_MS=1500
-CUSTODY_TRUSTED_DELEGATES=0xContratoDelegateSeguro
+CUSTODY_MODE=paper
+CUSTODY_UNLOCK_COOLDOWN_SEC=900
+CUSTODY_TRUSTED_DELEGATES=
 CUSTODY_ALLOWED_SELECTORS=
 CUSTODY_PROTECTED_WALLETS=
+TREASURY_MIN_USDT=0
+TREASURY_TARGET_USDT=0
+TREASURY_MAX_USDT=0
+TREASURY_MAX_DAILY_OUTFLOW=0
+TREASURY_LOCKDOWN_THRESHOLD=0
 ```
 
-Quando ligado, o signer monitora transacoes EIP-7702 (`SET_CODE`, type `0x04`) em `pending` e `latest`. A hot wallet derivada de `EVM_PRIVATE_KEY` e as wallets em `CUSTODY_PROTECTED_WALLETS` entram na lista protegida. Se uma autorizacao 7702 apontar uma wallet protegida para delegate fora de `CUSTODY_TRUSTED_DELEGATES`, ou se o bytecode de um delegate confiavel mudar, o signer entra em lockdown e bloqueia `/hd/transfer`.
+Quando ligado, o signer monitora transacoes EIP-7702 (`SET_CODE`, type `0x04`) em `pending` e `latest`. A hot wallet derivada de `EVM_PRIVATE_KEY` e as wallets em `CUSTODY_PROTECTED_WALLETS` entram na lista protegida. Se uma autorizacao 7702 apontar uma wallet protegida para delegate fora de `CUSTODY_TRUSTED_DELEGATES`, ou se o bytecode de um delegate confiavel mudar, o signer registra evento de custodia.
+
+Modos de custodia:
+
+- `CUSTODY_MODE=shadow`: registra evento, mas nao trava transferencia.
+- `CUSTODY_MODE=paper`: registra incidente persistente e bloqueia `/hd/transfer`.
+- `CUSTODY_MODE=live`: mesmo comportamento de bloqueio; reservado para futuras acoes automaticas de resposta.
+
+O destrave operacional usa `POST /custody/unlock` com o mesmo HMAC do signer (`x-ts`, `x-nonce`, `x-signer-hmac`) e respeita `CUSTODY_UNLOCK_COOLDOWN_SEC`. O incidente fica persistido no Postgres para sobreviver a restart.
+
+O signer tambem persiste:
+
+- `custody_events`: eventos de seguranca e auditoria.
+- `custody_incidents`: incidente ativo/resolvido.
+- `signer_chain_nonces`: reserva atomica de nonce por wallet/rede.
+- `signer_transactions`: lifecycle da transacao enviada (`submitted`, `confirmed`, `reverted`, `failed`).
+
+`TREASURY_MAX_DAILY_OUTFLOW` e `TREASURY_LOCKDOWN_THRESHOLD` bloqueiam novas assinaturas quando a saida diaria ultrapassa o limite configurado. `TREASURY_MIN_USDT`, `TREASURY_TARGET_USDT` e `TREASURY_MAX_USDT` aparecem no `/readyz` como politica operacional de caixa.
 
 Para staging sem envio real:
 
