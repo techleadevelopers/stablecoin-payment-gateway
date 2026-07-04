@@ -208,14 +208,19 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 	_ = s.db.AddBuyEvent(r.Context(), buy.ID, "buy.meta", map[string]any{"requestId": requestID(r), "ip": clientIP(r), "userAgent": r.UserAgent(), "customer": customerAudit})
 	s.workers.Bus.Publish(workers.Event{Type: "buy.created", OrderID: buy.ID, Payload: map[string]any{"requestId": requestID(r), "amountFiat": totalFiat, "fiatCurrency": fiatCurrency, "paymentMethod": paymentMethod}})
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"buyId": buy.ID, "id": buy.ID, "status": buy.Status, "amountFiat": totalFiat, "subtotalFiat": amountFiat, "fiatCurrency": fiatCurrency, "paymentMethod": paymentMethod, "feeFiat": fee, "totalFiat": totalFiat, "payoutFiat": payout,
+		"buyId": buy.ID, "id": buy.ID, "accessToken": buy.AccessToken, "status": buy.Status, "amountFiat": totalFiat, "subtotalFiat": amountFiat, "fiatCurrency": fiatCurrency, "paymentMethod": paymentMethod, "feeFiat": fee, "totalFiat": totalFiat, "payoutFiat": payout,
 		"rate": rate, "cryptoAmount": cryptoAmount, "asset": asset, "network": deliveryNetwork, "destAddress": buy.DestAddress,
 		"feePolicy": s.feePolicy(fiatCurrency, rate),
-		"pixKey":    paymentPayload["pixKey"], "qrCodeUrl": paymentPayload["qrCodeUrl"], "payment": paymentPayload,
+		"pixKey": paymentPayload["pixKey"], "qrCodeUrl": paymentPayload["qrCodeUrl"], "payment": paymentPayload,
+		"statusUrl": fmt.Sprintf("/api/buy/%s?accessToken=%s", buy.ID, buy.AccessToken),
+		"streamUrl": fmt.Sprintf("/api/buy/%s/stream?accessToken=%s", buy.ID, buy.AccessToken),
 	})
 }
 
 func (s *Server) handleGetBuy(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBuyRead(w, r, r.PathValue("id")) {
+		return
+	}
 	buy, err := s.db.GetBuyOrder(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
@@ -229,6 +234,9 @@ func (s *Server) handleGetBuy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBuyStream(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBuyRead(w, r, r.PathValue("id")) {
+		return
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -255,6 +263,19 @@ func (s *Server) handleBuyStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (s *Server) authorizeBuyRead(w http.ResponseWriter, r *http.Request, id string) bool {
+	ok, err := s.db.ValidateBuyAccess(r.Context(), id, customerAccessToken(r))
+	if err != nil {
+		writeError(w, err)
+		return false
+	}
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "token de acesso invalido"})
+		return false
+	}
+	return true
 }
 
 func (s *Server) handlePrice(w http.ResponseWriter, r *http.Request) {
@@ -450,13 +471,18 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	s.workers.Bus.Publish(workers.Event{Type: "order.created", OrderID: order.ID, Payload: map[string]any{"requestId": requestID(r), "amountBRL": totalBRL}})
 	s.email.NotifyOps("Swappy: nova ordem criada", fmt.Sprintf("Ordem %s criada para %.2f BRL. Endereço: %s", order.ID, totalBRL, depositAddress))
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id": order.ID, "orderId": order.ID, "status": order.Status, "address": depositAddress, "depositAddress": depositAddress,
+		"id": order.ID, "orderId": order.ID, "accessToken": order.AccessToken, "status": order.Status, "address": depositAddress, "depositAddress": depositAddress,
 		"amountBRL": totalBRL, "subtotalBRL": req.AmountBRL, "amountUSDT": amountUSDT, "btcAmount": amountUSDT, "feeBRL": fee, "totalBRL": totalBRL, "payoutBRL": payout,
 		"rate": rate, "network": network, "feePolicy": s.feePolicy("BRL", rate),
+		"statusUrl": fmt.Sprintf("/api/order/%s?accessToken=%s", order.ID, order.AccessToken),
+		"streamUrl": fmt.Sprintf("/api/order/%s/stream?accessToken=%s", order.ID, order.AccessToken),
 	})
 }
 
 func (s *Server) handleGetOrder(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeOrderRead(w, r, r.PathValue("id")) {
+		return
+	}
 	order, err := s.db.GetOrder(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
@@ -470,6 +496,9 @@ func (s *Server) handleGetOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOrderStream(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeOrderRead(w, r, r.PathValue("id")) {
+		return
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -497,6 +526,19 @@ func (s *Server) handleOrderStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (s *Server) authorizeOrderRead(w http.ResponseWriter, r *http.Request, id string) bool {
+	ok, err := s.db.ValidateOrderAccess(r.Context(), id, customerAccessToken(r))
+	if err != nil {
+		writeError(w, err)
+		return false
+	}
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "token de acesso invalido"})
+		return false
+	}
+	return true
 }
 
 func (s *Server) handleDeposit(w http.ResponseWriter, r *http.Request) {
@@ -908,6 +950,16 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func customerAccessToken(r *http.Request) string {
+	if token := strings.TrimSpace(r.Header.Get("X-Customer-Access-Token")); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(r.URL.Query().Get("accessToken")); token != "" {
+		return token
+	}
+	return strings.TrimSpace(r.URL.Query().Get("token"))
 }
 
 func (s *Server) deliveryNetwork() string {
