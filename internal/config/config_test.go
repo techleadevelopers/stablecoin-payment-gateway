@@ -27,6 +27,15 @@ func TestValidateProductionAcceptsRequiredConfig(t *testing.T) {
 	}
 }
 
+func TestValidateProductionRejectsPublicRailwaySignerURL(t *testing.T) {
+	cfg := productionReadyConfig()
+	cfg.SignerUrl = "https://signer-production.up.railway.app"
+
+	if err := cfg.ValidateProduction(); err == nil {
+		t.Fatal("expected public Railway signer URL to be rejected")
+	}
+}
+
 func productionReadyConfig() *Config {
 	return &Config{
 		Environment:       "production",
