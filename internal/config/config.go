@@ -86,7 +86,7 @@ func LoadConfig() *Config {
 		AllowedOrigins:         getEnv("ALLOWED_ORIGINS", "http://localhost:5173"),
 		WebhookSecret:          getEnv("WEBHOOK_SECRET", ""),
 		StripeWebhookSecret:    getEnv("STRIPE_WEBHOOK_SECRET", ""),
-		Port:                   getEnv("PORT", "3000"),
+		Port:                   getEnv("PORT", "8080"),
 		OrderMinBrl:            getEnvAsFloat("ORDER_MIN_BRL", 10.0),
 		OrderMaxBrl:            getEnvAsFloat("ORDER_MAX_BRL", 10000.0),
 		RateLockSec:            getEnvAsInt("RATE_LOCK_SEC", 600),
@@ -121,7 +121,7 @@ func LoadConfig() *Config {
 		EnableSweepStub:   getEnvAsBool("ENABLE_SWEEP_STUB", false),
 		SweepBatchUsdtMin: getEnvAsFloat("SWEEP_BATCH_USDT_MIN", 0),
 		SweepBatchUsdtMax: getEnvAsFloat("SWEEP_BATCH_USDT_MAX", 1_000_000),
-		SweepFrequencyMs:  getEnvAsInt("SWEEP_FREQUENCY_MS", 30000),
+		SweepFrequencyMs:  getEnvAsInt("SWEEP_FREQUENCY_MS", 80800),
 		BscGasReserveBNB:  getEnvAsFloat("BSC_GAS_RESERVE_BNB", 0.003),
 
 		SMTPHost:      getEnv("SMTP_HOST", ""),
