@@ -29,7 +29,7 @@ type Order struct {
 	PixType           string      `json:"pix_type"` // "cpf" ou "phone"
 	PixCpf            string      `json:"-"`
 	PixPhone          string      `json:"-"`
-	TronAddress       string      `json:"tron_address"` // Endereço gerado/derivado via XPUB para ele depositar
+	BSCAddress        string      `json:"BSC_address"` // Endereço gerado/derivado via XPUB para ele depositar
 	Address           string      `json:"address"`
 	Asset             string      `json:"asset"`
 	Network           string      `json:"network"`
@@ -52,7 +52,7 @@ type OrderMeta struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// OnchainCursor ajuda o onchainWorker a saber de onde parou na paginação da TRON
+// OnchainCursor ajuda o onchainWorker a saber de onde parou na paginação da BSC
 type OnchainCursor struct {
 	ID        int       `json:"id"`
 	LastBlock uint64    `json:"last_block"`
