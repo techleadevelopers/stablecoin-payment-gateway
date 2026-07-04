@@ -1,7 +1,7 @@
 # Financial Product Interface
 
 <div align="center">
-  <img src="https://res.cloudinary.com/limpeja/image/upload/v1783059789/2d3a41b4-0ea0-4649-a27a-f7dcb646c9f1.png" alt="Swappy Logo" width="1024" />
+  <img src="https://res.cloudinary.com/limpeja/image/upload/v1783198512/d61ccb4b-f711-4a99-b859-1b6f9a5c18fb.png" alt="Swappy Logo" width="1024" />
 </div>
 
 ---
