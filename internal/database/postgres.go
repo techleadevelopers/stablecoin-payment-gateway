@@ -94,6 +94,16 @@ type PixStats struct {
 	Total float64
 }
 
+type DeveloperEvent struct {
+	ID        string          `json:"id"`
+	Source    string          `json:"source"`
+	OrderID   string          `json:"orderId"`
+	RequestID *string         `json:"requestId,omitempty"`
+	Type      string          `json:"type"`
+	Payload   json.RawMessage `json:"payload"`
+	CreatedAt time.Time       `json:"createdAt"`
+}
+
 type Sweep struct {
 	ID         string
 	ChildIndex int
@@ -550,6 +560,38 @@ func (db *DB) HasBuyEvent(ctx context.Context, buyOrderID, eventType, field, val
 		`SELECT EXISTS(SELECT 1 FROM buy_order_events WHERE buy_order_id = $1 AND type = $2 AND payload ->> $3 = $4)`,
 		buyOrderID, eventType, field, value).Scan(&exists)
 	return exists, err
+}
+
+func (db *DB) ListDeveloperEvents(ctx context.Context, limit int) ([]DeveloperEvent, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := db.SQL.QueryContext(ctx, `
+		SELECT id::text, source, order_id::text, request_id, type, payload, created_at
+		FROM (
+			SELECT id, 'sell' AS source, order_id, request_id, type, payload, created_at FROM order_events
+			UNION ALL
+			SELECT id, 'buy' AS source, buy_order_id AS order_id, request_id, type, payload, created_at FROM buy_order_events
+		) events
+		ORDER BY created_at DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DeveloperEvent
+	for rows.Next() {
+		var event DeveloperEvent
+		var requestID sql.NullString
+		if err := rows.Scan(&event.ID, &event.Source, &event.OrderID, &requestID, &event.Type, &event.Payload, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		if requestID.Valid {
+			event.RequestID = &requestID.String
+		}
+		out = append(out, event)
+	}
+	return out, rows.Err()
 }
 
 func (db *DB) ListPendingBuys(ctx context.Context) ([]BuyOrder, error) {
