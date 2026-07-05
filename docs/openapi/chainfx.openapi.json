@@ -1,0 +1,211 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ChainFX API",
+    "version": "1.0.0-phase3",
+    "description": "Digital FX Payments API for PIX to USDT and USDT to PIX BRL flows."
+  },
+  "servers": [
+    {
+      "url": "https://api.chainfx.com",
+      "description": "Production"
+    },
+    {
+      "url": "https://sandbox-api.chainfx.com",
+      "description": "Sandbox"
+    },
+    {
+      "url": "http://localhost:8080",
+      "description": "Local development"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "QuoteRequest": {
+        "type": "object",
+        "required": ["side", "fiat", "asset", "amount"],
+        "properties": {
+          "side": { "type": "string", "enum": ["buy", "sell"] },
+          "fiat": { "type": "string", "example": "BRL" },
+          "asset": { "type": "string", "example": "USDT" },
+          "amount": { "type": "number", "example": 500 },
+          "paymentMethod": { "type": "string", "example": "pix" }
+        }
+      },
+      "QuoteResponse": {
+        "type": "object",
+        "properties": {
+          "quoteId": { "type": "string", "example": "qt_123" },
+          "side": { "type": "string", "example": "buy" },
+          "fiat": { "type": "string", "example": "BRL" },
+          "asset": { "type": "string", "example": "USDT" },
+          "rate": { "type": "number", "example": 5.18 },
+          "fiatAmount": { "type": "number", "example": 500 },
+          "cryptoAmount": { "type": "number", "example": 96.52 },
+          "expiresAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "BuyRequest": {
+        "type": "object",
+        "required": ["fiat", "asset", "amount", "wallet"],
+        "properties": {
+          "quoteId": { "type": "string" },
+          "fiat": { "type": "string", "example": "BRL" },
+          "asset": { "type": "string", "example": "USDT" },
+          "amount": { "type": "number", "example": 500 },
+          "wallet": { "type": "string", "example": "0x000000000000000000000000000000000000dEaD" },
+          "paymentMethod": { "type": "string", "example": "pix" },
+          "customer": { "type": "object" }
+        }
+      },
+      "SellRequest": {
+        "type": "object",
+        "required": ["asset", "amount", "depositAddress"],
+        "properties": {
+          "quoteId": { "type": "string" },
+          "asset": { "type": "string", "example": "USDT" },
+          "network": { "type": "string", "example": "BSC" },
+          "amount": { "type": "number", "example": 500 },
+          "depositAddress": { "type": "string", "example": "0x000000000000000000000000000000000000dEaD" },
+          "pixCpf": { "type": "string" },
+          "pixPhone": { "type": "string" }
+        }
+      },
+      "WebhookPayload": {
+        "type": "object",
+        "properties": {
+          "event": { "type": "string", "example": "payment.completed" },
+          "orderId": { "type": "string", "example": "ord_123" },
+          "status": { "type": "string", "example": "paid" },
+          "asset": { "type": "string", "example": "USDT" },
+          "amount": { "type": "string", "example": "96.52" },
+          "timestamp": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/rates": {
+      "get": {
+        "summary": "Current rates",
+        "security": [],
+        "responses": {
+          "200": { "description": "Rates loaded" }
+        }
+      }
+    },
+    "/quote": {
+      "post": {
+        "summary": "Create a quote",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/QuoteRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Quote",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/QuoteResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/buy": {
+      "post": {
+        "summary": "Create a buy order",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/BuyRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Buy order created" }
+        }
+      }
+    },
+    "/sell": {
+      "post": {
+        "summary": "Create a sell order",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SellRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Sell order created" }
+        }
+      }
+    },
+    "/order/{id}": {
+      "get": {
+        "summary": "Read an order",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Order" }
+        }
+      }
+    },
+    "/webhooks/test": {
+      "post": {
+        "summary": "Generate a test webhook payload",
+        "responses": {
+          "200": { "description": "Webhook payload" }
+        }
+      }
+    },
+    "/webhooks/retry": {
+      "post": {
+        "summary": "Retry webhook delivery",
+        "responses": {
+          "200": { "description": "Retry result" }
+        }
+      }
+    },
+    "/developers/logs": {
+      "get": {
+        "summary": "Developer logs",
+        "responses": {
+          "200": { "description": "Logs" }
+        }
+      }
+    }
+  },
+  "x-chainfx": {
+    "category": "Digital FX Payments Infrastructure",
+    "phase": "3",
+    "sdks": ["node", "python"],
+    "notNow": ["bridge", "pool", "AMM", "yield", "DEX", "LP"]
+  }
+}
