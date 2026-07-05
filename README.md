@@ -314,9 +314,47 @@ const order = await chainfx.buy({
   fiat: "BRL",
   asset: "USDT",
   amount: 500,
-  wallet: "0x000000000000000000000000000000000000dEaD"
+  wallet: "0x000000000000000000000000000000000000dEaD",
+  customer: {
+    name: "Maria Silva",
+    email: "maria@example.com",
+    cpf: "12345678909",
+    phone: "11999999999",
+    birthDate: "1990-05-20",
+    address: {
+      line1: "Av Paulista",
+      number: "1000",
+      city: "Sao Paulo",
+      state: "SP",
+      postalCode: "01310100",
+      country: "BR"
+    }
+  }
 });
 ```
+
+Como o fluxo de compra por API funciona:
+
+1. O dev envia `POST /buy` com valor, asset, wallet e dados do comprador.
+2. O backend cria uma `buy_order` com `id/buyId` e `accessToken`.
+3. O backend envia os dados do comprador e o valor para o PagBank para gerar a cobranca PIX.
+4. A resposta retorna `qrCodeUrl`, `pixKey`, `payment`, `orderUrl` e `statusUrl`.
+5. O sistema do dev renderiza o QR Code ou apresenta o payload PIX ao pagador.
+6. Quando o usuario paga, o webhook PagBank chama o backend.
+7. O backend marca a compra como paga.
+8. O worker de entrega envia USDT para a wallet informada.
+9. O dev acompanha por `GET /order/{id}?accessToken=...` ou webhooks.
+
+Campos de comprador aceitos hoje em `/buy`:
+
+- `customer.name`
+- `customer.email`
+- `customer.cpf`
+- `customer.phone`
+- `customer.birthDate`
+- `customer.address`
+
+Esses campos sao enviados ao provider de pagamento quando disponiveis. Para auditoria local, o backend guarda hashes/minimizacao e nao precisa manter PII completa em claro.
 
 ### Exemplo Python
 
