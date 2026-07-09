@@ -1986,6 +1986,11 @@ func (s *Server) createEfiPixCharge(ctx context.Context, buyID string, amountFia
 		for key, value := range qr {
 			provider[key] = value
 		}
+	} else {
+		return nil, err
+	}
+	if mapString(provider, "qrCodeUrl") == "" || mapString(provider, "pixCopiaECola") == "" {
+		return nil, fmt.Errorf("Efí nao retornou QR Code Pix completo")
 	}
 	if feeBps := s.cfg.EfiPixFeeBps; feeBps > 0 {
 		provider["providerFeeBps"] = feeBps
