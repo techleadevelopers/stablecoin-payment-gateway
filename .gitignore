@@ -1,6 +1,7 @@
 # Arquivos de Configuração Local (Contém senhas e chaves)
 .env
 .env.local
+secrets/
 
 # Binários compilados pelo Go (Executáveis)
 /dist/
