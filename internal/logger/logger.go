@@ -11,7 +11,7 @@ import (
 func Configure() {
 	level := parseLogLevel(os.Getenv("LOG_LEVEL"))
 	addSource := strings.EqualFold(os.Getenv("LOG_SOURCE"), "true")
-	
+
 	// Opções com formatação consistente
 	opts := &slog.HandlerOptions{
 		Level:     level,
@@ -26,7 +26,7 @@ func Configure() {
 			return a
 		},
 	}
-	
+
 	// Suporte a formato texto para desenvolvimento
 	var handler slog.Handler
 	if strings.EqualFold(os.Getenv("LOG_FORMAT"), "text") {
@@ -34,7 +34,7 @@ func Configure() {
 	} else {
 		handler = slog.NewJSONHandler(os.Stdout, opts)
 	}
-	
+
 	slog.SetDefault(slog.New(handler))
 }
 
@@ -56,7 +56,7 @@ func parseLogLevel(level string) slog.Level {
 
 // WithContext adiciona campos comuns a todos os logs
 func WithContext(attrs ...slog.Attr) *slog.Logger {
-	return slog.Default().With(attrs...)
+	return slog.Default().With(attrsToAny(attrs)...)
 }
 
 // WithRequestID adiciona request ID ao logger
@@ -77,5 +77,13 @@ func WithUserID(userID string) *slog.Logger {
 // LogError loga erro com stack trace (opcional)
 func LogError(msg string, err error, attrs ...slog.Attr) {
 	attrs = append(attrs, slog.String("error", err.Error()))
-	slog.Error(msg, attrs...)
+	slog.Error(msg, attrsToAny(attrs)...)
+}
+
+func attrsToAny(attrs []slog.Attr) []any {
+	args := make([]any, len(attrs))
+	for i, attr := range attrs {
+		args[i] = attr
+	}
+	return args
 }
