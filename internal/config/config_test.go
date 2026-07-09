@@ -49,7 +49,10 @@ func productionReadyConfig() *Config {
 		SignerHmacSecret:  "signer-secret",
 		BscRpcUrls:        "https://bnb-mainnet.g.alchemy.com/v2/key-1,https://bnb-mainnet.g.alchemy.com/v2/key-2",
 		BscUsdtContract:   "0x55d398326f99059fF775485246999027B3197955",
-		PagSeguroApiToken: "pagbank-token",
+		EfiClientID:        "efi-client",
+		EfiClientSecret:    "efi-secret",
+		EfiPixKey:          "efi-pix-key",
+		EfiCertificatePath: "efi-cert.pem",
 		TreasuryHot:       "0x1111111111111111111111111111111111111111",
 		EnableSweepStub:   false,
 	}
