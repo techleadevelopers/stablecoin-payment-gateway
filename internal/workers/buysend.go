@@ -115,6 +115,7 @@ func (bw *BuySendWorker) processBuyOnchainSend(event Event) {
 		return
 	}
 
+	// Validação do signer
 	if bw.cfg.SignerUrl == "" || bw.cfg.SignerHmacSecret == "" {
 		if bw.cfg.AllowSimulations && !bw.cfg.IsProduction() {
 			txHash := "buy-sim-" + orderID
@@ -130,23 +131,31 @@ func (bw *BuySendWorker) processBuyOnchainSend(event Event) {
 		return
 	}
 
+	// Prepara payload
 	network := strings.ToUpper(strings.TrimSpace(bw.cfg.SignerNetwork))
 	if network == "" || network == "EVM" || network == "BINANCE" || network == "BEP20" {
 		network = "BSC"
 	}
-	tokenContract := bw.cfg.BscUsdtContract
+	
 	payload := map[string]any{
 		"to":             buy.DestAddress,
 		"amount":         fmt.Sprintf("%.8f", buy.CryptoAmount),
-		"tokenContract":  tokenContract,
+		"tokenContract":  bw.cfg.BscUsdtContract,
 		"network":        network,
 		"idempotencyKey": "buy-" + buy.ID,
 	}
-	body, _ := json.Marshal(payload)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		slog.Error("Erro ao serializar payload", "buy_order_id", orderID, "error", err)
+		_ = bw.db.UpdateBuyOrderStatus(ctx, orderID, "erro", map[string]any{"error": "Erro ao serializar payload"})
+		return
+	}
 
+	// Envia para signer
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, bw.cfg.SignerUrl+"/hd/transfer", bytes.NewReader(body))
 	if err != nil {
 		slog.Error("Erro ao montar request para signer BUY", "buy_order_id", orderID, "error", err)
+		_ = bw.db.UpdateBuyOrderStatus(ctx, orderID, "erro", map[string]any{"error": err.Error()})
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -159,6 +168,7 @@ func (bw *BuySendWorker) processBuyOnchainSend(event Event) {
 		return
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errMsg := fmt.Sprintf("signer status %d", resp.StatusCode)
 		_ = bw.db.UpdateBuyOrderStatus(ctx, orderID, "erro", map[string]any{"error": errMsg})
@@ -166,17 +176,24 @@ func (bw *BuySendWorker) processBuyOnchainSend(event Event) {
 		return
 	}
 
+	// Processa resposta
 	var signed struct {
 		TxHash string `json:"txHash"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&signed)
+	if err := json.NewDecoder(resp.Body).Decode(&signed); err != nil {
+		slog.Error("Erro ao decodificar resposta do signer", "buy_order_id", orderID, "error", err)
+		signed.TxHash = "signer-accepted-" + orderID // fallback
+	}
+	
 	if signed.TxHash == "" {
 		signed.TxHash = "signer-accepted-" + orderID
 	}
+
 	if err := bw.db.UpdateBuyOrderStatus(ctx, orderID, "enviado", map[string]any{"txHashOut": signed.TxHash}); err != nil {
 		slog.Error("Erro ao atualizar BUY enviado", "buy_order_id", orderID, "error", err)
 		return
 	}
+
 	bw.bus.Publish(Event{Type: "buy.sent", OrderID: orderID, Payload: map[string]any{"txHash": signed.TxHash}})
 	slog.Info("Envio cripto BUY processado", "buy_order_id", orderID, "duration_ms", time.Since(start).Milliseconds())
 }
