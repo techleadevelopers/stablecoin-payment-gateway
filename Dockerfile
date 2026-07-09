@@ -24,10 +24,13 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=builder /out/api /app/api
+RUN mkdir -p /app/secrets \
+    && chown -R appuser:appuser /app
 
 ENV APP_ENV=production
 ENV PORT=8080
 ENV TZ=UTC
+ENV EFI_CERTIFICATE_PATH=/app/secrets/efi-production.p12
 
 EXPOSE 8080
 
