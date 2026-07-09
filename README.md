@@ -210,11 +210,40 @@ Endpoints principais implementados:
 - `GET /developers/dashboard`
 - `GET /developers/logs`
 - `GET /developers/api-keys`
+- `POST /api/admin/login`
 - `GET /api/admin/overview`
 - `GET /api/admin/transactions`
 - `GET /openapi.json`
 
-Os endpoints `/api/admin/*` usam a mesma autenticacao `Authorization: Bearer sk_live_xxx` e retornam dados operacionais para o painel do dono: readiness, gaps, cotacoes, metricas, transacoes buy/sell recentes e eventos auditaveis. Eles nao retornam `accessToken` de cliente nem payload PIX completo.
+Os endpoints `/api/admin/*` usam login administrativo por email e senha. O frontend chama `POST /api/admin/login`, recebe um token de sessao de 12 horas e envia esse token em `Authorization: Bearer <token>` nas chamadas seguintes. Por compatibilidade operacional, uma secret key live server-to-server ainda pode acessar os endpoints admin.
+
+O painel retorna readiness, gaps, cotacoes, metricas, transacoes buy/sell recentes e eventos auditaveis. Ele nao retorna `accessToken` de cliente nem payload PIX completo.
+
+### Admin operacional
+
+O bootstrap do primeiro usuario admin e feito por variaveis de ambiente no start do backend:
+
+```env
+ADMIN_BOOTSTRAP_EMAIL=admin@example.com
+ADMIN_BOOTSTRAP_PASSWORD=troque-esta-senha
+```
+
+Se o email ainda nao existir em `admin_users`, o backend cria o usuario com `role=owner` e senha com hash bcrypt. A senha nao deve ser commitada no repositorio; configure esses valores no Railway ou no `.env` local.
+
+Login:
+
+```powershell
+$body = @{
+  email = "admin@example.com"
+  password = "troque-esta-senha"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Uri "https://api.example.com/api/admin/login" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body $body
+```
 
 ### Autenticacao
 
