@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +30,7 @@ import (
 	"payment-gateway/internal/workers"
 
 	"github.com/ethereum/go-ethereum/common"
+	"golang.org/x/crypto/pkcs12"
 )
 
 type Server struct {
@@ -226,7 +230,7 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 		AmountFiat:        totalFiat,
 		FiatCurrency:      fiatCurrency,
 		PaymentMethod:     paymentMethod,
-		ProviderPaymentID: req.ProviderPaymentID,
+		ProviderPaymentID: firstNonEmpty(req.ProviderPaymentID, mapString(paymentPayload, "providerPaymentId"), mapString(paymentPayload, "txid")),
 		RequestID:         requestID(r),
 		FeeBRL:            fee,
 		PayoutBRL:         payout,
@@ -980,7 +984,8 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 
 	rate := s.workers.PriceWorker.GetCurrentPrice()
 	if rate <= 0 {
-		rate = 5.0
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "cotacao ainda nao carregada"})
+		return
 	}
 	fee := s.transactionFee(req.AmountBRL, "BRL", rate)
 	payout := req.AmountBRL
@@ -1157,7 +1162,7 @@ func (s *Server) handlePayout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePixWebhook(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
 	secret := defaultString(s.cfg.PixWebhookSecret, s.cfg.WebhookSecret)
-	if !validHMAC(secret, raw, r.Header.Get("x-pagbank-signature")) {
+	if !validHMAC(secret, raw, r.Header.Get("x-efi-signature")) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "assinatura inválida"})
 		return
 	}
@@ -1187,9 +1192,18 @@ func (s *Server) handlePixWebhook(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePixWebhookBuy(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
 	secret := defaultString(s.cfg.PixWebhookSecret, s.cfg.WebhookSecret)
-	signature := r.Header.Get("x-pagbank-signature")
-	if !validHMAC(secret, raw, signature) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "assinatura invÃ¡lida"})
+	signature := firstNonEmpty(r.Header.Get("x-efi-signature"), r.Header.Get("x-chainfx-signature"))
+	queryHMAC := r.URL.Query().Get("hmac")
+	if secret != "" && signature != "" && !validHMAC(secret, raw, signature) {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "assinatura invalida"})
+		return
+	}
+	if secret != "" && signature == "" && queryHMAC != "" && !hmac.Equal([]byte(queryHMAC), []byte(secret)) {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "hmac invalido"})
+		return
+	}
+	if s.cfg.IsProduction() && secret != "" && signature == "" && queryHMAC == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "webhook sem autenticacao adicional"})
 		return
 	}
 	var req struct {
@@ -1197,12 +1211,27 @@ func (s *Server) handlePixWebhookBuy(w http.ResponseWriter, r *http.Request) {
 		Status     string `json:"status"`
 		ProviderID string `json:"providerId"`
 		Error      string `json:"error"`
+		Pix        []struct {
+			EndToEndID string `json:"endToEndId"`
+			TxID       string `json:"txid"`
+			Valor      string `json:"valor"`
+			Horario    string `json:"horario"`
+		} `json:"pix"`
 	}
-	if err := json.Unmarshal(raw, &req); err != nil || req.BuyID == "" || req.ProviderID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "payload invÃ¡lido"})
+	if err := json.Unmarshal(raw, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "payload invalido"})
 		return
 	}
-	status := settlement.PixWebhookStatus(req.Status)
+	if len(req.Pix) > 0 {
+		req.Status = firstNonEmpty(req.Status, "CONCLUIDA")
+		req.ProviderID = firstNonEmpty(req.ProviderID, req.Pix[0].EndToEndID, req.Pix[0].TxID)
+		req.BuyID = firstNonEmpty(req.BuyID, buyIDFromEfiTxID(req.Pix[0].TxID))
+	}
+	if req.BuyID == "" || req.ProviderID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "payload sem buyId/txid"})
+		return
+	}
+	status := settlement.PixWebhookStatus(firstNonEmpty(req.Status, "CONCLUIDA"))
 	extra := map[string]any{"requestId": requestID(r), "error": req.Error}
 	if settlement.ShouldPublishBuyPaid(status) {
 		extra = map[string]any{"requestId": requestID(r), "providerPaymentId": req.ProviderID}
@@ -1221,7 +1250,6 @@ func (s *Server) handlePixWebhookBuy(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
-
 func (s *Server) handleStripeWebhookBuy(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	secret := defaultString(s.cfg.StripeWebhookSecret, s.cfg.WebhookSecret)
@@ -1336,7 +1364,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		"db":       true,
 		"network":  s.deliveryNetwork(),
 		"bsc":      s.cfg.BscRpcUrls != "" && s.cfg.BscUsdtContract != "",
-		"pix":      s.cfg.PagSeguroApiToken != "" && defaultString(s.cfg.PixWebhookSecret, s.cfg.WebhookSecret) != "",
+		"pix":      s.efiPixConfigured() && defaultString(s.cfg.PixWebhookSecret, s.cfg.WebhookSecret) != "",
 		"stripe":   defaultString(s.cfg.StripeWebhookSecret, s.cfg.WebhookSecret) != "",
 		"signer":   s.cfg.SignerUrl != "" && s.cfg.SignerHmacSecret != "",
 		"mode":     s.cfg.Environment,
@@ -1346,7 +1374,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) operationalGaps() []string {
 	checks := map[string]bool{
-		"pix_provider":   s.cfg.PagSeguroApiToken != "",
+		"pix_provider":   s.efiPixConfigured(),
 		"pix_webhook":    defaultString(s.cfg.PixWebhookSecret, s.cfg.WebhookSecret) != "",
 		"stripe_webhook": defaultString(s.cfg.StripeWebhookSecret, s.cfg.WebhookSecret) != "",
 		"signer":         s.cfg.SignerUrl != "" && s.cfg.SignerHmacSecret != "",
@@ -1724,6 +1752,11 @@ func validStripeSignature(secret string, raw []byte, header string, tolerance ti
 
 func cors(cfg *config.Config, next http.Handler) http.Handler {
 	allowed := strings.Split(cfg.AllowedOrigins, ",")
+	allowed = append(allowed,
+		"http://localhost:5173",
+		"http://127.0.0.1:5173",
+		"https://swapped-cryptocurrensy.vercel.app",
+	)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		w.Header().Add("Vary", "Origin")
@@ -1734,13 +1767,13 @@ func cors(cfg *config.Config, next http.Handler) http.Handler {
 			}
 			if item == "*" {
 				w.Header().Set("Access-Control-Allow-Origin", "*")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, x-internal-hmac, x-idempotency-key, x-pagbank-signature, Stripe-Signature")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, x-internal-hmac, x-idempotency-key, x-efi-signature, x-chainfx-signature, Stripe-Signature")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 				break
 			}
 			if origin != "" && item == origin {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, x-internal-hmac, x-idempotency-key, x-pagbank-signature, Stripe-Signature")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, x-internal-hmac, x-idempotency-key, x-efi-signature, x-chainfx-signature, Stripe-Signature")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 				break
 			}
@@ -1883,98 +1916,238 @@ func (s *Server) createPaymentIntent(ctx context.Context, buyID string, amountFi
 	if paymentMethod != "pix" {
 		return nil, fmt.Errorf("rail de pagamento nao suportado")
 	}
-	if strings.TrimSpace(s.cfg.PagSeguroApiToken) == "" {
+	if !s.efiPixConfigured() {
 		if s.cfg.AllowSimulations && !s.cfg.IsProduction() {
-			return map[string]any{"provider": "pix", "mode": "simulation", "pixKey": "chavepix@nexswap.com", "qrCodeUrl": "/images/qrcode.png", "buyId": buyID}, nil
+			return map[string]any{"provider": "efi", "mode": "simulation", "pixKey": "chavepix@nexswap.com", "qrCodeUrl": "/images/qrcode.png", "buyId": buyID}, nil
 		}
-		return nil, fmt.Errorf("PAGSEGURO_API_TOKEN nao configurado")
+		return nil, fmt.Errorf("credenciais Efí Pix nao configuradas")
 	}
+	return s.createEfiPixCharge(ctx, buyID, amountFiat, customer)
+}
+
+func (s *Server) efiPixConfigured() bool {
+	return strings.TrimSpace(s.cfg.EfiClientID) != "" &&
+		strings.TrimSpace(s.cfg.EfiClientSecret) != "" &&
+		strings.TrimSpace(s.cfg.EfiPixKey) != "" &&
+		strings.TrimSpace(s.cfg.EfiCertificatePath) != ""
+}
+
+func (s *Server) createEfiPixCharge(ctx context.Context, buyID string, amountFiat float64, customer paymentCustomerInput) (map[string]any, error) {
+	client, err := s.efiHTTPClient()
+	if err != nil {
+		return nil, err
+	}
+	token, err := s.efiAccessToken(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	txid := efiTxIDFromBuyID(buyID)
 	payload := map[string]any{
-		"reference_id": buyID,
-		"customer":     buildPagBankCustomer(customer),
-		"qr_codes": []map[string]any{{
-			"amount": map[string]any{"value": int64(math.Round(amountFiat * 100))},
-		}},
-		"notification_urls": []string{},
+		"calendario": map[string]any{"expiracao": s.cfg.RateLockSec},
+		"valor":      map[string]any{"original": fmt.Sprintf("%.2f", amountFiat)},
+		"chave":      s.cfg.EfiPixKey,
+		"solicitacaoPagador": fmt.Sprintf(
+			"Pedido %s - USDT BSC",
+			buyID,
+		),
 	}
+	if debtor := buildEfiDebtor(customer); len(debtor) > 0 {
+		payload["devedor"] = debtor
+	}
+
 	raw, _ := json.Marshal(payload)
-	endpoint := strings.TrimRight(s.cfg.PagSeguroApiBaseUrl, "/") + "/" + strings.TrimLeft(defaultString(s.cfg.PixChargeEndpoint, "/orders"), "/")
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+	endpoint := strings.TrimRight(s.cfg.EfiApiBaseURL, "/") + "/v2/cob/" + txid
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+s.cfg.PagSeguroApiToken)
-	resp, err := http.DefaultClient.Do(req)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("PagBank rejeitou cobranca PIX: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("Efí rejeitou cobranca PIX: status %d", resp.StatusCode)
 	}
 	var provider map[string]any
 	if err := json.Unmarshal(body, &provider); err != nil {
-		return nil, fmt.Errorf("PagBank respondeu JSON invalido")
+		return nil, fmt.Errorf("Efí respondeu JSON invalido")
 	}
-	provider["provider"] = "pix"
+	provider["provider"] = "efi"
 	provider["buyId"] = buyID
+	provider["txid"] = defaultString(fmt.Sprint(provider["txid"]), txid)
+	provider["providerPaymentId"] = txid
 	provider["providerStatus"] = resp.StatusCode
+	provider["pixKey"] = s.cfg.EfiPixKey
+	if qr, err := s.efiQRCode(ctx, client, token, provider); err == nil {
+		for key, value := range qr {
+			provider[key] = value
+		}
+	}
+	if feeBps := s.cfg.EfiPixFeeBps; feeBps > 0 {
+		provider["providerFeeBps"] = feeBps
+		provider["providerFeeFiatEstimated"] = math.Round((amountFiat*float64(feeBps)/10000)*100) / 100
+	}
 	if customer.Name != "" || customer.Email != "" || customer.CPF != "" || customer.Phone != "" || customer.BirthDate != "" || len(customer.Address) > 0 {
 		provider["customerSubmitted"] = buildCustomerAudit(s.cfg.LGPDSecret, customer.CPF, customer.Phone, customer.Email, customer.Name, customer.BirthDate, customer.Address)
 	}
 	return provider, nil
 }
 
-func buildPagBankCustomer(customer paymentCustomerInput) map[string]any {
-	payload := map[string]any{
-		"name": defaultString(customer.Name, "Swappy Customer"),
+func (s *Server) efiQRCode(ctx context.Context, client *http.Client, token string, charge map[string]any) (map[string]any, error) {
+	locID := nestedFloat(charge, "loc", "id")
+	if locID <= 0 {
+		return nil, fmt.Errorf("cobranca Efí sem loc.id")
 	}
-	if customer.Email != "" {
-		payload["email"] = customer.Email
+	endpoint := fmt.Sprintf("%s/v2/loc/%d/qrcode", strings.TrimRight(s.cfg.EfiApiBaseURL, "/"), int64(locID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
 	}
-	if customer.CPF != "" {
-		payload["tax_id"] = onlyDigits(customer.CPF)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
 	}
-	if customer.BirthDate != "" {
-		payload["birth_date"] = customer.BirthDate
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("Efí rejeitou QR Code Pix: status %d", resp.StatusCode)
 	}
-	if customer.Phone != "" {
-		digits := onlyDigits(customer.Phone)
-		if len(digits) >= 10 {
-			area := digits[:2]
-			number := digits[2:]
-			payload["phones"] = []map[string]any{{
-				"country": "55",
-				"area":    area,
-				"number":  number,
-				"type":    "MOBILE",
-			}}
-		}
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, err
 	}
-	if len(customer.Address) > 0 {
-		payload["address"] = normalizePagBankAddress(customer.Address)
-	}
-	return payload
+	return map[string]any{
+		"pixCopiaECola":     mapString(data, "qrcode"),
+		"qrCodeUrl":         mapString(data, "imagemQrcode"),
+		"linkVisualizacao":  mapString(data, "linkVisualizacao"),
+		"qrCodeProviderRaw": data,
+	}, nil
 }
 
-func normalizePagBankAddress(address map[string]any) map[string]any {
-	if len(address) == 0 {
+func (s *Server) efiHTTPClient() (*http.Client, error) {
+	certPath := strings.TrimSpace(s.cfg.EfiCertificatePath)
+	keyPath := strings.TrimSpace(s.cfg.EfiCertificateKey)
+	cert, err := s.loadEfiCertificate(certPath, keyPath)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{
+		Timeout: 20 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			MinVersion:   tls.VersionTLS12,
+			Certificates: []tls.Certificate{cert},
+		}},
+	}, nil
+}
+
+func (s *Server) loadEfiCertificate(certPath, keyPath string) (tls.Certificate, error) {
+	if strings.TrimSpace(certPath) == "" {
+		return tls.Certificate{}, fmt.Errorf("EFI_CERTIFICATE_PATH nao configurado")
+	}
+	if strings.HasSuffix(strings.ToLower(certPath), ".p12") || strings.HasSuffix(strings.ToLower(certPath), ".pfx") {
+		raw, err := os.ReadFile(certPath)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("nao foi possivel ler certificado Efí P12: %w", err)
+		}
+		privateKey, cert, err := pkcs12.Decode(raw, s.cfg.EfiCertificatePass)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("certificado Efí P12 invalido; confira EFI_CERTIFICATE_PASSWORD: %w", err)
+		}
+		return tls.Certificate{
+			Certificate: [][]byte{cert.Raw},
+			PrivateKey:  privateKey,
+			Leaf:        cert,
+		}, nil
+	}
+	if keyPath == "" {
+		keyPath = certPath
+	}
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("certificado Efí PEM/KEY invalido: %w", err)
+	}
+	if cert.Leaf == nil && len(cert.Certificate) > 0 {
+		cert.Leaf, _ = x509.ParseCertificate(cert.Certificate[0])
+	}
+	return cert, nil
+}
+
+func (s *Server) efiAccessToken(ctx context.Context, client *http.Client) (string, error) {
+	raw := []byte(`{"grant_type":"client_credentials"}`)
+	endpoint := strings.TrimRight(s.cfg.EfiApiBaseURL, "/") + "/oauth/token"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(s.cfg.EfiClientID, s.cfg.EfiClientSecret)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("Efí OAuth rejeitou credenciais: status %d", resp.StatusCode)
+	}
+	var data struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil || strings.TrimSpace(data.AccessToken) == "" {
+		return "", fmt.Errorf("Efí OAuth respondeu token inválido")
+	}
+	return data.AccessToken, nil
+}
+
+func buildEfiDebtor(customer paymentCustomerInput) map[string]any {
+	cpf := onlyDigits(customer.CPF)
+	name := strings.TrimSpace(customer.Name)
+	if cpf == "" || name == "" {
 		return nil
 	}
-	out := map[string]any{}
-	copyAddressField(out, address, "street", "street", "line1", "address")
-	copyAddressField(out, address, "number", "number")
-	copyAddressField(out, address, "complement", "complement", "line2")
-	copyAddressField(out, address, "locality", "locality", "district", "neighborhood")
-	copyAddressField(out, address, "city", "city")
-	copyAddressField(out, address, "region_code", "region_code", "state")
-	copyAddressField(out, address, "country", "country")
-	if postal := firstMapString(address, "postal_code", "postalCode", "zip", "zipcode"); postal != "" {
-		out["postal_code"] = onlyDigits(postal)
+	return map[string]any{
+		"cpf":  cpf,
+		"nome": name,
 	}
-	return out
+}
+
+func efiTxIDFromBuyID(buyID string) string {
+	clean := onlyAlphaNum(buyID)
+	if len(clean) >= 26 && len(clean) <= 35 {
+		return clean
+	}
+	if len(clean) > 35 {
+		return clean[:35]
+	}
+	return strings.ToUpper(clean + strings.Repeat("0", 26-len(clean)))
+}
+
+func buyIDFromEfiTxID(txid string) string {
+	clean := onlyAlphaNum(txid)
+	if len(clean) == 32 {
+		return fmt.Sprintf("%s-%s-%s-%s-%s", clean[0:8], clean[8:12], clean[12:16], clean[16:20], clean[20:32])
+	}
+	return txid
+}
+
+func onlyAlphaNum(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - ('a' - 'A'))
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func copyAddressField(out, in map[string]any, target string, keys ...string) {
@@ -1992,6 +2165,43 @@ func firstMapString(values map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func mapString(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	if raw, ok := values[key]; ok {
+		if text := strings.TrimSpace(fmt.Sprint(raw)); text != "" && text != "<nil>" {
+			return text
+		}
+	}
+	return ""
+}
+
+func nestedFloat(root map[string]any, keys ...string) float64 {
+	var current any = root
+	for _, key := range keys {
+		obj, ok := current.(map[string]any)
+		if !ok {
+			return 0
+		}
+		current = obj[key]
+	}
+	switch value := current.(type) {
+	case float64:
+		return value
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	case json.Number:
+		out, _ := value.Float64()
+		return out
+	default:
+		out, _ := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(value)), 64)
+		return out
+	}
 }
 
 func onlyDigits(value string) string {
