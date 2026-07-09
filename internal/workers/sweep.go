@@ -3,10 +3,6 @@ package workers
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -15,6 +11,8 @@ import (
 
 	"payment-gateway/internal/config"
 	"payment-gateway/internal/database"
+	"payment-gateway/internal/httpclient"
+	"payment-gateway/internal/security"
 )
 
 type SweepWorker struct {
@@ -35,12 +33,10 @@ type SweepPayload struct {
 
 func NewSweepWorker(bus *EventBus, db *database.DB, cfg *config.Config) *SweepWorker {
 	return &SweepWorker{
-		bus: bus,
-		db:  db,
-		cfg: cfg,
-		client: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+		bus:    bus,
+		db:     db,
+		cfg:    cfg,
+		client: httpclient.Default(),
 	}
 }
 
@@ -123,22 +119,6 @@ func (sw *SweepWorker) sendSweep(ctx context.Context, sweep database.Sweep) {
 	}
 	bodyBytes, _ := json.Marshal(payload)
 
-	// --- CÁLCULO CRIPTOGRÁFICO DO HMAC ANTI-REPLAY ---
-	ts := fmt.Sprintf("%d", time.Now().Unix())
-
-	// Gera um Nonce aleatório seguro de 8 bytes (substitui o crypto.randomBytes do Node)
-	nonceBytes := make([]byte, 8)
-	_, _ = rand.Read(nonceBytes)
-	nonce := hex.EncodeToString(nonceBytes)
-
-	// Montagem do payload de assinatura: ts + "." + nonce + "." + rawBody
-	signatureRaw := fmt.Sprintf("%s.%s.%s", ts, nonce, string(bodyBytes))
-
-	mac := hmac.New(sha256.New, []byte(sw.cfg.SignerHmacSecret))
-	mac.Write([]byte(signatureRaw))
-	computedHmac := hex.EncodeToString(mac.Sum(nil))
-	// -------------------------------------------------
-
 	req, err := http.NewRequestWithContext(ctx, "POST", sw.cfg.SignerUrl+"/hd/transfer", bytes.NewBuffer(bodyBytes))
 	if err != nil {
 		slog.Error("Erro ao criar request de sweep", "error", err)
@@ -147,9 +127,7 @@ func (sw *SweepWorker) sendSweep(ctx context.Context, sweep database.Sweep) {
 
 	// Injeta os headers de segurança militar exigidos pelo seu microsserviço Signer
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-ts", ts)
-	req.Header.Set("x-nonce", nonce)
-	req.Header.Set("x-signer-hmac", computedHmac)
+	security.SignRawBodyHeaders(req, sw.cfg.SignerHmacSecret, bodyBytes)
 
 	slog.Info("Disparando comando de Sweep seguro para o Signer", "index", payload.DerivationIndex, "sweep_id", sweep.ID)
 

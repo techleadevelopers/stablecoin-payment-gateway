@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"payment-gateway/internal/httpclient"
 )
 
 type PriceWorker struct {
@@ -38,7 +40,7 @@ type BinanceTickerResponse struct {
 func NewPriceWorker(bus *EventBus) *PriceWorker {
 	return &PriceWorker{
 		bus:    bus,
-		client: &http.Client{Timeout: 5 * time.Second},
+		client: httpclient.Default(),
 		prices: make(map[string]float64),
 	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"payment-gateway/internal/config"
 	"payment-gateway/internal/database"
+	"payment-gateway/internal/httpclient"
 )
 
 type PayoutWorker struct {
@@ -25,7 +26,7 @@ func NewPayoutWorker(bus *EventBus, db *database.DB, cfg *config.Config) *Payout
 		bus:    bus,
 		db:     db,
 		cfg:    cfg,
-		client: &http.Client{Timeout: 15 * time.Second},
+		client: httpclient.Default(),
 	}
 }
 

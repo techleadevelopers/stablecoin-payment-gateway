@@ -1726,10 +1726,20 @@ func cors(cfg *config.Config, next http.Handler) http.Handler {
 	allowed := strings.Split(cfg.AllowedOrigins, ",")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
+		w.Header().Add("Vary", "Origin")
 		for _, item := range allowed {
 			item = strings.TrimSpace(item)
-			if item == "*" || item == origin || (origin == "" && item != "") {
-				w.Header().Set("Access-Control-Allow-Origin", defaultString(origin, item))
+			if item == "" {
+				continue
+			}
+			if item == "*" {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, x-internal-hmac, x-idempotency-key, x-pagbank-signature, Stripe-Signature")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				break
+			}
+			if origin != "" && item == origin {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, x-internal-hmac, x-idempotency-key, x-pagbank-signature, Stripe-Signature")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 				break

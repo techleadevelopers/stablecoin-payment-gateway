@@ -3,10 +3,6 @@ package workers
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -17,6 +13,8 @@ import (
 
 	"payment-gateway/internal/config"
 	"payment-gateway/internal/database"
+	"payment-gateway/internal/httpclient"
+	"payment-gateway/internal/security"
 )
 
 type BuySendWorker struct {
@@ -33,7 +31,7 @@ func NewBuySendWorker(bus *EventBus, db *database.DB, cfg *config.Config) *BuySe
 		bus:    bus,
 		db:     db,
 		cfg:    cfg,
-		client: &http.Client{Timeout: 15 * time.Second},
+		client: httpclient.Default(),
 		active: make(map[string]struct{}),
 	}
 }
@@ -145,14 +143,6 @@ func (bw *BuySendWorker) processBuyOnchainSend(event Event) {
 		"idempotencyKey": "buy-" + buy.ID,
 	}
 	body, _ := json.Marshal(payload)
-	ts := fmt.Sprintf("%d", time.Now().Unix())
-	nonceRaw := make([]byte, 8)
-	_, _ = rand.Read(nonceRaw)
-	nonce := hex.EncodeToString(nonceRaw)
-
-	mac := hmac.New(sha256.New, []byte(bw.cfg.SignerHmacSecret))
-	mac.Write([]byte(ts + "." + nonce + "." + string(body)))
-	signature := hex.EncodeToString(mac.Sum(nil))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, bw.cfg.SignerUrl+"/hd/transfer", bytes.NewReader(body))
 	if err != nil {
@@ -160,9 +150,7 @@ func (bw *BuySendWorker) processBuyOnchainSend(event Event) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-ts", ts)
-	req.Header.Set("x-nonce", nonce)
-	req.Header.Set("x-signer-hmac", signature)
+	security.SignRawBodyHeaders(req, bw.cfg.SignerHmacSecret, body)
 
 	resp, err := bw.client.Do(req)
 	if err != nil {
