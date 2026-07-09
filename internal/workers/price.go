@@ -78,41 +78,62 @@ func (pw *PriceWorker) Start(ctx context.Context) {
 
 func (pw *PriceWorker) fetchPrice() {
 	start := time.Now()
-	prices, source, err := pw.fetchCoinGeckoPrices()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	prices, source, err := pw.fetchCoinGeckoPrices(ctx)
+	cancel()
 	if err != nil {
 		slog.Warn("CoinGecko indisponivel, tentando fallback Binance", "error", err)
-		prices, source, err = pw.fetchBinancePrices()
+		ctx, cancel = context.WithTimeout(context.Background(), 8*time.Second)
+		prices, source, err = pw.fetchBinancePrices(ctx)
+		cancel()
 	}
 	if err != nil {
 		slog.Error("Erro ao atualizar cotacoes", "error", err)
 		return
 	}
+
 	pw.mu.Lock()
+	// Só publica evento se houve mudança significativa (evita spam)
+	changed := false
 	for key, value := range prices {
 		if value > 0 {
-			pw.prices[key] = value
+			if old, exists := pw.prices[key]; !exists || abs(value-old) > 0.0001 {
+				pw.prices[key] = value
+				changed = true
+			}
 		}
 	}
-	payload := make(map[string]any, len(pw.prices))
-	for key, value := range pw.prices {
-		payload[key] = value
-	}
-	pw.mu.Unlock()
 
-	slog.Info("Cotacoes atualizadas", "source", source, "duration_ms", time.Since(start).Milliseconds())
-	pw.bus.Publish(Event{Type: "price.updated", Payload: payload})
+	if changed {
+		payload := make(map[string]any, len(pw.prices))
+		for key, value := range pw.prices {
+			payload[key] = value
+		}
+		pw.mu.Unlock()
+
+		slog.Info("Cotacoes atualizadas", "source", source, "duration_ms", time.Since(start).Milliseconds())
+		pw.bus.Publish(Event{Type: "price.updated", Payload: payload})
+	} else {
+		pw.mu.Unlock()
+		slog.Debug("Cotacoes sem alteracoes significativas", "source", source)
+	}
 }
 
-func (pw *PriceWorker) fetchCoinGeckoPrices() (map[string]float64, string, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.coingecko.com/api/v3/simple/price?ids=tether,bitcoin&vs_currencies=brl,usd,eur", nil)
+func (pw *PriceWorker) fetchCoinGeckoPrices(ctx context.Context) (map[string]float64, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://api.coingecko.com/api/v3/simple/price?ids=tether,bitcoin&vs_currencies=brl,usd,eur", nil)
 	if err != nil {
 		return nil, "", err
 	}
+	req.Header.Set("User-Agent", "PaymentGateway/1.0") // Bom pra evitar bloqueios
+
 	resp, err := pw.client.Do(req)
 	if err != nil {
 		return nil, "", err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("coingecko status %d", resp.StatusCode)
 	}
@@ -121,6 +142,7 @@ func (pw *PriceWorker) fetchCoinGeckoPrices() (map[string]float64, string, error
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, "", err
 	}
+
 	prices := map[string]float64{
 		"BRL":            data.Tether.Brl,
 		"USD":            data.Tether.Usd,
@@ -132,6 +154,7 @@ func (pw *PriceWorker) fetchCoinGeckoPrices() (map[string]float64, string, error
 		"USDTEUR":        data.Tether.Eur,
 		"BTCUSDT_SOURCE": data.Bitcoin.Usd,
 	}
+
 	if prices["BRL"] <= 0 || prices["USD"] <= 0 {
 		return nil, "", fmt.Errorf("coingecko payload sem USDT BRL/USD")
 	}
@@ -147,7 +170,7 @@ func (pw *PriceWorker) fetchCoinGeckoPrices() (map[string]float64, string, error
 	return prices, "coingecko", nil
 }
 
-func (pw *PriceWorker) fetchBinancePrices() (map[string]float64, string, error) {
+func (pw *PriceWorker) fetchBinancePrices(ctx context.Context) (map[string]float64, string, error) {
 	symbols := map[string]string{
 		"BRL":     "USDTBRL",
 		"USDTBRL": "USDTBRL",
@@ -155,8 +178,9 @@ func (pw *PriceWorker) fetchBinancePrices() (map[string]float64, string, error) 
 		"EURUSD":  "EURUSDT",
 	}
 	prices := map[string]float64{"USD": 1, "USDTUSD": 1}
+
 	for key, symbol := range symbols {
-		price, err := pw.fetchBinanceTicker(symbol)
+		price, err := pw.fetchBinanceTicker(ctx, symbol)
 		if err != nil {
 			slog.Warn("Ticker Binance indisponivel", "symbol", symbol, "error", err)
 			continue
@@ -173,26 +197,40 @@ func (pw *PriceWorker) fetchBinancePrices() (map[string]float64, string, error) 
 	return prices, "binance", nil
 }
 
-func (pw *PriceWorker) fetchBinanceTicker(symbol string) (float64, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.binance.com/api/v3/ticker/price?symbol="+symbol, nil)
+func (pw *PriceWorker) fetchBinanceTicker(ctx context.Context, symbol string) (float64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://api.binance.com/api/v3/ticker/price?symbol="+symbol, nil)
 	if err != nil {
 		return 0, err
 	}
+	req.Header.Set("User-Agent", "PaymentGateway/1.0")
+
 	resp, err := pw.client.Do(req)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("binance status %d", resp.StatusCode)
 	}
+
 	var data BinanceTickerResponse
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return 0, err
 	}
+
 	price, err := strconv.ParseFloat(data.Price, 64)
 	if err != nil {
 		return 0, err
 	}
 	return price, nil
+}
+
+// Helper
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
