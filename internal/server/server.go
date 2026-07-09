@@ -1356,26 +1356,34 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	gaps := s.operationalGaps()
+	certOK, certErr := s.efiCertificateReady()
 	status := http.StatusOK
-	if s.cfg.IsProduction() && len(gaps) > 0 {
+	if s.cfg.IsProduction() && (len(gaps) > 0 || !certOK) {
 		status = http.StatusServiceUnavailable
 	}
 	writeJSON(w, status, map[string]any{
-		"ok":       len(gaps) == 0,
-		"db":       true,
-		"network":  s.deliveryNetwork(),
-		"bsc":      s.cfg.BscRpcUrls != "" && s.cfg.BscUsdtContract != "",
-		"pix":      s.efiPixConfigured() && defaultString(s.cfg.PixWebhookSecret, s.cfg.WebhookSecret) != "",
-		"stripe":   defaultString(s.cfg.StripeWebhookSecret, s.cfg.WebhookSecret) != "",
-		"signer":   s.cfg.SignerUrl != "" && s.cfg.SignerHmacSecret != "",
-		"mode":     s.cfg.Environment,
-		"warnings": gaps,
+		"ok":              len(gaps) == 0 && certOK,
+		"db":              true,
+		"network":         s.deliveryNetwork(),
+		"bsc":             s.cfg.BscRpcUrls != "" && s.cfg.BscUsdtContract != "",
+		"pix":             s.efiPixConfigured() && certOK && defaultString(s.cfg.PixWebhookSecret, s.cfg.WebhookSecret) != "",
+		"efi_certificate": certOK,
+		"efi_cert_path":   s.cfg.EfiCertificatePath,
+		"efi_cert_error":  certErr,
+		"stripe":          defaultString(s.cfg.StripeWebhookSecret, s.cfg.WebhookSecret) != "",
+		"signer":          s.cfg.SignerUrl != "" && s.cfg.SignerHmacSecret != "",
+		"mode":            s.cfg.Environment,
+		"warnings":        gaps,
 	})
 }
 
 func (s *Server) operationalGaps() []string {
 	checks := map[string]bool{
-		"pix_provider":   s.efiPixConfigured(),
+		"pix_provider": s.efiPixConfigured(),
+		"efi_certificate": func() bool {
+			ok, _ := s.efiCertificateReady()
+			return ok
+		}(),
 		"pix_webhook":    defaultString(s.cfg.PixWebhookSecret, s.cfg.WebhookSecret) != "",
 		"stripe_webhook": defaultString(s.cfg.StripeWebhookSecret, s.cfg.WebhookSecret) != "",
 		"signer":         s.cfg.SignerUrl != "" && s.cfg.SignerHmacSecret != "",
@@ -1933,6 +1941,16 @@ func (s *Server) efiPixConfigured() bool {
 		strings.TrimSpace(s.cfg.EfiClientSecret) != "" &&
 		strings.TrimSpace(s.cfg.EfiPixKey) != "" &&
 		strings.TrimSpace(s.cfg.EfiCertificatePath) != ""
+}
+
+func (s *Server) efiCertificateReady() (bool, string) {
+	if !s.efiPixConfigured() {
+		return false, "credenciais Efí incompletas"
+	}
+	if _, err := s.loadEfiCertificate(strings.TrimSpace(s.cfg.EfiCertificatePath), strings.TrimSpace(s.cfg.EfiCertificateKey)); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
 }
 
 func (s *Server) createEfiPixCharge(ctx context.Context, buyID string, amountFiat float64, customer paymentCustomerInput) (map[string]any, error) {
