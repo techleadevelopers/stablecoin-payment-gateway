@@ -1,0 +1,88 @@
+4.4 Webhook Retry System
+yaml
+O que já tem:
+- POST /webhooks/retry
+- X-ChainFX-Event header
+- X-ChainFX-Signature header
+
+O que falta:
+- internal/webhooks/retry_queue.go - Fila de retry
+- internal/webhooks/delivery.go - Entrega com backoff
+- internal/webhooks/registry.go - Registro de webhooks
+- internal/webhooks/logs.go - Logs de entrega
+- internal/webhooks/dashboard.go - Dashboard de webhooks
+🎯 FASE 5: EXPANSÃO OPERACIONAL
+5.1 Multi-Asset Support
+yaml
+Assets a adicionar:
+- USDC (BSC)
+- BUSD (BSC)
+- EURC (BSC)
+- DAI (BSC)
+- WBTC (BSC)
+- WETH (BSC)
+
+Implementação:
+- internal/assets/asset.go - Modelo de asset
+- internal/assets/registry.go - Registro de assets
+- internal/assets/policies.go - Políticas por asset
+- internal/assets/limits.go - Limites por asset
+- internal/assets/fees.go - Taxas por asset
+5.2 Multi-Country Support
+yaml
+Países a suportar:
+- Brasil (BRL)
+- Argentina (ARS)
+- Chile (CLP)
+- Colômbia (COP)
+- México (MXN)
+- Peru (PEN)
+
+Implementação:
+- internal/countries/country.go - Modelo de país
+- internal/countries/regulations.go - Regulamentações
+- internal/countries/payment_methods.go - Métodos de pagamento
+- internal/countries/compliance.go - Compliance por país
+- internal/countries/localization.go - Localização (idioma, moeda)
+5.3 Multi-Rail Payment Support
+yaml
+Rails de pagamento:
+- PIX (Brasil) - ✅ Implementado
+- SPEI (México)
+- FedNow (EUA)
+- SEPA (Europa)
+- PayID (Austrália)
+- UPI (Índia)
+- Bizum (Espanha)
+
+Implementação:
+- internal/payments/rail.go - Interface de rail
+- internal/payments/pix.go - PIX (Brasil)
+- internal/payments/spei.go - SPEI (México)
+- internal/payments/fednow.go - FedNow (EUA)
+- internal/payments/sepa.go - SEPA (Europa)
+- internal/payments/factory.go - Factory de rails
+5.4 Additional SDKs
+yaml
+SDKs a implementar:
+- SDK Go
+- SDK PHP
+- SDK Java
+- SDK Kotlin
+- SDK Swift
+
+Estrutura:
+- sdk/go/
+- sdk/php/
+- sdk/java/
+- sdk/kotlin/
+- sdk/swift/
+- sdk/flutter/
+- sdk/react-native/
+
+Artefatos:
+- README.md (instalação)
+- Exemplos de uso
+- Testes
+- CI/CD
+- Publicação em package managers

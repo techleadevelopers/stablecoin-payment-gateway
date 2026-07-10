@@ -22,12 +22,15 @@ import (
 	"sync"
 	"time"
 
+	"payment-gateway/internal/agents"
 	"payment-gateway/internal/config"
 	"payment-gateway/internal/database"
 	"payment-gateway/internal/email"
+	"payment-gateway/internal/mcp"
 	"payment-gateway/internal/models"
 	"payment-gateway/internal/privacy"
 	"payment-gateway/internal/settlement"
+	"payment-gateway/internal/webhooks"
 	"payment-gateway/internal/workers"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -35,23 +38,39 @@ import (
 )
 
 type Server struct {
-	cfg     *config.Config
-	db      *database.DB
-	workers *workers.WorkerManager
-	email   *email.Service
-	limiter *rateLimiter
+	cfg      *config.Config
+	db       *database.DB
+	workers  *workers.WorkerManager
+	email    *email.Service
+	limiter  *rateLimiter
+	agents   *agents.Client
+	webhooks *webhooks.Dispatcher
+	mcp      *mcp.Server
 }
 
 type requestIDContextKey struct{}
 
 func New(cfg *config.Config, db *database.DB, workerMgr *workers.WorkerManager, mailer *email.Service) *Server {
+	agentsClient := agents.NewClient(cfg)
+	dispatcher := webhooks.New(db, cfg)
+	mcpServer := mcp.New(db, cfg, workerMgr.PriceWorker, agentsClient, dispatcher)
 	return &Server{
-		cfg:     cfg,
-		db:      db,
-		workers: workerMgr,
-		email:   mailer,
-		limiter: newRateLimiter(cfg.OrderRateLimitWindowMs, cfg.OrderRateLimitMax),
+		cfg:      cfg,
+		db:       db,
+		workers:  workerMgr,
+		email:    mailer,
+		limiter:  newRateLimiter(cfg.OrderRateLimitWindowMs, cfg.OrderRateLimitMax),
+		agents:   agentsClient,
+		webhooks: dispatcher,
+		mcp:      mcpServer,
 	}
+}
+
+// StartAutomation launches the webhook dispatcher that listens on the
+// worker event bus and fans events out to n8n/Zapier/Make subscriptions.
+// Must be called once after the server is constructed.
+func (s *Server) StartAutomation(ctx context.Context) {
+	s.webhooks.Start(ctx, s.workers.Bus)
 }
 
 func (s *Server) transactionFee(amountFiat float64, fiatCurrency string, rate float64) float64 {
@@ -167,6 +186,24 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /internal/email/test", s.handleEmailTest)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, map[string]any{"ok": true}) })
 	mux.HandleFunc("GET /readyz", s.handleReady)
+
+	// Fase 4: Automação e IA
+	if s.cfg.MCPEnabled {
+		s.mcp.RegisterRoutes(mux, func(w http.ResponseWriter, r *http.Request) bool {
+			_, _, ok := s.authorizeAdmin(w, r)
+			return ok
+		})
+	}
+	mux.HandleFunc("POST /api/agents/market-analysis", s.handleAgentMarketAnalysis)
+	mux.HandleFunc("POST /api/agents/recommend", s.handleAgentRecommend)
+	mux.HandleFunc("POST /api/agents/anomalies", s.handleAgentAnomalies)
+	mux.HandleFunc("POST /api/agents/predict", s.handleAgentPredict)
+	mux.HandleFunc("POST /api/agents/summary", s.handleAgentSummary)
+	mux.HandleFunc("GET /api/webhooks/events", s.handleListWebhookEvents)
+	mux.HandleFunc("POST /api/webhooks/subscriptions", s.handleCreateWebhookSubscription)
+	mux.HandleFunc("GET /api/webhooks/subscriptions", s.handleListWebhookSubscriptions)
+	mux.HandleFunc("DELETE /api/webhooks/subscriptions/{id}", s.handleDeleteWebhookSubscription)
+	mux.HandleFunc("POST /api/webhooks/subscriptions/{id}/trigger-test", s.handleTestWebhookSubscription)
 	return securityHeaders(cors(s.cfg, withRequestID(logRequests(mux))))
 }
 

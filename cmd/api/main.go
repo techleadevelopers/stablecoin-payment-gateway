@@ -42,6 +42,7 @@ func main() {
 
 	mailer := email.NewService(cfg)
 	api := server.New(cfg, db, workerMgr, mailer)
+	api.StartAutomation(ctx)
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      api.Handler(),

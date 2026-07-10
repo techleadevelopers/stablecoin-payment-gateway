@@ -1,0 +1,2 @@
+- [Go toolchain mismatch in this repl](go-toolchain.md) — go.mod requires go 1.25 but only 1.21 was installed; install the go-1.25 module first or builds fail with a checksum-lookup error that looks unrelated.
+- [ChainFX webhook/SSRF policy](chainfx-webhooks-ssrf.md) — any new outbound-webhook feature (n8n/Zapier/Make style) must validate target URLs against private/loopback ranges at creation AND at send time, and never serialize stored secrets.

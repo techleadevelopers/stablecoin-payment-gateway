@@ -87,6 +87,14 @@ type Config struct {
 
 	// LGPD / auditoria
 	LGPDSecret string
+
+	// IA / Automação (Fase 4)
+	OpenAIAPIKey       string
+	OpenAIModel        string
+	OpenAIBaseURL      string
+	MCPEnabled         bool
+	WebhooksEnabled    bool
+	WebhooksMaxRetries int
 }
 
 // LoadConfig é o cara que lê o .env e joga para dentro da estrutura acima
@@ -165,6 +173,13 @@ func LoadConfig() *Config {
 		SMTPFromName:  getEnv("SMTP_FROM_NAME", "Swappy Financial"),
 		OpsEmail:      getEnv("OPS_EMAIL", getEnv("SMTP_FROM_EMAIL", "")),
 		LGPDSecret:    getEnv("LGPD_SECRET", ""),
+
+		OpenAIAPIKey:       getEnv("OPENAI_API_KEY", ""),
+		OpenAIModel:        getEnv("OPENAI_MODEL", "gpt-4o-mini"),
+		OpenAIBaseURL:      getEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+		MCPEnabled:         getEnvAsBool("MCP_ENABLED", true),
+		WebhooksEnabled:    getEnvAsBool("WEBHOOKS_ENABLED", true),
+		WebhooksMaxRetries: getEnvAsInt("WEBHOOKS_MAX_RETRIES", 3),
 	}
 }
 

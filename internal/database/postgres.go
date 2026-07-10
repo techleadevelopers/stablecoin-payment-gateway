@@ -1143,4 +1143,36 @@ CREATE TABLE IF NOT EXISTS buy_order_events (
 ALTER TABLE buy_order_events ADD COLUMN IF NOT EXISTS request_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_buy_webhook_provider_once ON buy_order_events (buy_order_id, (payload ->> 'providerId')) WHERE type = 'webhook.provider' AND payload ? 'providerId';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_order_idempotency_once ON order_events (order_id, (payload ->> 'key')) WHERE type = 'idempotency' AND payload ? 'key';
+
+CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+  id UUID PRIMARY KEY,
+  provider VARCHAR(32) NOT NULL DEFAULT 'generic',
+  target_url TEXT NOT NULL,
+  secret TEXT,
+  events TEXT[] NOT NULL DEFAULT '{}',
+  active BOOLEAN NOT NULL DEFAULT true,
+  description TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_triggered_at TIMESTAMPTZ,
+  last_status_code INT,
+  last_error TEXT,
+  failure_count INT NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_subscriptions_active ON webhook_subscriptions(active);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id UUID PRIMARY KEY,
+  subscription_id UUID REFERENCES webhook_subscriptions(id) ON DELETE CASCADE,
+  event VARCHAR(64) NOT NULL,
+  payload JSONB,
+  status_code INT,
+  ok BOOLEAN NOT NULL DEFAULT false,
+  error TEXT,
+  attempt INT NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_subscription ON webhook_deliveries(subscription_id, created_at DESC);
 `
