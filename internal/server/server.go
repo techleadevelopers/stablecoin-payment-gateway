@@ -374,12 +374,13 @@ func (s *Server) handlePrice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"brl":     price,
-		"usd":     s.workers.PriceWorker.GetPrice("USD"),
-		"eur":     s.workers.PriceWorker.GetPrice("EUR"),
-		"usdtbrl": s.workers.PriceWorker.GetPrice("USDTBRL"),
-		"eurusd":  s.workers.PriceWorker.GetPrice("EURUSD"),
-		"btcusdt": s.workers.PriceWorker.GetPrice("BTCUSDT"),
+		"brl":         price,
+		"usd":         s.workers.PriceWorker.GetPrice("USD"),
+		"eur":         s.workers.PriceWorker.GetPrice("EUR"),
+		"usdtbrl":     s.workers.PriceWorker.GetPrice("USDTBRL"),
+		"sellUsdtBrl": s.sellRate(price),
+		"eurusd":      s.workers.PriceWorker.GetPrice("EURUSD"),
+		"btcusdt":     s.workers.PriceWorker.GetPrice("BTCUSDT"),
 	})
 }
 
@@ -396,11 +397,12 @@ func (s *Server) handleChainFXRates(w http.ResponseWriter, r *http.Request) {
 		"description": "Accept PIX. Deliver digital dollars. Receive stablecoins. Pay out PIX.",
 		"base":        "USDT",
 		"rates": map[string]float64{
-			"USDT_BRL": s.workers.PriceWorker.GetPrice("BRL"),
-			"USDT_USD": s.workers.PriceWorker.GetPrice("USD"),
-			"USDT_EUR": s.workers.PriceWorker.GetPrice("EUR"),
-			"BTC_USDT": s.workers.PriceWorker.GetPrice("BTCUSDT"),
-			"EUR_USD":  s.workers.PriceWorker.GetPrice("EURUSD"),
+			"USDT_BRL":      s.workers.PriceWorker.GetPrice("BRL"),
+			"SELL_USDT_BRL": s.sellRate(price),
+			"USDT_USD":      s.workers.PriceWorker.GetPrice("USD"),
+			"USDT_EUR":      s.workers.PriceWorker.GetPrice("EUR"),
+			"BTC_USDT":      s.workers.PriceWorker.GetPrice("BTCUSDT"),
+			"EUR_USD":       s.workers.PriceWorker.GetPrice("EURUSD"),
 		},
 		"supportedAssets": []string{"USDT"},
 		"roadmapAssets":   []string{"EURUSDT", "BTC"},
