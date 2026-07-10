@@ -5,17 +5,18 @@
 // automation trigger (order.created, order.completed, order.failed,
 // payment.received, payout.sent, price.change, dca.executed), fans the
 // event out to every active subscription that opted into it.
+//
+// The package is split by responsibility:
+//   - registry.go     — subscription CRUD (create/list/get/delete/enable).
+//   - delivery.go      — a single signed HTTP POST attempt.
+//   - retry_queue.go   — async delivery with exponential backoff.
+//   - logs.go          — read access to persisted delivery attempts.
+//   - dashboard.go     — aggregated health summary for operators.
 package webhooks
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -61,27 +62,32 @@ const (
 	ProviderGeneric = "generic"
 )
 
-// Dispatcher subscribes to the internal event bus and delivers webhooks to
-// every registered automation subscription.
+// Dispatcher subscribes to the internal event bus, translates internal
+// events into canonical automation triggers, and hands off delivery to a
+// RetryQueue so slow/unreachable receivers never block the event bus.
 type Dispatcher struct {
 	db         *database.DB
 	cfg        *config.Config
 	client     *http.Client
 	maxRetries int
+	queue      *RetryQueue
 }
 
-// New creates a Dispatcher. Call Start to begin consuming bus events.
+// New creates a Dispatcher and its backing retry queue. Call Start to begin
+// consuming bus events.
 func New(db *database.DB, cfg *config.Config) *Dispatcher {
 	maxRetries := cfg.WebhooksMaxRetries
 	if maxRetries <= 0 {
 		maxRetries = 1
 	}
-	return &Dispatcher{
+	d := &Dispatcher{
 		db:         db,
 		cfg:        cfg,
 		client:     &http.Client{Timeout: 10 * time.Second},
 		maxRetries: maxRetries,
 	}
+	d.queue = NewRetryQueue(d, 4)
+	return d
 }
 
 // busEventMapping translates an internal worker bus event type into zero or
@@ -116,6 +122,7 @@ func (d *Dispatcher) Start(ctx context.Context, bus *workers.EventBus) {
 		slog.Info("Webhooks: automação desabilitada (WEBHOOKS_ENABLED=false)")
 		return
 	}
+	d.queue.Start(ctx)
 	busTypes := []string{
 		"order.created", "buy.created", "buy.paid", "payout.settled",
 		"buy.sent", "sweep.sent", "price.updated", "dca.buy.requested",
@@ -159,9 +166,10 @@ func (d *Dispatcher) handle(ctx context.Context, ev workers.Event) {
 	}
 }
 
-// Emit delivers an automation event to every active subscription listening
-// for it. It is exported so other parts of the app (or the MCP server) can
-// trigger events synthetically, e.g. for testing a Zap/scenario.
+// Emit enqueues an automation event for every active subscription listening
+// for it; delivery (with retry/backoff) happens asynchronously on the
+// RetryQueue. It is exported so other parts of the app (or the MCP server)
+// can trigger events synthetically, e.g. for testing a Zap/scenario.
 func (d *Dispatcher) Emit(ctx context.Context, event string, payload map[string]any) []map[string]any {
 	subs, err := d.db.ListActiveWebhookSubscriptionsForEvent(ctx, event)
 	if err != nil {
@@ -171,89 +179,30 @@ func (d *Dispatcher) Emit(ctx context.Context, event string, payload map[string]
 	payload["event"] = event
 	results := make([]map[string]any, 0, len(subs))
 	for _, sub := range subs {
-		result := d.deliverWithRetry(ctx, sub, event, payload)
-		results = append(results, result)
+		d.queue.Enqueue(sub, event, payload)
+		results = append(results, map[string]any{"subscriptionId": sub.ID, "queued": true})
 	}
 	return results
 }
 
-func (d *Dispatcher) deliverWithRetry(ctx context.Context, sub *database.WebhookSubscription, event string, payload map[string]any) map[string]any {
-	var last map[string]any
-	for attempt := 1; attempt <= d.maxRetries; attempt++ {
-		result, statusCode, ok, deliveryErr := d.deliverOnce(ctx, sub, event, payload)
-		_ = d.db.RecordWebhookDelivery(ctx, sub.ID, event, payload, statusCode, ok, deliveryErr, attempt)
-		last = result
-		if ok {
-			return result
-		}
-		if attempt < d.maxRetries {
-			time.Sleep(time.Duration(attempt) * time.Second)
-		}
-	}
-	return last
-}
-
-func (d *Dispatcher) deliverOnce(ctx context.Context, sub *database.WebhookSubscription, event string, payload map[string]any) (map[string]any, int, bool, string) {
-	// Re-validate at send time: DNS can change between subscription creation
-	// and delivery (rebinding), so never trust a stored URL blindly.
-	if err := ValidateTargetURL(sub.TargetURL); err != nil {
-		return map[string]any{"subscriptionId": sub.ID, "attempted": false, "error": err.Error()}, 0, false, err.Error()
-	}
-	raw, _ := json.Marshal(payload)
-	reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, sub.TargetURL, bytes.NewReader(raw))
+// EmitSync delivers an automation event synchronously (single attempt, no
+// retry/backoff) and returns the outcome per subscription. Used by the
+// "trigger test webhook" tool/endpoint, where callers want immediate
+// feedback rather than a fire-and-forget queue entry.
+func (d *Dispatcher) EmitSync(ctx context.Context, event string, payload map[string]any) []map[string]any {
+	subs, err := d.db.ListActiveWebhookSubscriptionsForEvent(ctx, event)
 	if err != nil {
-		return map[string]any{"subscriptionId": sub.ID, "attempted": false, "error": err.Error()}, 0, false, err.Error()
+		slog.Warn("Webhooks: erro ao listar assinaturas", "event", event, "err", err)
+		return nil
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "ChainFX-Automation/1.0")
-	req.Header.Set("X-ChainFX-Event", event)
-	req.Header.Set("X-ChainFX-Provider", providerHeaderName(sub.Provider))
-	if sig := sign(sub.Secret, raw); sig != "" {
-		req.Header.Set("X-ChainFX-Signature", sig)
+	payload["event"] = event
+	results := make([]map[string]any, 0, len(subs))
+	for _, sub := range subs {
+		result := d.deliverOnce(ctx, sub, event, payload)
+		_ = d.db.RecordWebhookDelivery(ctx, sub.ID, event, payload, result.StatusCode, result.OK, result.Error, 1)
+		results = append(results, result.toMap())
 	}
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return map[string]any{"subscriptionId": sub.ID, "attempted": true, "ok": false, "error": err.Error()}, 0, false, err.Error()
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	ok := resp.StatusCode >= 200 && resp.StatusCode < 300
-	result := map[string]any{
-		"subscriptionId": sub.ID,
-		"attempted":      true,
-		"ok":             ok,
-		"statusCode":     resp.StatusCode,
-		"body":           string(body),
-	}
-	errMsg := ""
-	if !ok {
-		errMsg = "unexpected status code"
-	}
-	return result, resp.StatusCode, ok, errMsg
-}
-
-func providerHeaderName(provider string) string {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case ProviderN8N:
-		return "n8n"
-	case ProviderZapier:
-		return "zapier"
-	case ProviderMake:
-		return "make"
-	default:
-		return "generic"
-	}
-}
-
-func sign(secret string, raw []byte) string {
-	if strings.TrimSpace(secret) == "" {
-		return ""
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(raw)
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return results
 }
 
 // ValidateTargetURL rejects webhook targets that could be used for SSRF:

@@ -184,10 +184,10 @@ Implementado neste repositorio:
 - Fase 1: API REST, webhooks basicos, sandbox operacional e documentacao inicial.
 - Fase 2: Developer Dashboard, API keys, logs operacionais e retry de webhook.
 - Fase 3: SDK Node, SDK Python, OpenAPI e exemplos de integracao.
+- Fase 4: MCP server, OpenAI Agents, webhooks n8n/Zapier/Make e retry system com fila e backoff.
 
 Planejado para integracao futura:
 
-- Fase 4: n8n, Zapier, Make, MCP, OpenAI Agents e exemplos para agentes IA.
 - Fase 5: expansao de assets, paises e rails adicionais.
 
 Nao faz parte do escopo atual:
@@ -367,14 +367,11 @@ quote = chainfx.quote(side="buy", fiat="BRL", asset="USDT", amount=500)
 
 ### Roadmap futuro
 
-Fase 4 sera integrada futuramente com foco em automacao e IA:
+Fase 4 integrada com foco em automacao e IA:
 
-- MCP server.
-- OpenAI Agents examples.
-- LangGraph tool examples.
-- n8n node.
-- Zapier app.
-- Make integration.
+- MCP server (`/mcp/initialize`, `/mcp/tools/*`, `/mcp/resources/*`, `/mcp/prompts/list`).
+- OpenAI Agents (`/api/agents/*`): analise de mercado, recomendacao, deteccao de anomalias, previsao de preco, resumo de transacoes.
+- Webhooks de automacao n8n/Zapier/Make (`/api/webhooks/subscriptions`), com fila de retry, backoff, registro e logs de entrega.
 
 Fase 5 sera integrada futuramente com foco em expansao operacional:
 

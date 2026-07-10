@@ -38,14 +38,17 @@ import (
 )
 
 type Server struct {
-	cfg      *config.Config
-	db       *database.DB
-	workers  *workers.WorkerManager
-	email    *email.Service
-	limiter  *rateLimiter
-	agents   *agents.Client
-	webhooks *webhooks.Dispatcher
-	mcp      *mcp.Server
+	cfg              *config.Config
+	db               *database.DB
+	workers          *workers.WorkerManager
+	email            *email.Service
+	limiter          *rateLimiter
+	agents           *agents.Client
+	webhooks         *webhooks.Dispatcher
+	webhookRegistry  *webhooks.Registry
+	webhookLogs      *webhooks.Logs
+	webhookDashboard *webhooks.Dashboard
+	mcp              *mcp.Server
 }
 
 type requestIDContextKey struct{}
@@ -55,14 +58,17 @@ func New(cfg *config.Config, db *database.DB, workerMgr *workers.WorkerManager, 
 	dispatcher := webhooks.New(db, cfg)
 	mcpServer := mcp.New(db, cfg, workerMgr.PriceWorker, agentsClient, dispatcher)
 	return &Server{
-		cfg:      cfg,
-		db:       db,
-		workers:  workerMgr,
-		email:    mailer,
-		limiter:  newRateLimiter(cfg.OrderRateLimitWindowMs, cfg.OrderRateLimitMax),
-		agents:   agentsClient,
-		webhooks: dispatcher,
-		mcp:      mcpServer,
+		cfg:              cfg,
+		db:               db,
+		workers:          workerMgr,
+		email:            mailer,
+		limiter:          newRateLimiter(cfg.OrderRateLimitWindowMs, cfg.OrderRateLimitMax),
+		agents:           agentsClient,
+		webhooks:         dispatcher,
+		webhookRegistry:  webhooks.NewRegistry(db),
+		webhookLogs:      webhooks.NewLogs(db),
+		webhookDashboard: webhooks.NewDashboard(db),
+		mcp:              mcpServer,
 	}
 }
 
@@ -203,7 +209,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/webhooks/subscriptions", s.handleCreateWebhookSubscription)
 	mux.HandleFunc("GET /api/webhooks/subscriptions", s.handleListWebhookSubscriptions)
 	mux.HandleFunc("DELETE /api/webhooks/subscriptions/{id}", s.handleDeleteWebhookSubscription)
+	mux.HandleFunc("PATCH /api/webhooks/subscriptions/{id}", s.handleSetWebhookSubscriptionActive)
 	mux.HandleFunc("POST /api/webhooks/subscriptions/{id}/trigger-test", s.handleTestWebhookSubscription)
+	mux.HandleFunc("GET /api/webhooks/subscriptions/{id}/logs", s.handleWebhookSubscriptionLogs)
+	mux.HandleFunc("GET /api/webhooks/dashboard", s.handleWebhookDashboard)
 	return securityHeaders(cors(s.cfg, withRequestID(logRequests(mux))))
 }
 

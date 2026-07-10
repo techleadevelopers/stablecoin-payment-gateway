@@ -131,6 +131,76 @@ func (db *DB) RecordWebhookDelivery(ctx context.Context, subscriptionID, event s
 	return err
 }
 
+// WebhookDelivery is a single logged delivery attempt for a subscription.
+type WebhookDelivery struct {
+	ID             string          `json:"id"`
+	SubscriptionID string          `json:"subscriptionId"`
+	Event          string          `json:"event"`
+	Payload        json.RawMessage `json:"payload"`
+	StatusCode     int             `json:"statusCode"`
+	OK             bool            `json:"ok"`
+	Error          *string         `json:"error,omitempty"`
+	Attempt        int             `json:"attempt"`
+	CreatedAt      time.Time       `json:"createdAt"`
+}
+
+// ListWebhookDeliveries returns the most recent delivery attempts for a
+// subscription, newest first, capped at limit (defaults to 50).
+func (db *DB) ListWebhookDeliveries(ctx context.Context, subscriptionID string, limit int) ([]*WebhookDelivery, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	rows, err := db.SQL.QueryContext(ctx, `
+		SELECT id, subscription_id, event, payload, status_code, ok, error, attempt, created_at
+		FROM webhook_deliveries
+		WHERE subscription_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2`, subscriptionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*WebhookDelivery
+	for rows.Next() {
+		var d WebhookDelivery
+		var errMsg sql.NullString
+		if err := rows.Scan(&d.ID, &d.SubscriptionID, &d.Event, &d.Payload, &d.StatusCode, &d.OK, &errMsg, &d.Attempt, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		if errMsg.Valid {
+			d.Error = &errMsg.String
+		}
+		out = append(out, &d)
+	}
+	return out, rows.Err()
+}
+
+// WebhookDeliveryStats summarizes delivery health across all subscriptions
+// (or a single one, when subscriptionID is non-empty) over the last 24h.
+type WebhookDeliveryStats struct {
+	TotalSubscriptions  int `json:"totalSubscriptions"`
+	ActiveSubscriptions int `json:"activeSubscriptions"`
+	Deliveries24h       int `json:"deliveries24h"`
+	Failures24h         int `json:"failures24h"`
+}
+
+// WebhookDashboardStats aggregates subscription and delivery health for the
+// webhook dashboard.
+func (db *DB) WebhookDashboardStats(ctx context.Context) (*WebhookDeliveryStats, error) {
+	var stats WebhookDeliveryStats
+	if err := db.SQL.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(CASE WHEN active THEN 1 ELSE 0 END), 0)
+		FROM webhook_subscriptions`).Scan(&stats.TotalSubscriptions, &stats.ActiveSubscriptions); err != nil {
+		return nil, err
+	}
+	if err := db.SQL.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(CASE WHEN NOT ok THEN 1 ELSE 0 END), 0)
+		FROM webhook_deliveries WHERE created_at > now() - interval '24 hours'`).Scan(&stats.Deliveries24h, &stats.Failures24h); err != nil {
+		return nil, err
+	}
+	return &stats, nil
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }

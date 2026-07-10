@@ -156,26 +156,9 @@ func (s *Server) handleCreateWebhookSubscription(w http.ResponseWriter, r *http.
 		return
 	}
 	req.TargetURL = strings.TrimSpace(req.TargetURL)
-	if err := webhooks.ValidateTargetURL(req.TargetURL); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	if req.Provider == "" {
-		req.Provider = webhooks.ProviderGeneric
-	}
-	var validEvents []string
-	for _, e := range req.Events {
-		if webhooks.IsKnownEvent(e) {
-			validEvents = append(validEvents, e)
-		}
-	}
-	if len(validEvents) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "events deve conter ao menos um evento válido", "validEvents": webhooks.AllEvents()})
-		return
-	}
-	sub, err := s.db.CreateWebhookSubscription(r.Context(), req.Provider, req.TargetURL, req.Secret, req.Description, validEvents)
+	sub, err := s.webhookRegistry.Create(r.Context(), req.Provider, req.TargetURL, req.Secret, req.Description, req.Events)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "falha ao criar assinatura"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "validEvents": webhooks.AllEvents()})
 		return
 	}
 	writeJSON(w, http.StatusCreated, sub)
@@ -185,7 +168,7 @@ func (s *Server) handleListWebhookSubscriptions(w http.ResponseWriter, r *http.R
 	if _, _, ok := s.authorizeAdmin(w, r); !ok {
 		return
 	}
-	subs, err := s.db.ListWebhookSubscriptions(r.Context())
+	subs, err := s.webhookRegistry.List(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "falha ao listar assinaturas"})
 		return
@@ -198,11 +181,30 @@ func (s *Server) handleDeleteWebhookSubscription(w http.ResponseWriter, r *http.
 		return
 	}
 	id := r.PathValue("id")
-	if err := s.db.DeleteWebhookSubscription(r.Context(), id); err != nil {
+	if err := s.webhookRegistry.Delete(r.Context(), id); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "falha ao remover assinatura"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+func (s *Server) handleSetWebhookSubscriptionActive(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.authorizeAdmin(w, r); !ok {
+		return
+	}
+	var req struct {
+		Active bool `json:"active"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "JSON inválido"})
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.webhookRegistry.SetActive(r.Context(), id, req.Active); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "falha ao atualizar assinatura"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"active": req.Active})
 }
 
 func (s *Server) handleTestWebhookSubscription(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +212,7 @@ func (s *Server) handleTestWebhookSubscription(w http.ResponseWriter, r *http.Re
 		return
 	}
 	id := r.PathValue("id")
-	sub, err := s.db.GetWebhookSubscription(r.Context(), id)
+	sub, err := s.webhookRegistry.Get(r.Context(), id)
 	if err != nil || sub == nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "assinatura não encontrada"})
 		return
@@ -219,6 +221,33 @@ func (s *Server) handleTestWebhookSubscription(w http.ResponseWriter, r *http.Re
 	if len(sub.Events) > 0 {
 		event = sub.Events[0]
 	}
-	results := s.webhooks.Emit(r.Context(), event, map[string]any{"test": true, "subscriptionId": sub.ID})
+	results := s.webhooks.EmitSync(r.Context(), event, map[string]any{"test": true, "subscriptionId": sub.ID})
 	writeJSON(w, http.StatusOK, map[string]any{"event": event, "results": results})
+}
+
+// ── Fase 4.4: Webhook Retry System — logs & dashboard ───────────────────
+
+func (s *Server) handleWebhookSubscriptionLogs(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.authorizeAdmin(w, r); !ok {
+		return
+	}
+	id := r.PathValue("id")
+	deliveries, err := s.webhookLogs.ForSubscription(r.Context(), id, 100)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "falha ao listar entregas"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deliveries": deliveries})
+}
+
+func (s *Server) handleWebhookDashboard(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.authorizeAdmin(w, r); !ok {
+		return
+	}
+	summary, err := s.webhookDashboard.Summary(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "falha ao montar dashboard"})
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
 }

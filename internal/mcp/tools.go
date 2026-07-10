@@ -297,5 +297,5 @@ func (s *Server) toolTriggerTestWebhook(ctx context.Context, args map[string]any
 	if payload == nil {
 		payload = map[string]any{"test": true}
 	}
-	return s.dispatch.Emit(ctx, event, payload), nil
+	return s.dispatch.EmitSync(ctx, event, payload), nil
 }
