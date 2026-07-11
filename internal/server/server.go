@@ -16,21 +16,19 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/mail"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"payment-gateway/internal/agents"
 	"payment-gateway/internal/config"
 	"payment-gateway/internal/database"
 	"payment-gateway/internal/email"
-	"payment-gateway/internal/mcp"
 	"payment-gateway/internal/models"
 	"payment-gateway/internal/privacy"
 	"payment-gateway/internal/settlement"
-	"payment-gateway/internal/webhooks"
 	"payment-gateway/internal/workers"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -38,48 +36,39 @@ import (
 )
 
 type Server struct {
-	cfg              *config.Config
-	db               *database.DB
-	workers          *workers.WorkerManager
-	email            *email.Service
-	limiter          *rateLimiter
-	agents           *agents.Client
-	webhooks         *webhooks.Dispatcher
-	webhookRegistry  *webhooks.Registry
-	webhookLogs      *webhooks.Logs
-	webhookDashboard *webhooks.Dashboard
-	mcp              *mcp.Server
+	cfg     *config.Config
+	db      *database.DB
+	workers *workers.WorkerManager
+	email   *email.Service
+	limiter *rateLimiter
 }
 
 type requestIDContextKey struct{}
 
+type buyFeeBreakdown struct {
+	Tier          string  `json:"tier"`
+	ServiceBps    int     `json:"serviceBps"`
+	ServiceFee    float64 `json:"serviceFee"`
+	NetworkFee    float64 `json:"networkFee"`
+	MinFee        float64 `json:"minFee"`
+	TotalFee      float64 `json:"totalFee"`
+	RateSpreadBps int     `json:"rateSpreadBps"`
+}
+
 func New(cfg *config.Config, db *database.DB, workerMgr *workers.WorkerManager, mailer *email.Service) *Server {
-	agentsClient := agents.NewClient(cfg)
-	dispatcher := webhooks.New(db, cfg)
-	mcpServer := mcp.New(db, cfg, workerMgr.PriceWorker, agentsClient, dispatcher)
 	return &Server{
-		cfg:              cfg,
-		db:               db,
-		workers:          workerMgr,
-		email:            mailer,
-		limiter:          newRateLimiter(cfg.OrderRateLimitWindowMs, cfg.OrderRateLimitMax),
-		agents:           agentsClient,
-		webhooks:         dispatcher,
-		webhookRegistry:  webhooks.NewRegistry(db),
-		webhookLogs:      webhooks.NewLogs(db),
-		webhookDashboard: webhooks.NewDashboard(db),
-		mcp:              mcpServer,
+		cfg:     cfg,
+		db:      db,
+		workers: workerMgr,
+		email:   mailer,
+		limiter: newRateLimiter(cfg.OrderRateLimitWindowMs, cfg.OrderRateLimitMax),
 	}
 }
 
-// StartAutomation launches the webhook dispatcher that listens on the
-// worker event bus and fans events out to n8n/Zapier/Make subscriptions.
-// Must be called once after the server is constructed.
-func (s *Server) StartAutomation(ctx context.Context) {
-	s.webhooks.Start(ctx, s.workers.Bus)
-}
-
 func (s *Server) transactionFee(amountFiat float64, fiatCurrency string, rate float64) float64 {
+	if strings.EqualFold(fiatCurrency, "BRL") {
+		return s.buyFeeBreakdown(amountFiat).TotalFee
+	}
 	percentFee := amountFiat * (float64(s.cfg.FeeBps) / 10000)
 	fixedFee := s.cfg.FeeFixedUsd
 	perUsdtFee := s.cfg.FeePerUsdtUsd * (amountFiat / rate)
@@ -92,6 +81,50 @@ func (s *Server) transactionFee(amountFiat float64, fiatCurrency string, rate fl
 		fee = s.cfg.FeeMinBrl
 	}
 	return fee
+}
+
+func (s *Server) buyFeeBreakdown(amountBRL float64) buyFeeBreakdown {
+	bps := s.cfg.BuyTier3Bps
+	tier := "tier3"
+	switch {
+	case amountBRL < s.cfg.BuyTier1MaxBrl:
+		bps = s.cfg.BuyTier1Bps
+		tier = "tier1"
+	case amountBRL < s.cfg.BuyTier2MaxBrl:
+		bps = s.cfg.BuyTier2Bps
+		tier = "tier2"
+	}
+	serviceFee := round2(amountBRL * float64(bps) / 10000)
+	networkFee := round2(s.cfg.BuyNetworkFeeBrl)
+	totalFee := round2(serviceFee + networkFee)
+	minFee := round2(s.cfg.BuyMinFeeBrl)
+	if totalFee < minFee {
+		totalFee = minFee
+	}
+	return buyFeeBreakdown{
+		Tier:          tier,
+		ServiceBps:    bps,
+		ServiceFee:    serviceFee,
+		NetworkFee:    networkFee,
+		MinFee:        minFee,
+		TotalFee:      totalFee,
+		RateSpreadBps: s.cfg.BuyRateSpreadBps,
+	}
+}
+
+func (s *Server) buyMinBRL() float64 {
+	if s.cfg.BuyTier1MinBrl > s.cfg.OrderMinBrl {
+		return s.cfg.BuyTier1MinBrl
+	}
+	return s.cfg.OrderMinBrl
+}
+
+func (s *Server) buyRate(marketRate float64) float64 {
+	spreadBps := s.cfg.BuyRateSpreadBps
+	if spreadBps < 0 {
+		spreadBps = 0
+	}
+	return roundRate(marketRate * (1 + float64(spreadBps)/10000))
 }
 
 func (s *Server) feePolicy(fiatCurrency string, rate float64) map[string]any {
@@ -108,8 +141,17 @@ func (s *Server) feePolicy(fiatCurrency string, rate float64) map[string]any {
 		"fixedFiat":       fixedFiat,
 		"perUsdtUsd":      s.cfg.FeePerUsdtUsd,
 		"perUsdtFiat":     perUsdtFiat,
+		"buyMinBRL":       s.buyMinBRL(),
+		"buyTier1Bps":     s.cfg.BuyTier1Bps,
+		"buyTier1MaxBRL":  s.cfg.BuyTier1MaxBrl,
+		"buyTier2Bps":     s.cfg.BuyTier2Bps,
+		"buyTier2MaxBRL":  s.cfg.BuyTier2MaxBrl,
+		"buyTier3Bps":     s.cfg.BuyTier3Bps,
+		"networkFeeBRL":   s.cfg.BuyNetworkFeeBrl,
+		"minFeeBRL":       s.cfg.BuyMinFeeBrl,
+		"rateSpreadBps":   s.cfg.BuyRateSpreadBps,
 		"fiatCurrency":    strings.ToUpper(fiatCurrency),
-		"description":     "2% + US$0.03 por USDT",
+		"description":     "Tiered BUY fee + network fee + minimum fee + rate spread",
 		"backendEnforced": true,
 	}
 }
@@ -126,15 +168,53 @@ func (s *Server) sellRate(marketRate float64) float64 {
 	if s.cfg.SellUsdtBrlRate > 0 {
 		return roundRate(s.cfg.SellUsdtBrlRate)
 	}
-	bps := s.cfg.SellRateBps
-	if bps <= 0 || bps > 10000 {
-		bps = 10000
+	if s.cfg.SellRateBps > 0 {
+		bps := s.cfg.SellRateBps
+		if bps > 10000 {
+			bps = 10000
+		}
+		return roundRate(marketRate * float64(bps) / 10000)
 	}
-	return roundRate(marketRate * float64(bps) / 10000)
+	return s.sellRateForAmount(0, marketRate)
+}
+
+func (s *Server) sellRateForAmount(amountUSDT, marketRate float64) float64 {
+	spreadBps := s.sellSpreadBps(amountUSDT, marketRate)
+	return roundRate(marketRate * (1 - float64(spreadBps)/10000))
+}
+
+func (s *Server) sellSpreadBps(amountUSDT, marketRate float64) int {
+	if s.cfg.SellUsdtBrlRate > 0 && marketRate > 0 {
+		spread := int(math.Round((1 - s.cfg.SellUsdtBrlRate/marketRate) * 10000))
+		if spread < 0 {
+			return 0
+		}
+		return spread
+	}
+	if s.cfg.SellRateBps > 0 {
+		spread := 10000 - s.cfg.SellRateBps
+		if spread < 0 {
+			return 0
+		}
+		return spread
+	}
+	minBps := s.cfg.SellSpreadMinBps
+	maxBps := s.cfg.SellSpreadMaxBps
+	if minBps < 0 {
+		minBps = 0
+	}
+	if maxBps < minBps {
+		maxBps = minBps
+	}
+	marketValue := amountUSDT * marketRate
+	if s.cfg.SellSpreadHighValueBrl > 0 && marketValue >= s.cfg.SellSpreadHighValueBrl {
+		return minBps
+	}
+	return maxBps
 }
 
 func (s *Server) sellQuote(amountUSDT, marketRate float64) (sellRate, payoutBRL, spreadBRL float64) {
-	sellRate = s.sellRate(marketRate)
+	sellRate = s.sellRateForAmount(amountUSDT, marketRate)
 	payoutBRL = round2(amountUSDT * sellRate)
 	spreadBRL = round2(amountUSDT * math.Max(marketRate-sellRate, 0))
 	return sellRate, payoutBRL, spreadBRL
@@ -190,29 +270,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/stripe/webhook/buy", s.handleStripeWebhookBuy)
 	mux.HandleFunc("POST /internal/sweep", s.handleInternalSweep)
 	mux.HandleFunc("POST /internal/email/test", s.handleEmailTest)
+	mux.HandleFunc("POST /internal/email/marketing", s.handleMarketingEmail)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, map[string]any{"ok": true}) })
 	mux.HandleFunc("GET /readyz", s.handleReady)
-
-	// Fase 4: Automação e IA
-	if s.cfg.MCPEnabled {
-		s.mcp.RegisterRoutes(mux, func(w http.ResponseWriter, r *http.Request) bool {
-			_, _, ok := s.authorizeAdmin(w, r)
-			return ok
-		})
-	}
-	mux.HandleFunc("POST /api/agents/market-analysis", s.handleAgentMarketAnalysis)
-	mux.HandleFunc("POST /api/agents/recommend", s.handleAgentRecommend)
-	mux.HandleFunc("POST /api/agents/anomalies", s.handleAgentAnomalies)
-	mux.HandleFunc("POST /api/agents/predict", s.handleAgentPredict)
-	mux.HandleFunc("POST /api/agents/summary", s.handleAgentSummary)
-	mux.HandleFunc("GET /api/webhooks/events", s.handleListWebhookEvents)
-	mux.HandleFunc("POST /api/webhooks/subscriptions", s.handleCreateWebhookSubscription)
-	mux.HandleFunc("GET /api/webhooks/subscriptions", s.handleListWebhookSubscriptions)
-	mux.HandleFunc("DELETE /api/webhooks/subscriptions/{id}", s.handleDeleteWebhookSubscription)
-	mux.HandleFunc("PATCH /api/webhooks/subscriptions/{id}", s.handleSetWebhookSubscriptionActive)
-	mux.HandleFunc("POST /api/webhooks/subscriptions/{id}/trigger-test", s.handleTestWebhookSubscription)
-	mux.HandleFunc("GET /api/webhooks/subscriptions/{id}/logs", s.handleWebhookSubscriptionLogs)
-	mux.HandleFunc("GET /api/webhooks/dashboard", s.handleWebhookDashboard)
 	return securityHeaders(cors(s.cfg, withRequestID(logRequests(mux))))
 }
 
@@ -272,15 +332,16 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "amountFiat deve ser maior que zero"})
 		return
 	}
-	if fiatCurrency == "BRL" && (amountFiat < s.cfg.OrderMinBrl || amountFiat > s.cfg.OrderMaxBrl) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("valor fora dos limites (%.2f - %.2f BRL)", s.cfg.OrderMinBrl, s.cfg.OrderMaxBrl)})
+	if fiatCurrency == "BRL" && (amountFiat < s.buyMinBRL() || amountFiat > s.cfg.OrderMaxBrl) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("valor fora dos limites (%.2f - %.2f BRL)", s.buyMinBRL(), s.cfg.OrderMaxBrl)})
 		return
 	}
-	rate := s.workers.PriceWorker.GetPrice(fiatCurrency)
-	if rate <= 0 {
+	marketRate := s.workers.PriceWorker.GetPrice(fiatCurrency)
+	if marketRate <= 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "cotacao ainda nao carregada"})
 		return
 	}
+	rate := s.buyRate(marketRate)
 	fee := s.transactionFee(amountFiat, fiatCurrency, rate)
 	payout := amountFiat
 	if payout <= 0 {
@@ -334,6 +395,7 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 		RateLocked:        rate,
 		RateLockExpiresAt: time.Now().Add(time.Duration(s.cfg.RateLockSec) * time.Second),
 		PixPayload:        paymentPayload,
+		CustomerEmail:     customerInput.Email,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -343,9 +405,9 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 	s.workers.Bus.Publish(workers.Event{Type: "buy.created", OrderID: buy.ID, Payload: map[string]any{"requestId": requestID(r), "amountFiat": totalFiat, "fiatCurrency": fiatCurrency, "paymentMethod": paymentMethod}})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"buyId": buy.ID, "id": buy.ID, "accessToken": buy.AccessToken, "status": buy.Status, "amountFiat": totalFiat, "subtotalFiat": amountFiat, "fiatCurrency": fiatCurrency, "paymentMethod": paymentMethod, "feeFiat": fee, "totalFiat": totalFiat, "payoutFiat": payout,
-		"rate": rate, "cryptoAmount": cryptoAmount, "asset": asset, "network": deliveryNetwork, "destAddress": buy.DestAddress,
-		"feePolicy": s.feePolicy(fiatCurrency, rate),
-		"pixKey":    paymentPayload["pixKey"], "qrCodeUrl": paymentPayload["qrCodeUrl"], "payment": paymentPayload,
+		"rate": rate, "marketRate": roundRate(marketRate), "cryptoAmount": cryptoAmount, "asset": asset, "network": deliveryNetwork, "destAddress": buy.DestAddress,
+		"feePolicy": s.feePolicy(fiatCurrency, rate), "feeBreakdown": s.buyFeeBreakdown(amountFiat),
+		"pixKey": paymentPayload["pixKey"], "qrCodeUrl": paymentPayload["qrCodeUrl"], "payment": paymentPayload,
 		"orderUrl":  fmt.Sprintf("/order/%s?accessToken=%s", buy.ID, buy.AccessToken),
 		"statusUrl": fmt.Sprintf("/api/buy/%s?accessToken=%s", buy.ID, buy.AccessToken),
 		"streamUrl": fmt.Sprintf("/api/buy/%s/stream?accessToken=%s", buy.ID, buy.AccessToken),
@@ -504,8 +566,8 @@ func (s *Server) handleChainFXQuote(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "amount must be greater than zero"})
 		return
 	}
-	if side != "sell" && fiatCurrency == "BRL" && (amountFiat < s.cfg.OrderMinBrl || amountFiat > s.cfg.OrderMaxBrl) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("amount outside limits (%.2f - %.2f BRL)", s.cfg.OrderMinBrl, s.cfg.OrderMaxBrl)})
+	if side != "sell" && fiatCurrency == "BRL" && (amountFiat < s.buyMinBRL() || amountFiat > s.cfg.OrderMaxBrl) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("amount outside limits (%.2f - %.2f BRL)", s.buyMinBRL(), s.cfg.OrderMaxBrl)})
 		return
 	}
 	marketRate := s.workers.PriceWorker.GetPrice(fiatCurrency)
@@ -541,7 +603,7 @@ func (s *Server) handleChainFXQuote(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	rate := marketRate
+	rate := s.buyRate(marketRate)
 	fee := s.transactionFee(amountFiat, fiatCurrency, rate)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"quoteId":      "qt_" + strings.ReplaceAll(database.NewID(), "-", ""),
@@ -549,8 +611,10 @@ func (s *Server) handleChainFXQuote(w http.ResponseWriter, r *http.Request) {
 		"fiat":         fiatCurrency,
 		"asset":        asset,
 		"rate":         rate,
+		"marketRate":   roundRate(marketRate),
 		"fiatAmount":   amountFiat,
 		"feeFiat":      fee,
+		"feeBreakdown": s.buyFeeBreakdown(amountFiat),
 		"totalFiat":    amountFiat + fee,
 		"cryptoAmount": amountFiat / rate,
 		"paymentRail":  paymentMethod,
@@ -1175,8 +1239,8 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "amountFiat deve ser maior que zero"})
 		return
 	}
-	if mode != "sell" && fiatCurrency == "BRL" && (amountFiat < s.cfg.OrderMinBrl || amountFiat > s.cfg.OrderMaxBrl) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("valor fora dos limites (%.2f - %.2f BRL)", s.cfg.OrderMinBrl, s.cfg.OrderMaxBrl)})
+	if mode != "sell" && fiatCurrency == "BRL" && (amountFiat < s.buyMinBRL() || amountFiat > s.cfg.OrderMaxBrl) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("valor fora dos limites (%.2f - %.2f BRL)", s.buyMinBRL(), s.cfg.OrderMaxBrl)})
 		return
 	}
 	marketRate := s.workers.PriceWorker.GetPrice(fiatCurrency)
@@ -1210,7 +1274,7 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	rate := marketRate
+	rate := s.buyRate(marketRate)
 	fee := s.transactionFee(amountFiat, fiatCurrency, rate)
 	payout := amountFiat
 	if payout <= 0 {
@@ -1229,7 +1293,9 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 		"totalFiat":         totalFiat,
 		"payoutFiat":        payout,
 		"feePolicy":         s.feePolicy(fiatCurrency, rate),
+		"feeBreakdown":      s.buyFeeBreakdown(amountFiat),
 		"rate":              rate,
+		"marketRate":        roundRate(marketRate),
 		"cryptoAmount":      payout / rate,
 		"rateLockExpiresAt": time.Now().Add(time.Duration(s.cfg.RateLockSec) * time.Second),
 	})
@@ -1249,13 +1315,14 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		Asset        string  `json:"asset"`
 		PixCpf       string  `json:"pixCpf"`
 		PixPhone     string  `json:"pixPhone"`
+		Email        string  `json:"email"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "JSON invÃ¡lido"})
 		return
 	}
-	if req.PixCpf == "" && req.PixPhone == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "pixCpf ou pixPhone e obrigatorio"})
+	if req.PixCpf == "" || req.PixPhone == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "CPF e chave PIX sao obrigatorios"})
 		return
 	}
 	network := strings.ToUpper(defaultString(req.Network, "BSC"))
@@ -1278,6 +1345,15 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	if !common.IsHexAddress(depositAddress) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "endereco BSC invalido"})
+		return
+	}
+	hasPending, err := s.db.HasPendingOrderForAddress(ctx, depositAddress)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if hasPending {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "ja existe uma ordem SELL aguardando deposito neste endereco"})
 		return
 	}
 
@@ -1323,6 +1399,7 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		RequestID:         requestID(r),
 		PixCpf:            req.PixCpf,
 		PixPhone:          req.PixPhone,
+		Email:             req.Email,
 		DerivationIndex:   idx,
 	})
 	if err != nil {
@@ -1378,9 +1455,25 @@ func (s *Server) handleOrderStream(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			status := string(order.Status)
-			if status != last {
-				last = status
-				raw, _ := json.Marshal(map[string]any{"status": status, "txHash": order.TxHash})
+			depositTx := ""
+			if order.DepositTx != nil {
+				depositTx = *order.DepositTx
+			}
+			txHash := ""
+			if order.TxHash != nil {
+				txHash = *order.TxHash
+			}
+			key := fmt.Sprintf("%s|%s|%s", status, depositTx, txHash)
+			if key != last {
+				last = key
+				raw, _ := json.Marshal(map[string]any{
+					"status":        status,
+					"txHash":        txHash,
+					"depositTx":     depositTx,
+					"depositAmount": order.DepositAmount,
+					"payoutBRL":     order.PayoutBRL,
+					"error":         order.Error,
+				})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", raw)
 				if flusher != nil {
 					flusher.Flush()
@@ -1643,6 +1736,7 @@ func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
 		To      string `json:"to"`
 		Subject string `json:"subject"`
 		Body    string `json:"body"`
+		HTML    string `json:"html"`
 	}
 	if err := json.Unmarshal(raw, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "JSON invÃ¡lido"})
@@ -1654,11 +1748,83 @@ func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
 	if req.Body == "" {
 		req.Body = "ServiÃ§o de email operacional ativo."
 	}
-	if err := s.email.Send(email.Message{To: req.To, Subject: req.Subject, Body: req.Body}); err != nil {
+	if err := s.email.Send(email.Message{To: req.To, Subject: req.Subject, Body: req.Body, HTMLBody: req.HTML}); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleMarketingEmail(w http.ResponseWriter, r *http.Request) {
+	raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if !validHMAC(s.cfg.SignerHmacSecret, raw, r.Header.Get("x-internal-hmac")) {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "assinatura invalida"})
+		return
+	}
+	var req struct {
+		Emails         []string `json:"emails"`
+		Subject        string   `json:"subject"`
+		Headline       string   `json:"headline"`
+		Intro          string   `json:"intro"`
+		Body           string   `json:"body"`
+		CTA            string   `json:"cta"`
+		CTAURL         string   `json:"ctaUrl"`
+		UnsubscribeURL string   `json:"unsubscribeUrl"`
+		Source         string   `json:"source"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "JSON invalido"})
+		return
+	}
+	if len(req.Emails) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "lista de emails vazia"})
+		return
+	}
+	if len(req.Emails) > 500 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "limite de 500 emails por envio"})
+		return
+	}
+	campaign := email.MarketingCampaign{
+		Subject:     req.Subject,
+		Headline:    req.Headline,
+		Intro:       req.Intro,
+		Body:        req.Body,
+		CTA:         req.CTA,
+		CTAURL:      req.CTAURL,
+		Unsubscribe: req.UnsubscribeURL,
+	}
+	var sent, skipped int
+	var failures []string
+	seen := map[string]bool{}
+	for _, rawEmail := range req.Emails {
+		addr, err := mail.ParseAddress(strings.TrimSpace(rawEmail))
+		if err != nil || addr.Address == "" {
+			skipped++
+			continue
+		}
+		to := strings.ToLower(addr.Address)
+		if seen[to] {
+			skipped++
+			continue
+		}
+		seen[to] = true
+		if err := s.db.UpsertMarketingContact(r.Context(), to, firstNonEmpty(req.Source, "internal_campaign")); err != nil {
+			failures = append(failures, to+": "+err.Error())
+			continue
+		}
+		if err := s.email.SendMarketing(to, campaign); err != nil {
+			failures = append(failures, to+": "+err.Error())
+			continue
+		}
+		sent++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       len(failures) == 0,
+		"sent":     sent,
+		"skipped":  skipped,
+		"failed":   len(failures),
+		"failures": failures,
+	})
 }
 
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
