@@ -286,6 +286,8 @@ INSERT INTO agent_supported_assets (symbol, network, contract_address, decimals,
 VALUES
   ('USDT', 'BSC', '0x55d398326f99059fF775485246999027B3197955', 18, 600, 5.00, 'active', true),
   ('USDC', 'BSC', '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d', 18, 600, 5.00, 'active', true),
+  ('USDT', 'POLYGON', '0xc2132D05D31c914a87C6611C10748AEb04B58e8F', 6, 600, 5.00, 'active', true),
+  ('USDC', 'POLYGON', '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', 6, 600, 5.00, 'active', true),
   ('BUSD', 'BSC', '0xe9e7cea3dedca5984780bafc599b69add087d56', 18, 600, 5.00, 'legacy', false)
 ON CONFLICT (symbol, network) DO NOTHING;
 
