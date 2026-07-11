@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-// RequestContext contém metadados da requisição validada
 type RequestContext struct {
 	RequestID string
 	Timestamp int64
@@ -27,7 +26,6 @@ type RequestContext struct {
 	StartTime time.Time
 }
 
-// RequestValidator valida requisições completas
 type RequestValidator struct {
 	hmac         *HMACValidator
 	nonceManager *NonceManager
@@ -35,7 +33,6 @@ type RequestValidator struct {
 	maxBodySize  int64
 }
 
-// RequestValidatorConfig configuração do validador
 type RequestValidatorConfig struct {
 	HMACSecret      string
 	HMACMaxSkew     int64
@@ -48,25 +45,19 @@ type RequestValidatorConfig struct {
 	OldSecret       string
 }
 
-// NewRequestValidator cria um novo validador de requisições
 func NewRequestValidator(config RequestValidatorConfig) *RequestValidator {
-	hmac := NewHMACValidator(config.HMACSecret, config.HMACMaxSkew)
+	hmacValidator := NewHMACValidator(config.HMACSecret, config.HMACMaxSkew)
 	if config.OldSecret != "" {
-		hmac.SetOldSecret(config.OldSecret)
+		hmacValidator.SetOldSecret(config.OldSecret)
 	}
-
-	nonceMgr := NewNonceManager(config.NonceStore, config.NonceTTL)
-	rateLimiter := NewRateLimiter(config.RateLimiterType, config.RateLimit, config.RateWindow)
-
 	return &RequestValidator{
-		hmac:         hmac,
-		nonceManager: nonceMgr,
-		rateLimiter:  rateLimiter,
+		hmac:         hmacValidator,
+		nonceManager: NewNonceManager(config.NonceStore, config.NonceTTL),
+		rateLimiter:  NewRateLimiter(config.RateLimiterType, config.RateLimit, config.RateWindow),
 		maxBodySize:  config.MaxBodySize,
 	}
 }
 
-// ValidateRequest valida uma requisição HTTP completa
 func (rv *RequestValidator) ValidateRequest(r *http.Request) (*RequestContext, error) {
 	ctx := &RequestContext{
 		RequestID: generateRequestID(),
@@ -77,48 +68,53 @@ func (rv *RequestValidator) ValidateRequest(r *http.Request) (*RequestContext, e
 		UserAgent: r.UserAgent(),
 	}
 
-	// 1. Limite de tamanho do body
 	if rv.maxBodySize > 0 && r.ContentLength > rv.maxBodySize {
 		return ctx, fmt.Errorf("body size exceeds limit: %d > %d", r.ContentLength, rv.maxBodySize)
 	}
 
-	// 2. Lê body com limite
 	body, err := io.ReadAll(io.LimitReader(r.Body, rv.maxBodySize))
 	if err != nil {
 		return ctx, fmt.Errorf("failed to read body: %w", err)
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	// 3. Calcula hash do body
 	bodyHash := sha256.Sum256(body)
 	ctx.BodyHash = hex.EncodeToString(bodyHash[:])
 
-	// 4. Extrai headers de segurança
 	tsStr := r.Header.Get("X-Request-Timestamp")
 	nonce := r.Header.Get("X-Request-Nonce")
 	hmacHeader := r.Header.Get("X-Request-Signature")
-	apiKey := r.Header.Get("X-API-Key")
+	legacySignerHMAC := false
+	if tsStr == "" && nonce == "" && hmacHeader == "" {
+		tsStr = r.Header.Get("x-ts")
+		nonce = r.Header.Get("x-nonce")
+		hmacHeader = r.Header.Get("x-signer-hmac")
+		legacySignerHMAC = hmacHeader != ""
+	}
 
+	apiKey := r.Header.Get("X-API-Key")
 	if apiKey != "" {
 		ctx.APIKey = apiKey
 	}
 
-	// 5. Valida HMAC (se presente)
 	if hmacHeader != "" {
-		if err := rv.hmac.ValidateHMAC(tsStr, nonce, hmacHeader, body); err != nil {
+		if legacySignerHMAC {
+			err = rv.hmac.ValidateRawBodyHMAC(tsStr, nonce, hmacHeader, body)
+		} else {
+			err = rv.hmac.ValidateHMAC(tsStr, nonce, hmacHeader, body)
+		}
+		if err != nil {
 			return ctx, fmt.Errorf("hmac validation failed: %w", err)
 		}
 		ctx.Validated = true
 	}
 
-	// 6. Valida nonce (anti-replay)
 	if nonce != "" {
 		if err := rv.nonceManager.ValidateNonce(r.Context(), nonce); err != nil {
 			return ctx, fmt.Errorf("nonce validation failed: %w", err)
 		}
 	}
 
-	// 7. Rate limit (por IP + API Key)
 	rateKey := ctx.ClientIP
 	if ctx.APIKey != "" {
 		rateKey = ctx.APIKey
@@ -127,19 +123,14 @@ func (rv *RequestValidator) ValidateRequest(r *http.Request) (*RequestContext, e
 		return ctx, fmt.Errorf("rate limit exceeded for key: %s", rateKey)
 	}
 
-	// 8. Extrai timestamp
 	if tsStr != "" {
 		ts, _ := strconv.ParseInt(tsStr, 10, 64)
 		ctx.Timestamp = ts
 	}
 	ctx.Nonce = nonce
-
 	return ctx, nil
 }
 
-// --- Middleware HTTP ---
-
-// SecurityMiddleware middleware HTTP que aplica todas as validações
 func (rv *RequestValidator) SecurityMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, err := rv.ValidateRequest(r)
@@ -147,20 +138,15 @@ func (rv *RequestValidator) SecurityMiddleware(next http.Handler) http.Handler {
 			http.Error(w, fmt.Sprintf("Security validation failed: %v", err), http.StatusUnauthorized)
 			return
 		}
-
-		// Adiciona contexto na requisição
 		ctxValue := context.WithValue(r.Context(), RequestContextKey, ctx)
 		next.ServeHTTP(w, r.WithContext(ctxValue))
 	})
 }
 
-// --- Context Keys ---
-
 type contextKey string
 
 const RequestContextKey contextKey = "request_context"
 
-// GetRequestContext recupera o contexto da requisição
 func GetRequestContext(ctx context.Context) *RequestContext {
 	if val := ctx.Value(RequestContextKey); val != nil {
 		if rc, ok := val.(*RequestContext); ok {
@@ -170,10 +156,12 @@ func GetRequestContext(ctx context.Context) *RequestContext {
 	return nil
 }
 
-// --- Helpers ---
-
 func generateRequestID() string {
-	return fmt.Sprintf("req-%d-%s", time.Now().UnixNano(), hex.EncodeToString([]byte(GenerateNonce()[:8])))
+	nonce := GenerateNonce()
+	if len(nonce) > 8 {
+		nonce = nonce[:8]
+	}
+	return fmt.Sprintf("req-%d-%s", time.Now().UnixNano(), hex.EncodeToString([]byte(nonce)))
 }
 
 func getClientIP(r *http.Request) string {
