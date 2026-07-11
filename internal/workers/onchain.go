@@ -90,11 +90,22 @@ func (ow *OnchainWorker) poll(ctx context.Context) {
 		return
 	}
 
-	fromBlock := ow.getCursor(pollCtx, latestBlock)
-	if fromBlock >= latestBlock {
+	if latestBlock <= requiredConfirmations {
+		slog.Debug("OnchainWorker: aguardando blocos suficientes", "latest", latestBlock)
 		return
 	}
-	toBlock := min64(fromBlock+scanBlockRange, latestBlock)
+	scanHead := latestBlock - requiredConfirmations
+
+	fromBlock := ow.getCursor(pollCtx, scanHead)
+	if fromBlock >= scanHead {
+		return
+	}
+	toBlock := min64(fromBlock+scanBlockRange, scanHead)
+	if toBlock <= fromBlock {
+		slog.Warn("OnchainWorker: faixa de blocos invalida, pulando poll",
+			"from", fromBlock, "to", toBlock, "latest", latestBlock, "scan_head", scanHead)
+		return
+	}
 
 	// Fetch pending orders. On error: do NOT advance cursor — we'd miss deposits.
 	pendingOrders, err := ow.db.GetPendingOrders(pollCtx)
@@ -236,7 +247,7 @@ func (ow *OnchainWorker) getCursor(ctx context.Context, latestBlock uint64) uint
 	block, found, err := ow.db.GetCursor(ctx, "BSC")
 
 	if err != nil || !found || block == 0 {
-		return latestBlock - 1000
+		return subtractFloor(latestBlock, 1000)
 	}
 
 	// evita pedir histórico gigante no RPC
@@ -250,7 +261,7 @@ func (ow *OnchainWorker) getCursor(ctx context.Context, latestBlock uint64) uint
 			"latest", latestBlock,
 		)
 
-		return latestBlock - 1000
+		return subtractFloor(latestBlock, 1000)
 	}
 
 	return uint64(block)
@@ -276,4 +287,11 @@ func min64(a, b uint64) uint64 {
 		return a
 	}
 	return b
+}
+
+func subtractFloor(n, delta uint64) uint64 {
+	if n <= delta {
+		return 0
+	}
+	return n - delta
 }
