@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"seuprojeto/internal/security" // ← NOVO IMPORT
+	"payment-gateway/internal/security"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -46,12 +46,12 @@ func main() {
 		slog.Error("configuracao insegura para producao", "error", err)
 		os.Exit(1)
 	}
-	
+
 	// ===== NOVO: Configurar Security =====
-	validator, middleware := setupSecurity(cfg)
-	
+	_, middleware := setupSecurity(cfg)
+
 	// Validações existentes
-	if cfg.HMACSecret == "" {
+	if cfg.Security.HMACSecret == "" {
 		slog.Error("HMAC_SECRET obrigatorio")
 		os.Exit(1)
 	}
@@ -59,7 +59,7 @@ func main() {
 		slog.Error("EVM_PRIVATE_KEY obrigatorio para BSC/EVM")
 		os.Exit(1)
 	}
-	
+
 	storeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	store, err := openSignerStore(storeCtx, cfg)
@@ -88,7 +88,7 @@ func main() {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeSignerJSON(w, map[string]any{"ok": true, "service": "signer"})
 	})
-	
+
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
@@ -132,29 +132,34 @@ func main() {
 			http.Error(w, "metodo nao permitido", http.StatusMethodNotAllowed)
 			return
 		}
-		
+
 		// Recupera contexto da requisição (já validado pelo middleware)
 		reqCtx := security.GetRequestContext(r.Context())
 		if reqCtx == nil {
 			http.Error(w, "contexto nao encontrado", http.StatusInternalServerError)
 			return
 		}
-		
+
 		// Lê body (já validado pelo middleware)
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
 			http.Error(w, "erro ao ler body", http.StatusBadRequest)
 			return
 		}
-		
+
 		// Nonce já foi validado pelo middleware, mas ainda precisamos verificar no store
 		// O middleware já validou o HMAC e o Nonce, mas precisamos persistir o nonce no store
 		// para anti-replay entre instâncias
-		if err := store.AcceptNonce(r.Context(), reqCtx.Nonce, cfg.GetNonceTTL()); err != nil {
+		accepted, err := store.AcceptNonce(r.Context(), reqCtx.Nonce, cfg.GetNonceTTL())
+		if err != nil {
 			http.Error(w, "storage indisponivel", http.StatusServiceUnavailable)
 			return
 		}
-		
+		if !accepted {
+			http.Error(w, "nonce ja utilizado", http.StatusUnauthorized)
+			return
+		}
+
 		var payload struct {
 			Note string `json:"note"`
 		}
@@ -171,31 +176,36 @@ func main() {
 			http.Error(w, "metodo nao permitido", http.StatusMethodNotAllowed)
 			return
 		}
-		
+
 		if locked, reason := custodyGuard.Locked(); locked {
 			slog.Error("transferencia bloqueada por custody guard", "reason", reason)
 			http.Error(w, "custody guard lockdown", http.StatusLocked)
 			return
 		}
-		
+
 		// Recupera contexto da requisição (já validado pelo middleware)
 		reqCtx := security.GetRequestContext(r.Context())
 		if reqCtx == nil {
 			http.Error(w, "contexto nao encontrado", http.StatusInternalServerError)
 			return
 		}
-		
+
 		// Lê body (já validado pelo middleware)
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
 			http.Error(w, "erro ao ler body", http.StatusBadRequest)
 			return
 		}
-		
+
 		// Persiste nonce no store (anti-replay entre instâncias)
-		if err := store.AcceptNonce(r.Context(), reqCtx.Nonce, cfg.GetNonceTTL()); err != nil {
+		accepted, err := store.AcceptNonce(r.Context(), reqCtx.Nonce, cfg.GetNonceTTL())
+		if err != nil {
 			slog.Error("falha ao persistir nonce", "error", err)
 			http.Error(w, "storage indisponivel", http.StatusServiceUnavailable)
+			return
+		}
+		if !accepted {
+			http.Error(w, "nonce ja utilizado", http.StatusUnauthorized)
 			return
 		}
 
@@ -204,15 +214,15 @@ func main() {
 			http.Error(w, "JSON invalido", http.StatusBadRequest)
 			return
 		}
-		
+
 		// Log com RequestID
-		slog.Info("transferencia recebida", 
+		slog.Info("transferencia recebida",
 			"requestId", reqCtx.RequestID,
-			"to", shortValue(req.To), 
+			"to", shortValue(req.To),
 			"amount", req.Amount,
 			"network", requestedNetwork(cfg, req),
 		)
-		
+
 		previous, done, claimed, err := store.ClaimResult(r.Context(), req.IdempotencyKey)
 		if err != nil {
 			slog.Error("falha ao reservar idempotencia", "error", err)
@@ -231,10 +241,10 @@ func main() {
 		resp, err := executeTransfer(r.Context(), cfg, store, req)
 		if err != nil {
 			_ = store.ReleaseClaim(r.Context(), req.IdempotencyKey)
-			slog.Error("falha ao executar transferencia", 
-				"error", err, 
+			slog.Error("falha ao executar transferencia",
+				"error", err,
 				"requestId", reqCtx.RequestID,
-				"network", requestedNetwork(cfg, req), 
+				"network", requestedNetwork(cfg, req),
 				"to", shortValue(req.To),
 			)
 			http.Error(w, err.Error(), http.StatusBadGateway)
@@ -255,16 +265,16 @@ func main() {
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	
-	slog.Info("signer rodando", 
-		"port", cfg.Port, 
-		"network", cfg.DefaultNetwork, 
+
+	slog.Info("signer rodando",
+		"port", cfg.Port,
+		"network", cfg.DefaultNetwork,
 		"storage", cfg.DatabaseURL != "",
 		"hmac", cfg.Security.HMACSecret != "",
 		"nonce", cfg.Security.NonceTTLSeconds,
 		"rateLimit", cfg.Security.RateLimitPerMin,
 	)
-	
+
 	if err := server.ListenAndServe(); err != nil {
 		slog.Error("erro ao rodar signer", "error", err)
 	}
@@ -302,11 +312,11 @@ func setupSecurity(cfg *SignerConfig) (*security.RequestValidator, *security.Mid
 
 	// Configura Middleware
 	middleware := security.NewMiddleware(validator, security.SecurityOptions{
-		Enabled:       true,
-		RequireHMAC:   cfg.Security.RequireHMAC,
-		RequireNonce:  cfg.Security.RequireNonce,
-		RequireAPIKey: cfg.Security.RequireAPIKey,
-		ExcludePaths:  []string{"/healthz", "/readyz"},
+		Enabled:        true,
+		RequireHMAC:    cfg.Security.RequireHMAC,
+		RequireNonce:   cfg.Security.RequireNonce,
+		RequireAPIKey:  cfg.Security.RequireAPIKey,
+		ExcludePaths:   []string{"/healthz", "/readyz"},
 		AllowedMethods: []string{"POST", "GET"},
 	})
 
