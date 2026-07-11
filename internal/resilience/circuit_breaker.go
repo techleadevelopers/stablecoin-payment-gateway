@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+type IgnoreError func(error) bool
+
 // State represents the circuit breaker state machine.
 type State int
 
@@ -39,6 +41,7 @@ type CBConfig struct {
 	MaxFailures     int           // consecutive failures before tripping
 	ResetTimeout    time.Duration // how long to stay open before probing
 	HalfOpenSuccess int           // successes needed to close from half-open
+	IgnoreError IgnoreError
 }
 
 // CircuitBreaker implements the circuit breaker pattern with mutex-based state.
@@ -57,6 +60,7 @@ type CircuitBreaker struct {
 	maxFailures     int
 	resetTimeout    time.Duration
 	halfOpenSuccess int
+	ignore IgnoreError
 }
 
 // NewCircuitBreaker creates a new, closed circuit breaker.
@@ -123,8 +127,14 @@ func (cb *CircuitBreaker) allow() error {
 }
 
 func (cb *CircuitBreaker) record(err error) {
+
+	if err != nil && cb.ignore != nil && cb.ignore(err) {
+		return
+	}
+
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
+
 	if err == nil {
 		cb.onSuccess()
 	} else {
