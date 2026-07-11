@@ -3,6 +3,8 @@ require("@nomicfoundation/hardhat-toolbox");
 const privateKey = process.env.DEPLOYER_PRIVATE_KEY || "";
 const bscRpc = process.env.BSC_RPC_URL || process.env.RPC_URL || "";
 const bscTestnetRpc = process.env.BSC_TESTNET_RPC_URL || "";
+const polygonRpc = process.env.POLYGON_RPC_URL || "";
+const polygonAmoyRpc = process.env.POLYGON_AMOY_RPC_URL || process.env.POLYGON_TESTNET_RPC_URL || "";
 
 const accounts = privateKey ? [privateKey] : [];
 
@@ -34,6 +36,16 @@ module.exports = {
     bscTestnet: {
       url: bscTestnetRpc || "https://data-seed-prebsc-1-s1.binance.org:8545/",
       chainId: 97,
+      accounts
+    },
+    polygon: {
+      url: polygonRpc || "https://polygon-rpc.com/",
+      chainId: 137,
+      accounts
+    },
+    polygonAmoy: {
+      url: polygonAmoyRpc || "https://rpc-amoy.polygon.technology/",
+      chainId: 80002,
       accounts
     }
   }
