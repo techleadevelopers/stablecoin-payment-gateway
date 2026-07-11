@@ -41,6 +41,11 @@ type Server struct {
 	prices   PriceSource
 	agents   *agents.Client
 	dispatch *webhooks.Dispatcher
+	webhookRegistry  *webhooks.Registry
+	webhooks         *webhooks.Dispatcher
+	webhookLogs      *webhooks.Logs
+	webhookDashboard *webhooks.Dashboard
+
 }
 
 // New builds an MCP server bound to the platform's shared services.
