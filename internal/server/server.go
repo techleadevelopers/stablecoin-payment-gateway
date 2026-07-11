@@ -544,15 +544,16 @@ func (s *Server) handlePrice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"brl":         price,
-		"usd":         s.workers.PriceWorker.GetPrice("USD"),
-		"eur":         s.workers.PriceWorker.GetPrice("EUR"),
-		"usdtbrl":     s.workers.PriceWorker.GetPrice("USDTBRL"),
-		"sellUsdtBrl": s.sellRate(price),
-		"sellWallet":  s.cfg.SellWalletAddress,
-		"sellNetwork": "BEP20",
-		"eurusd":      s.workers.PriceWorker.GetPrice("EURUSD"),
-		"btcusdt":     s.workers.PriceWorker.GetPrice("BTCUSDT"),
+		"brl":          price,
+		"usd":          s.workers.PriceWorker.GetPrice("USD"),
+		"eur":          s.workers.PriceWorker.GetPrice("EUR"),
+		"usdtbrl":      s.workers.PriceWorker.GetPrice("USDTBRL"),
+		"sellUsdtBrl":  s.sellRate(price),
+		"sellWallet":   s.cfg.SellWalletAddress,
+		"sellNetwork":  "BEP20",
+		"sellNetworks": s.supportedSellNetworks(),
+		"eurusd":       s.workers.PriceWorker.GetPrice("EURUSD"),
+		"btcusdt":      s.workers.PriceWorker.GetPrice("BTCUSDT"),
 	})
 }
 
@@ -564,12 +565,13 @@ func (s *Server) handleChainFXRates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"brand":       "ChainFX",
-		"category":    "Digital FX Payments Infrastructure",
-		"description": "Accept PIX. Deliver digital dollars. Receive stablecoins. Pay out PIX.",
-		"base":        "USDT",
-		"sellWallet":  s.cfg.SellWalletAddress,
-		"sellNetwork": "BEP20",
+		"brand":        "ChainFX",
+		"category":     "Digital FX Payments Infrastructure",
+		"description":  "Accept PIX. Deliver digital dollars. Receive stablecoins. Pay out PIX.",
+		"base":         "USDT",
+		"sellWallet":   s.cfg.SellWalletAddress,
+		"sellNetwork":  "BEP20",
+		"sellNetworks": s.supportedSellNetworks(),
 		"rates": map[string]float64{
 			"USDT_BRL":      s.workers.PriceWorker.GetPrice("BRL"),
 			"SELL_USDT_BRL": s.sellRate(price),
@@ -1429,10 +1431,14 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "CPF e chave PIX sao obrigatorios"})
 		return
 	}
-	network := strings.ToUpper(defaultString(req.Network, "BSC"))
+	network := normalizeSellNetwork(defaultString(req.Network, "BSC"))
 	asset := strings.ToUpper(defaultString(req.Asset, "USDT"))
-	if network != "BSC" || asset != "USDT" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "somente pedidos BSC/USDT sao suportados"})
+	if asset != "USDT" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "somente pedidos USDT sao suportados no sell"})
+		return
+	}
+	if !s.sellNetworkEnabled(network) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "rede de sell nao suportada ou nao configurada", "network": network, "supportedNetworks": s.supportedSellNetworks()})
 		return
 	}
 	ctx := r.Context()
@@ -1444,20 +1450,20 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	var idx *int
 	depositAddress := strings.TrimSpace(firstNonEmpty(s.cfg.SellWalletAddress, req.Address))
 	if depositAddress == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "endereco BSC de deposito obrigatorio"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "endereco EVM de deposito obrigatorio"})
 		return
 	}
 	if !common.IsHexAddress(depositAddress) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "endereco BSC invalido"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "endereco EVM invalido"})
 		return
 	}
-	hasPending, err := s.db.HasPendingOrderForAddress(ctx, depositAddress)
+	hasPending, err := s.db.HasPendingOrderForAddressNetwork(ctx, depositAddress, network)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	if hasPending {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "ja existe uma ordem SELL aguardando deposito neste endereco"})
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "ja existe uma ordem SELL aguardando deposito neste endereco e rede"})
 		return
 	}
 
@@ -2469,6 +2475,42 @@ func (s *Server) deliveryNetwork() string {
 		return "BSC"
 	default:
 		return network
+	}
+}
+
+func normalizeSellNetwork(network string) string {
+	switch strings.ToUpper(strings.TrimSpace(network)) {
+	case "", "BSC", "BINANCE", "BEP20":
+		return "BSC"
+	case "POL", "POLYGON", "MATIC":
+		return "POLYGON"
+	default:
+		return strings.ToUpper(strings.TrimSpace(network))
+	}
+}
+
+func (s *Server) supportedSellNetworks() []string {
+	networks := []string{}
+	if strings.TrimSpace(s.cfg.BscRpcUrls) != "" && strings.TrimSpace(s.cfg.BscUsdtContract) != "" {
+		networks = append(networks, "BSC")
+	}
+	if strings.TrimSpace(s.cfg.PolygonRpcUrls) != "" && strings.TrimSpace(s.cfg.PolygonUsdtContract) != "" {
+		networks = append(networks, "POLYGON")
+	}
+	if len(networks) == 0 {
+		networks = append(networks, "BSC")
+	}
+	return networks
+}
+
+func (s *Server) sellNetworkEnabled(network string) bool {
+	switch normalizeSellNetwork(network) {
+	case "BSC":
+		return true
+	case "POLYGON":
+		return strings.TrimSpace(s.cfg.PolygonRpcUrls) != "" && strings.TrimSpace(s.cfg.PolygonUsdtContract) != ""
+	default:
+		return false
 	}
 }
 
