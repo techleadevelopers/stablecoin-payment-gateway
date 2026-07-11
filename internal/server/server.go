@@ -27,6 +27,7 @@ import (
 	"payment-gateway/internal/config"
 	"payment-gateway/internal/database"
 	"payment-gateway/internal/email"
+	"payment-gateway/internal/mcp"
 	"payment-gateway/internal/models"
 	"payment-gateway/internal/privacy"
 	"payment-gateway/internal/settlement"
@@ -63,12 +64,18 @@ type buyFeeBreakdown struct {
 }
 
 func New(cfg *config.Config, db *database.DB, workerMgr *workers.WorkerManager, mailer *email.Service) *Server {
+	webhookDispatcher := webhooks.New(db, cfg)
 	return &Server{
-		cfg:     cfg,
-		db:      db,
-		workers: workerMgr,
-		email:   mailer,
-		limiter: newRateLimiter(cfg.OrderRateLimitWindowMs, cfg.OrderRateLimitMax),
+		cfg:              cfg,
+		db:               db,
+		workers:          workerMgr,
+		email:            mailer,
+		limiter:          newRateLimiter(cfg.OrderRateLimitWindowMs, cfg.OrderRateLimitMax),
+		webhookRegistry:  webhooks.NewRegistry(db),
+		webhooks:         webhookDispatcher,
+		webhookLogs:      webhooks.NewLogs(db),
+		webhookDashboard: webhooks.NewDashboard(db),
+		agents:           agents.NewClient(cfg),
 	}
 }
 
@@ -246,6 +253,10 @@ func (s *Server) sellPolicy(marketRate, sellRate float64) map[string]any {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mcp.New(s.db, s.cfg, s.workers.PriceWorker, s.agents, s.webhooks).RegisterRoutes(mux, func(w http.ResponseWriter, r *http.Request) bool {
+		_, ok := s.authorizeChainFX(w, r)
+		return ok
+	})
 	mux.HandleFunc("GET /developers", s.handleDevelopers)
 	mux.HandleFunc("GET /developers/dashboard", s.handleDevelopersDashboard)
 	mux.HandleFunc("GET /developers/api-keys", s.handleDeveloperAPIKeys)
