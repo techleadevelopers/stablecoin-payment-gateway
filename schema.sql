@@ -30,12 +30,16 @@ CREATE TABLE IF NOT EXISTS order_private (
   order_id UUID PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
   pix_cpf_enc TEXT,
   pix_phone_enc TEXT,
+  email_enc TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE order_private ADD COLUMN IF NOT EXISTS email_enc TEXT;
 
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS request_id TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS pix_cpf_hash TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS pix_phone_hash TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_deposit_tx_unique ON orders (deposit_tx) WHERE deposit_tx IS NOT NULL AND deposit_tx <> '';
 
 CREATE TABLE IF NOT EXISTS order_events (
   id UUID PRIMARY KEY,
@@ -145,3 +149,17 @@ CREATE INDEX IF NOT EXISTS idx_buy_order_events_request_id ON buy_order_events(r
 CREATE INDEX IF NOT EXISTS idx_sweeps_status ON sweeps(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_buy_webhook_provider_once ON buy_order_events (buy_order_id, (payload ->> 'providerId')) WHERE type = 'webhook.provider' AND payload ? 'providerId';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_order_idempotency_once ON order_events (order_id, (payload ->> 'key')) WHERE type = 'idempotency' AND payload ? 'key';
+
+CREATE TABLE IF NOT EXISTS buy_order_private (
+  buy_order_id UUID PRIMARY KEY REFERENCES buy_orders(id) ON DELETE CASCADE,
+  email_enc TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS marketing_contacts (
+  email TEXT PRIMARY KEY,
+  source TEXT,
+  subscribed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  unsubscribed_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
