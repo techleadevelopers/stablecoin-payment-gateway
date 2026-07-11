@@ -30,7 +30,19 @@ type Config struct {
 	FeeFixedUsd            float64
 	FeePerUsdtUsd          float64
 	FeeMinBrl              float64
+	BuyTier1MinBrl         float64
+	BuyTier1MaxBrl         float64
+	BuyTier1Bps            int
+	BuyTier2MaxBrl         float64
+	BuyTier2Bps            int
+	BuyTier3Bps            int
+	BuyNetworkFeeBrl       float64
+	BuyMinFeeBrl           float64
+	BuyRateSpreadBps       int
 	SellRateBps            int
+	SellSpreadMinBps       int
+	SellSpreadMaxBps       int
+	SellSpreadHighValueBrl float64
 	SellUsdtBrlRate        float64
 	SellWalletAddress      string
 	BuyHotDerivationIndex  int
@@ -63,7 +75,6 @@ type Config struct {
 	// Tesouraria / signer / sweep
 	TreasuryHot       string
 	TreasuryCold      string
-	TronXPub          string
 	SignerUrl         string
 	SignerNetwork     string
 	SignerHmacSecret  string
@@ -77,25 +88,22 @@ type Config struct {
 	BscGasReserveBNB  float64
 
 	// SMTP / mensagens
-	SMTPHost      string
-	SMTPPort      int
-	SMTPUser      string
-	SMTPPass      string
-	SMTPSecure    bool
-	SMTPFromEmail string
-	SMTPFromName  string
-	OpsEmail      string
+	SMTPHost       string
+	SMTPPort       int
+	SMTPUser       string
+	SMTPPass       string
+	SMTPSecure     bool
+	SMTPFromEmail  string
+	SMTPFromName   string
+	OpsEmail       string
+	EmailBrandName string
+	EmailLogoURL   string
+	EmailSiteURL   string
+	EmailAddress   string
+	SupportEmail   string
 
 	// LGPD / auditoria
 	LGPDSecret string
-
-	// IA / Automação (Fase 4)
-	OpenAIAPIKey       string
-	OpenAIModel        string
-	OpenAIBaseURL      string
-	MCPEnabled         bool
-	WebhooksEnabled    bool
-	WebhooksMaxRetries int
 }
 
 // LoadConfig é o cara que lê o .env e joga para dentro da estrutura acima
@@ -123,7 +131,19 @@ func LoadConfig() *Config {
 		FeeFixedUsd:            getEnvAsFloat("FEE_FIXED_USD", getEnvAsFloat("TRANSACTION_FEE_FIXED_USD", 0)),
 		FeePerUsdtUsd:          getEnvAsFloat("FEE_PER_USDT_USD", 0.03),
 		FeeMinBrl:              getEnvAsFloat("FEE_MIN_BRL", 0),
-		SellRateBps:            getEnvAsInt("SELL_RATE_BPS", 8772),
+		BuyTier1MinBrl:         getEnvAsFloat("FEE_BUY_TIER_1_MIN", 20),
+		BuyTier1MaxBrl:         getEnvAsFloat("FEE_BUY_TIER_1_MAX", 100),
+		BuyTier1Bps:            getEnvPercentAsBps("FEE_BUY_TIER_1_PERCENT", getEnvAsInt("FEE_BUY_TIER_1_BPS", 750)),
+		BuyTier2MaxBrl:         getEnvAsFloat("FEE_BUY_TIER_2_MAX", 500),
+		BuyTier2Bps:            getEnvPercentAsBps("FEE_BUY_TIER_2_PERCENT", getEnvAsInt("FEE_BUY_TIER_2_BPS", 550)),
+		BuyTier3Bps:            getEnvPercentAsBps("FEE_BUY_TIER_3_PERCENT", getEnvAsInt("FEE_BUY_TIER_3_BPS", 450)),
+		BuyNetworkFeeBrl:       getEnvAsFloat("FEE_BUY_NETWORK_BRL", getEnvAsFloat("FEE_BUY_TIER_1_FIXED", getEnvAsFloat("FEE_BUY_TIER_FIXED", 1.99))),
+		BuyMinFeeBrl:           getEnvAsFloat("FEE_BUY_MIN_TOTAL", getEnvAsFloat("FEE_MIN_BRL", 4.99)),
+		BuyRateSpreadBps:       getEnvPercentAsBps("FEE_BUY_SPREAD_PERCENT", getEnvAsInt("FEE_BUY_SPREAD_BPS", 100)),
+		SellRateBps:            getEnvAsInt("SELL_RATE_BPS", 0),
+		SellSpreadMinBps:       getEnvPercentAsBps("FEE_SELL_SPREAD_MIN", getEnvAsInt("FEE_SELL_SPREAD_MIN_BPS", 800)),
+		SellSpreadMaxBps:       getEnvPercentAsBps("FEE_SELL_SPREAD_MAX", getEnvAsInt("FEE_SELL_SPREAD_MAX_BPS", 1000)),
+		SellSpreadHighValueBrl: getEnvAsFloat("FEE_SELL_HIGH_VALUE_BRL", 1000),
 		SellUsdtBrlRate:        getEnvAsFloat("SELL_USDT_BRL_RATE", 0),
 		SellWalletAddress:      getEnv("SELL_WALLET_ADDRESS", "0x7e3BF3FDfeF16040CE3ec60A663381766d3dB375"),
 		BuyHotDerivationIndex:  getEnvAsInt("BUY_HOT_DERIVATION_INDEX", 0),
@@ -153,7 +173,6 @@ func LoadConfig() *Config {
 
 		TreasuryHot:       getEnv("TREASURY_HOT", ""),
 		TreasuryCold:      getEnv("TREASURY_COLD", ""),
-		TronXPub:          getEnv("TRON_XPUB", ""),
 		SignerUrl:         getEnv("SIGNER_URL", ""),
 		SignerNetwork:     strings.ToLower(getEnv("SIGNER_NETWORK", "bsc")),
 		SignerHmacSecret:  getEnv("SIGNER_HMAC_SECRET", ""),
@@ -166,22 +185,20 @@ func LoadConfig() *Config {
 		SweepFrequencyMs:  getEnvAsInt("SWEEP_FREQUENCY_MS", 80800),
 		BscGasReserveBNB:  getEnvAsFloat("BSC_GAS_RESERVE_BNB", 0.003),
 
-		SMTPHost:      getEnv("SMTP_HOST", ""),
-		SMTPPort:      getEnvAsInt("SMTP_PORT", 587),
-		SMTPUser:      getEnv("SMTP_USER", ""),
-		SMTPPass:      getEnv("SMTP_PASS", ""),
-		SMTPSecure:    getEnvAsBool("SMTP_SECURE", false),
-		SMTPFromEmail: getEnv("SMTP_FROM_EMAIL", ""),
-		SMTPFromName:  getEnv("SMTP_FROM_NAME", "Swappy Financial"),
-		OpsEmail:      getEnv("OPS_EMAIL", getEnv("SMTP_FROM_EMAIL", "")),
-		LGPDSecret:    getEnv("LGPD_SECRET", ""),
-
-		OpenAIAPIKey:       getEnv("OPENAI_API_KEY", ""),
-		OpenAIModel:        getEnv("OPENAI_MODEL", "gpt-4o-mini"),
-		OpenAIBaseURL:      getEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-		MCPEnabled:         getEnvAsBool("MCP_ENABLED", true),
-		WebhooksEnabled:    getEnvAsBool("WEBHOOKS_ENABLED", true),
-		WebhooksMaxRetries: getEnvAsInt("WEBHOOKS_MAX_RETRIES", 3),
+		SMTPHost:       getEnv("SMTP_HOST", ""),
+		SMTPPort:       getEnvAsInt("SMTP_PORT", 587),
+		SMTPUser:       getEnv("SMTP_USER", ""),
+		SMTPPass:       getEnv("SMTP_PASS", ""),
+		SMTPSecure:     getEnvAsBool("SMTP_SECURE", false),
+		SMTPFromEmail:  getEnv("SMTP_FROM_EMAIL", ""),
+		SMTPFromName:   getEnv("SMTP_FROM_NAME", "ChainFX"),
+		OpsEmail:       getEnv("OPS_EMAIL", getEnv("SMTP_FROM_EMAIL", "")),
+		EmailBrandName: getEnv("EMAIL_BRAND_NAME", "ChainFX"),
+		EmailLogoURL:   getEnv("EMAIL_LOGO_URL", "https://www.chainfx.store/logo.png"),
+		EmailSiteURL:   strings.TrimRight(getEnv("EMAIL_SITE_URL", "https://www.chainfx.store"), "/"),
+		EmailAddress:   getEnv("EMAIL_COMPANY_ADDRESS", "ChainFX Payments"),
+		SupportEmail:   getEnv("SUPPORT_EMAIL", getEnv("SMTP_FROM_EMAIL", "")),
+		LGPDSecret:     getEnv("LGPD_SECRET", ""),
 	}
 }
 
@@ -271,6 +288,14 @@ func getEnvAsFloat(key string, defaultValue float64) float64 {
 	valueStr := getEnv(key, "")
 	if value, err := strconv.ParseFloat(valueStr, 64); err == nil {
 		return value
+	}
+	return defaultValue
+}
+
+func getEnvPercentAsBps(key string, defaultValue int) int {
+	valueStr := getEnv(key, "")
+	if value, err := strconv.ParseFloat(valueStr, 64); err == nil {
+		return int(value*100 + 0.5)
 	}
 	return defaultValue
 }
