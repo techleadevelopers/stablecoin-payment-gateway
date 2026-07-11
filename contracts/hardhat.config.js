@@ -7,6 +7,12 @@ const bscTestnetRpc = process.env.BSC_TESTNET_RPC_URL || "";
 const accounts = privateKey ? [privateKey] : [];
 
 module.exports = {
+  paths: {
+    sources: "./src",
+    tests: "./test",
+    cache: "./cache",
+    artifacts: "./artifacts"
+  },
   solidity: {
     version: "0.8.24",
     settings: {
