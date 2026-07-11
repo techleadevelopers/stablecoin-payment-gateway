@@ -96,10 +96,13 @@ func TestMemorySignerStore_ClaimBlocksConcurrentIdempotency(t *testing.T) {
 
 func TestSignerValidateProductionRequiresTokenAllowlist(t *testing.T) {
 	cfg := &SignerConfig{
-		AppEnv:            "production",
-		HMACSecret:        "0123456789abcdef0123456789abcdef",
-		DatabaseURL:       "postgres://user:pass@localhost/db",
-		AllowSimulation:   false,
+		AppEnv:          "production",
+		DatabaseURL:     "postgres://user:pass@localhost/db",
+		AllowSimulation: false,
+		Security: SecurityConfig{
+			HMACSecret:  "0123456789abcdef0123456789abcdef",
+			RequireHMAC: true,
+		},
 		AllowedNetworks:   map[string]bool{"BSC": true},
 		BSCUSDTContract:   "0x55d398326f99059fF775485246999027B3197955",
 		MaxTransferAmount: 100,
