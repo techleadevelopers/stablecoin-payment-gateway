@@ -127,7 +127,14 @@ func (s *Server) handlePixWebhookBuy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "hmac invalido"})
 		return
 	}
-	if s.cfg.IsProduction() && secret != "" && signature == "" && queryHMAC == "" {
+	// SECURITY: once an operator has configured a Pix webhook secret, every
+	// request must carry a valid signature or hmac param — in every
+	// environment, not only production. Gating this on IsProduction() left
+	// staging/dev/test deployments (which still hold real Efí credentials
+	// and can move real settlement state) open to a fully unauthenticated
+	// forged settlement callback. Leaving the secret unset (local-only,
+	// never real credentials) remains the only way to run unauthenticated.
+	if secret != "" && signature == "" && queryHMAC == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "webhook sem autenticacao adicional"})
 		return
 	}
