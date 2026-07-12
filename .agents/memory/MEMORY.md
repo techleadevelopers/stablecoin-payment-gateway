@@ -1,3 +1,4 @@
 - [Go toolchain mismatch in this repl](go-toolchain.md) — go.mod requires go 1.25 but only 1.21 was installed; install the go-1.25 module first or builds fail with a checksum-lookup error that looks unrelated.
 - [ChainFX webhook/SSRF policy](chainfx-webhooks-ssrf.md) — any new outbound-webhook feature (n8n/Zapier/Make style) must validate target URLs against private/loopback ranges at creation AND at send time, and never serialize stored secrets.
-- [ChainFX security audit 2026-07](chainfx-security-audit.md) — 8 correções aplicadas; 2 IDOR abertos precisam de migração de schema (webhook_subscriptions + MCP orders).
+- [ChainFX security audit 2026-07](chainfx-security-audit.md) — all 8 itens da fase 2 aplicados; ver chainfx-phase2-security.md para o inventário completo.
+- [ChainFX phase-2 security hardening](chainfx-phase2-security.md) — rate limiter MCP, decimal M2M, on-chain floor, IDOR webhooks, Prometheus metrics, migration 004, k6 stress test — todos aplicados e build limpo.
