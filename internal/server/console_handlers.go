@@ -46,6 +46,12 @@ func (s *Server) handleAgentConsoleSummary(w http.ResponseWriter, r *http.Reques
 		writeError(w, err)
 		return
 	}
+	policies := any(defaultAgentPolicies())
+	if len(agents) > 0 {
+		if policy, err := s.db.GetAgentPolicy(r.Context(), agents[0].AgentID); err == nil && policy != nil {
+			policies = policy
+		}
+	}
 
 	metrics := agentConsoleMetrics(agents, capabilities, purchases, executions, settlements)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -61,7 +67,7 @@ func (s *Server) handleAgentConsoleSummary(w http.ResponseWriter, r *http.Reques
 		"executions":   executions,
 		"spendSeries":  spendSeries,
 		"settlements":  settlements,
-		"policies":     defaultAgentPolicies(),
+		"policies":     policies,
 		"wallet": map[string]any{
 			"availableBalance":  "428.50",
 			"lockedBalance":     "18.00",
@@ -96,6 +102,16 @@ func (s *Server) handleDeveloperConsoleSummary(w http.ResponseWriter, r *http.Re
 		writeError(w, err)
 		return
 	}
+	projects, err := s.db.ListDeveloperProjects(r.Context(), limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	apiKeys, err := s.db.ListDeveloperAPIKeys(r.Context(), "", limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"workspace":       "developer",
 		"generatedAt":     time.Now().UTC(),
@@ -104,8 +120,8 @@ func (s *Server) handleDeveloperConsoleSummary(w http.ResponseWriter, r *http.Re
 		"navigation":      developerConsoleNavigation(),
 		"dashboard":       dashboard,
 		"metrics":         developerConsoleMetrics(dashboard),
-		"projects":        developerConsoleProjects(),
-		"apiKeys":         s.developerDashboardAPIKeys(),
+		"projects":        projects,
+		"apiKeys":         map[string]any{"items": apiKeys, "legacyEnv": s.developerDashboardAPIKeys()},
 		"mcpConnections":  developerMCPConnections(publicBaseURL(r), auth),
 		"apiExplorer":     developerAPIExplorer(),
 		"capabilities":    capabilities,
