@@ -446,6 +446,11 @@ func (db *DB) ResolveMarketplaceCapabilityPlan(ctx context.Context, capabilityID
 	return product, plan, err
 }
 
+func (db *DB) GetMarketplacePlan(ctx context.Context, planID string) (*MarketplaceProduct, *MarketplacePlan, error) {
+	product, _, plan, err := db.getMarketplacePlanBundle(ctx, strings.TrimSpace(planID))
+	return product, plan, err
+}
+
 func (db *DB) CreateMarketplaceAgentIdentity(ctx context.Context, wallet, name string) (*MarketplaceAgentIdentity, error) {
 	agentID := "agent_" + strings.ReplaceAll(NewID(), "-", "")
 	apiKey := "cfx_agent_" + NewAccessToken()
@@ -503,6 +508,11 @@ func (db *DB) ExecuteMarketplaceCapabilityMock(ctx context.Context, in Marketpla
 	route, err := db.selectMarketplaceRouteTx(ctx, tx, in)
 	if err != nil {
 		return nil, err
+	}
+	if _, decision, err := db.ValidateAgentExecutionPolicy(ctx, in.Token, route.CapabilityID, route.ProviderSlug, in.RequireReal); err != nil {
+		return nil, err
+	} else if !decision.Allowed {
+		return nil, fmt.Errorf("%s: %s", decision.Code, decision.Message)
 	}
 	tokenHash := db.accessTokenHash(in.Token)
 	grant, err := scanAccessGrant(tx.QueryRowContext(ctx, `
@@ -773,6 +783,12 @@ func (db *DB) CreateMarketplacePurchase(ctx context.Context, in MarketplacePurch
 	gross, err := ParseMicroAmount(plan.PriceAmount)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	capabilityID := firstNonEmptyDB(product.CapabilityID, product.Capability)
+	if _, decision, err := db.ValidateAgentPurchasePolicy(ctx, in.AgentWallet, capabilityID, plan.PaymentAsset, plan.PriceAmount); err != nil {
+		return nil, nil, nil, err
+	} else if !decision.Allowed {
+		return nil, nil, nil, fmt.Errorf("%s: %s", decision.Code, decision.Message)
 	}
 	chainfx := gross * int64(plan.TakeRateBps) / 10000
 	providerAmount := gross - chainfx
