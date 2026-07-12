@@ -155,6 +155,26 @@ func (s *Server) tools() []Tool {
 			Description: "Dispara um evento de automação sintético para testar integrações n8n/Zapier/Make.",
 			InputSchema: schema(map[string]string{"event": "string (obrigatório)", "payload": "objeto opcional"}),
 		},
+		{
+			Name: "createPaymentIntent",
+			Description: "Cria uma intent de pagamento M2M para que o agente pague PIX ou cartão de crédito em nome de terceiros. " +
+				"O agente deposita o valor em USDT (incluindo taxa) na PaymentAddress; o sistema liquida o fiat ao destinatário. " +
+				"Taxa PIX: 10% | Taxa Cartão: 19%. Validade: 15 minutos (proteção cambial).",
+			InputSchema: schema(map[string]string{
+				"type":            "string obrigatorio: 'pix' ou 'credit_card'",
+				"amount_brl":      "string obrigatorio: valor em BRL que o destinatario final recebera",
+				"pix_key":         "string obrigatorio quando type=pix: chave PIX destino",
+				"idempotency_key": "string obrigatorio: chave unica gerada pelo agente para evitar duplicatas",
+				"agent_wallet":    "string obrigatorio: endereco EVM do agente pagador (audit trail)",
+			}),
+		},
+		{
+			Name:        "getPaymentIntent",
+			Description: "Consulta o status de uma intent de pagamento M2M pelo ID retornado em createPaymentIntent.",
+			InputSchema: schema(map[string]string{
+				"intent_id": "string obrigatorio: ID da intent retornado por createPaymentIntent",
+			}),
+		},
 	}
 }
 
@@ -289,6 +309,10 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 		return s.db.ListWebhookSubscriptions(ctx)
 	case "trigger_test_webhook":
 		return s.toolTriggerTestWebhook(ctx, args)
+	case "createPaymentIntent":
+		return s.toolCreateM2MPaymentIntent(ctx, args)
+	case "getPaymentIntent":
+		return s.toolGetM2MPaymentIntent(ctx, args)
 	default:
 		return nil, fmt.Errorf("ferramenta desconhecida: %s", name)
 	}
@@ -1031,6 +1055,169 @@ func floatArg(args map[string]any, key string) float64 {
 	default:
 		return 0
 	}
+}
+
+// ─── M2M Payment Intent MCP tools ────────────────────────────────────────────
+
+// toolCreateM2MPaymentIntent exposes M2M payment intent creation via MCP.
+// This is the canonical entry-point for AI agents that need to pay PIX or
+// credit-card bills on behalf of humans using their USDT balance.
+func (s *Server) toolCreateM2MPaymentIntent(ctx context.Context, args map[string]any) (any, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("database indisponivel")
+	}
+	if s.cfg == nil {
+		return nil, fmt.Errorf("configuracao indisponivel")
+	}
+
+	paymentType := strings.ToLower(strings.TrimSpace(stringArg(args, "type")))
+	amountBRLStr := strings.TrimSpace(stringArg(args, "amount_brl"))
+	pixKey := strings.TrimSpace(stringArg(args, "pix_key"))
+	idempotencyKey := strings.TrimSpace(stringArg(args, "idempotency_key"))
+	agentWallet := strings.ToLower(strings.TrimSpace(stringArg(args, "agent_wallet")))
+
+	// ── Validation ────────────────────────────────────────────────────────────
+	if idempotencyKey == "" {
+		return nil, fmt.Errorf("idempotency_key e obrigatorio")
+	}
+	if agentWallet == "" {
+		return nil, fmt.Errorf("agent_wallet e obrigatorio")
+	}
+
+	var feeBps int
+	switch paymentType {
+	case "pix":
+		if pixKey == "" {
+			return nil, fmt.Errorf("pix_key e obrigatorio para type=pix")
+		}
+		feeBps = s.cfg.M2MPixFeeBps
+	case "credit_card":
+		feeBps = s.cfg.M2MCreditFeeBps
+	default:
+		return nil, fmt.Errorf("type deve ser 'pix' ou 'credit_card'")
+	}
+
+	var amountBRL float64
+	if _, err := fmt.Sscanf(amountBRLStr, "%f", &amountBRL); err != nil || amountBRL <= 0 {
+		return nil, fmt.Errorf("amount_brl deve ser um numero positivo")
+	}
+
+	// ── Rate ──────────────────────────────────────────────────────────────────
+	usdtRate := s.prices.GetPrice("BRL")
+	if usdtRate <= 0 {
+		return nil, fmt.Errorf("cotacao USDT/BRL indisponivel; tente novamente em instantes")
+	}
+
+	// ── Fee calculation ───────────────────────────────────────────────────────
+	grossUSDT := amountBRL / usdtRate
+	feeUSDT := grossUSDT * (float64(feeBps) / 10_000.0)
+	requiredUSDT := grossUSDT + feeUSDT
+
+	// ── Intent ID ─────────────────────────────────────────────────────────────
+	reqHash := database.CanonicalRequestHash(paymentType, amountBRLStr, pixKey, idempotencyKey, agentWallet)
+	hashShort := reqHash
+	if len(hashShort) > 24 {
+		hashShort = hashShort[:24]
+	}
+	intentID := "int_m2m_" + hashShort
+
+	paymentAddress := strings.ToLower(strings.TrimSpace(s.cfg.TreasuryHot))
+
+	in := database.M2MCreateInput{
+		ID:             intentID,
+		IdempotencyKey: idempotencyKey,
+		AgentWallet:    agentWallet,
+		PaymentType:    database.M2MPaymentType(paymentType),
+		PixKey:         pixKey,
+		AmountBRL:      amountBRL,
+		FeeBps:         feeBps,
+		FeeUSDT:        feeUSDT,
+		GrossUSDT:      grossUSDT,
+		RequiredUSDT:   requiredUSDT,
+		USDTRate:       usdtRate,
+		PaymentAddress: paymentAddress,
+		RequestHash:    reqHash,
+		ExpiresAt:      time.Now().UTC().Add(15 * time.Minute),
+	}
+
+	intent, isIdempotent, err := s.db.CreateAgentPaymentIntent(ctx, in)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao criar intent: %w", err)
+	}
+
+	feeLabel := fmt.Sprintf("%d%% (%d bps)", feeBps/100, feeBps)
+	resp := map[string]any{
+		"intent_id":       intent.ID,
+		"status":          string(intent.Status),
+		"payment_type":    string(intent.PaymentType),
+		"amount_brl":      fmt.Sprintf("%.2f", intent.AmountBRL),
+		"gross_usdt":      fmt.Sprintf("%.6f", intent.GrossUSDT),
+		"fee_usdt":        fmt.Sprintf("%.6f", intent.FeeUSDT),
+		"required_usdt":   fmt.Sprintf("%.6f", intent.RequiredUSDT),
+		"fee_applied":     feeLabel,
+		"usdt_rate":       fmt.Sprintf("%.4f", intent.USDTRate),
+		"payment_address": intent.PaymentAddress,
+		"expires_at":      intent.ExpiresAt,
+		"idempotent":      isIdempotent,
+		"next_step":       "Deposite exatamente required_usdt em USDT (BEP-20 ou Polygon) para payment_address. O sistema paga o PIX automaticamente apos a confirmacao on-chain.",
+	}
+	if intent.PixKey != "" {
+		resp["pix_key"] = intent.PixKey
+	}
+	return resp, nil
+}
+
+// toolGetM2MPaymentIntent returns the current status of an M2M payment intent.
+func (s *Server) toolGetM2MPaymentIntent(ctx context.Context, args map[string]any) (any, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("database indisponivel")
+	}
+	intentID := strings.TrimSpace(stringArg(args, "intent_id"))
+	if intentID == "" {
+		return nil, fmt.Errorf("intent_id e obrigatorio")
+	}
+	intent, err := s.db.GetAgentPaymentIntent(ctx, intentID)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao buscar intent: %w", err)
+	}
+	if intent == nil {
+		return nil, fmt.Errorf("intent nao encontrada: %s", intentID)
+	}
+	out := map[string]any{
+		"intent_id":       intent.ID,
+		"status":          string(intent.Status),
+		"payment_type":    string(intent.PaymentType),
+		"amount_brl":      fmt.Sprintf("%.2f", intent.AmountBRL),
+		"required_usdt":   fmt.Sprintf("%.6f", intent.RequiredUSDT),
+		"fee_usdt":        fmt.Sprintf("%.6f", intent.FeeUSDT),
+		"fee_bps":         intent.FeeBps,
+		"payment_address": intent.PaymentAddress,
+		"expires_at":      intent.ExpiresAt,
+		"attempts":        intent.Attempts,
+		"created_at":      intent.CreatedAt,
+	}
+	if intent.PixKey != "" {
+		out["pix_key"] = intent.PixKey
+	}
+	if intent.DepositTx != nil {
+		out["deposit_tx"] = *intent.DepositTx
+	}
+	if intent.DepositAmountUSDT != nil {
+		out["deposit_amount_usdt"] = fmt.Sprintf("%.6f", *intent.DepositAmountUSDT)
+	}
+	if intent.EfiEndToEndID != nil {
+		out["efi_end_to_end_id"] = *intent.EfiEndToEndID
+	}
+	if intent.EfiStatus != nil {
+		out["efi_status"] = *intent.EfiStatus
+	}
+	if intent.ErrorMessage != nil {
+		out["error_message"] = *intent.ErrorMessage
+	}
+	if intent.SettledAt != nil {
+		out["settled_at"] = *intent.SettledAt
+	}
+	return out, nil
 }
 
 func firstNonEmptyMCP(values ...string) string {
