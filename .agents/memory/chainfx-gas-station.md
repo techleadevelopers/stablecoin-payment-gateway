@@ -48,9 +48,22 @@ Rate limiter: `AllowN(key, max)` — 3-VU burst per address (not `AllowWithLimit
 ## PSP Abstraction
 
 `internal/psp/provider.go` — `PixProvider` interface + `Router`
-`internal/psp/efi_adapter.go` — Efí (Gerencianet) adapter
+`internal/psp/efi_adapter.go` — Efí (Gerencianet) adapter (OAuth token cache, strconv.ParseFloat, ParseWebhookAll for multi-entry batches)
 
-Not yet wired to main PIX handlers — integration is optional next step.
+Wired end-to-end (2026-07): `cmd/api/main.go` builds the EfiAdapter + Router
+(nil when Efí creds/cert aren't configured) and calls `api.WithPSP(router)` +
+sets `workerMgr.PSPRouter`. `handlePixWebhookBuy` in settlement_handlers.go
+branches on `s.pspRouter != nil` — routes through `ParseWebhookAll` and applies
+every batched PIX event as an independent buy-order settlement; falls back to
+the legacy inline single-entry parser when no Router is wired (backward-compat,
+covered by existing tests that construct `&Server{}` without a router).
+`WorkerManager` runs a ticker-based `ProbeAll` health probe (1 min interval,
+semaphore of 10) only when `PSPRouter != nil`.
+
+Client-cert loading (PEM or base64 PKCS#12) was extracted to `internal/certutil`
+so both the direct-charge HTTP client (`internal/server/payment_provider.go`)
+and the PSP adapter construction in main.go share one decoder — do not
+reintroduce a second copy of the pkcs12 logic.
 
 ## Migration
 

@@ -1,139 +1,190 @@
 package workers
 
 import (
-        "context"
-        "log/slog"
-        "sync"
+	"context"
+	"log/slog"
+	"sync"
+	"time"
 
-        "payment-gateway/internal/config"
-        "payment-gateway/internal/database"
-        "payment-gateway/internal/email"
-        "payment-gateway/internal/paymaster"
-        "payment-gateway/internal/rpc"
+	"payment-gateway/internal/config"
+	"payment-gateway/internal/database"
+	"payment-gateway/internal/email"
+	"payment-gateway/internal/paymaster"
+	"payment-gateway/internal/psp"
+	"payment-gateway/internal/rpc"
 )
 
+// pspHealthProbeInterval controls how often the PSP Router's providers are
+// health-checked when a Router is wired.
+const pspHealthProbeInterval = time.Minute
+
+// pspHealthProbeConcurrency bounds how many in-flight ProbeAll calls may be
+// queued at once. HealthCheck hits a real HTTP endpoint (Efí OAuth + /v2/cob),
+// so if the provider is slow this stops probe goroutines piling up unbounded.
+const pspHealthProbeConcurrency = 10
+
 type WorkerManager struct {
-        Bus                  *EventBus
-        PriceWorker          *PriceWorker
-        PayoutWorker         *PayoutWorker
-        BuySendWorker        *BuySendWorker
-        OnchainWorker        *OnchainWorker
-        SweepWorker          *SweepWorker
-        EmailWorker          *EmailWorker
-        M2MSettlementWorker  *M2MSettlementWorker
-        AutoSweeperWorker    *AutoSweeperWorker
-        PaymasterService     *paymaster.Service
-        db                   *database.DB
-        cfg                  *config.Config
-        wg                   sync.WaitGroup
+	Bus                 *EventBus
+	PriceWorker         *PriceWorker
+	PayoutWorker        *PayoutWorker
+	BuySendWorker       *BuySendWorker
+	OnchainWorker       *OnchainWorker
+	SweepWorker         *SweepWorker
+	EmailWorker         *EmailWorker
+	M2MSettlementWorker *M2MSettlementWorker
+	AutoSweeperWorker   *AutoSweeperWorker
+	PaymasterService    *paymaster.Service
+	PSPRouter           *psp.Router // optional; set by cmd/api/main.go before StartAll when Efí is configured
+	db                  *database.DB
+	cfg                 *config.Config
+	wg                  sync.WaitGroup
 }
 
 func NewWorkerManager(db *database.DB, cfg *config.Config, mailer *email.Service, pool *rpc.Pool) *WorkerManager {
-        bus := NewEventBus()
+	bus := NewEventBus()
 
-        var paymasterSvc *paymaster.Service
-        if pool != nil {
-                paymasterSvc = paymaster.NewService(cfg, db, pool)
-        }
+	var paymasterSvc *paymaster.Service
+	if pool != nil {
+		paymasterSvc = paymaster.NewService(cfg, db, pool)
+	}
 
-        return &WorkerManager{
-                Bus:                 bus,
-                PriceWorker:         NewPriceWorker(bus),
-                PayoutWorker:        NewPayoutWorker(bus, db, cfg),
-                BuySendWorker:       NewBuySendWorker(bus, db, cfg),
-                OnchainWorker:       NewOnchainWorker(bus, db, cfg),
-                SweepWorker:         NewSweepWorker(bus, db, cfg),
-                EmailWorker:         NewEmailWorker(bus, db, mailer),
-                M2MSettlementWorker: NewM2MSettlementWorker(bus, db, cfg),
-                AutoSweeperWorker:   NewAutoSweeperWorker(cfg, db, pool),
-                PaymasterService:    paymasterSvc,
-                db:                  db,
-                cfg:                 cfg,
-        }
+	return &WorkerManager{
+		Bus:                 bus,
+		PriceWorker:         NewPriceWorker(bus),
+		PayoutWorker:        NewPayoutWorker(bus, db, cfg),
+		BuySendWorker:       NewBuySendWorker(bus, db, cfg),
+		OnchainWorker:       NewOnchainWorker(bus, db, cfg),
+		SweepWorker:         NewSweepWorker(bus, db, cfg),
+		EmailWorker:         NewEmailWorker(bus, db, mailer),
+		M2MSettlementWorker: NewM2MSettlementWorker(bus, db, cfg),
+		AutoSweeperWorker:   NewAutoSweeperWorker(cfg, db, pool),
+		PaymasterService:    paymasterSvc,
+		db:                  db,
+		cfg:                 cfg,
+	}
 }
 
 // StartAll starts every worker in its own goroutine.
 func (wm *WorkerManager) StartAll(ctx context.Context) {
-        slog.Info("Iniciando todos os workers...")
+	slog.Info("Iniciando todos os workers...")
 
-        workerCount := 9 // base 7 + AutoSweeper + Paymaster
-        wm.wg.Add(workerCount)
+	workerCount := 9 // base 7 + AutoSweeper + Paymaster
+	if wm.PSPRouter != nil {
+		workerCount++ // + PSP health probe
+	}
+	wm.wg.Add(workerCount)
 
-        go func() {
-                defer wm.wg.Done()
-                wm.PriceWorker.Start(ctx)
-        }()
+	go func() {
+		defer wm.wg.Done()
+		wm.PriceWorker.Start(ctx)
+	}()
 
-        go func() {
-                defer wm.wg.Done()
-                wm.PayoutWorker.Start(ctx)
-        }()
+	go func() {
+		defer wm.wg.Done()
+		wm.PayoutWorker.Start(ctx)
+	}()
 
-        go func() {
-                defer wm.wg.Done()
-                wm.BuySendWorker.Start(ctx)
-        }()
+	go func() {
+		defer wm.wg.Done()
+		wm.BuySendWorker.Start(ctx)
+	}()
 
-        go func() {
-                defer wm.wg.Done()
-                wm.OnchainWorker.Start(ctx)
-        }()
+	go func() {
+		defer wm.wg.Done()
+		wm.OnchainWorker.Start(ctx)
+	}()
 
-        go func() {
-                defer wm.wg.Done()
-                wm.SweepWorker.Start(ctx)
-        }()
+	go func() {
+		defer wm.wg.Done()
+		wm.SweepWorker.Start(ctx)
+	}()
 
-        go func() {
-                defer wm.wg.Done()
-                wm.EmailWorker.Start(ctx)
-        }()
+	go func() {
+		defer wm.wg.Done()
+		wm.EmailWorker.Start(ctx)
+	}()
 
-        go func() {
-                defer wm.wg.Done()
-                wm.M2MSettlementWorker.Start(ctx)
-        }()
+	go func() {
+		defer wm.wg.Done()
+		wm.M2MSettlementWorker.Start(ctx)
+	}()
 
-        go func() {
-                defer wm.wg.Done()
-                wm.AutoSweeperWorker.Start(ctx)
-        }()
+	go func() {
+		defer wm.wg.Done()
+		wm.AutoSweeperWorker.Start(ctx)
+	}()
 
-        go func() {
-                defer wm.wg.Done()
-                if wm.PaymasterService != nil {
-                        wm.PaymasterService.Start(ctx)
-                }
-        }()
+	go func() {
+		defer wm.wg.Done()
+		if wm.PaymasterService != nil {
+			wm.PaymasterService.Start(ctx)
+		}
+	}()
 
-        slog.Info("Todos os workers iniciados com sucesso", "count", workerCount)
+	if wm.PSPRouter != nil {
+		go func() {
+			defer wm.wg.Done()
+			wm.runPSPHealthProbe(ctx)
+		}()
+	}
+
+	slog.Info("Todos os workers iniciados com sucesso", "count", workerCount)
+}
+
+// runPSPHealthProbe periodically calls PSPRouter.ProbeAll, which health-checks
+// the active + backup PIX providers and drives the Router's auto-failover /
+// auto-restore logic. A semaphore bounds concurrent in-flight probes so a slow
+// or hanging provider can't pile up goroutines across missed ticks.
+func (wm *WorkerManager) runPSPHealthProbe(ctx context.Context) {
+	slog.Info("psp: health probe iniciado", "interval", pspHealthProbeInterval, "activeProvider", wm.PSPRouter.ActiveProvider())
+
+	sem := make(chan struct{}, pspHealthProbeConcurrency)
+	ticker := time.NewTicker(pspHealthProbeInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			select {
+			case sem <- struct{}{}:
+				go func() {
+					defer func() { <-sem }()
+					wm.PSPRouter.ProbeAll(ctx)
+				}()
+			default:
+				slog.Warn("psp: health probe skipped, too many in-flight checks", "limit", pspHealthProbeConcurrency)
+			}
+		}
+	}
 }
 
 // Shutdown aguarda todos os workers finalizarem
 func (wm *WorkerManager) Shutdown(ctx context.Context) {
-        slog.Info("Iniciando shutdown dos workers...")
+	slog.Info("Iniciando shutdown dos workers...")
 
-        // Fecha o EventBus primeiro para parar de receber novos eventos
-        wm.Bus.Shutdown()
+	// Fecha o EventBus primeiro para parar de receber novos eventos
+	wm.Bus.Shutdown()
 
-        // Aguarda todos os workers finalizarem com timeout
-        done := make(chan struct{})
-        go func() {
-                wm.wg.Wait()
-                close(done)
-        }()
+	// Aguarda todos os workers finalizarem com timeout
+	done := make(chan struct{})
+	go func() {
+		wm.wg.Wait()
+		close(done)
+	}()
 
-        select {
-        case <-done:
-                slog.Info("Todos os workers finalizados com sucesso")
-        case <-ctx.Done():
-                slog.Warn("Timeout no shutdown dos workers", "timeout", ctx.Err())
-        }
+	select {
+	case <-done:
+		slog.Info("Todos os workers finalizados com sucesso")
+	case <-ctx.Done():
+		slog.Warn("Timeout no shutdown dos workers", "timeout", ctx.Err())
+	}
 }
 
 // StartAllAndWait inicia os workers e aguarda o contexto ser cancelado
 func (wm *WorkerManager) StartAllAndWait(ctx context.Context) {
-        wm.StartAll(ctx)
-        <-ctx.Done()
-        wm.Shutdown(context.Background())
+	wm.StartAll(ctx)
+	<-ctx.Done()
+	wm.Shutdown(context.Background())
 }

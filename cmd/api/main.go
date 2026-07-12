@@ -2,19 +2,23 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"payment-gateway/internal/certutil"
 	"payment-gateway/internal/config"
 	"payment-gateway/internal/database"
 	"payment-gateway/internal/email"
 	"payment-gateway/internal/logger"
 	"payment-gateway/internal/mobile"
+	"payment-gateway/internal/psp"
 	"payment-gateway/internal/rpc"
 	"payment-gateway/internal/server"
 	"payment-gateway/internal/workers"
@@ -54,6 +58,14 @@ func main() {
 
 	// 3. Worker manager — includes Gas Station (Paymaster) + Auto-Sweeper.
 	workerMgr := workers.NewWorkerManager(db, cfg, mailer, pool)
+
+	// 3b. PSP Router (Efí adapter wired by default, swappable per environment).
+	// Nil-safe: when Efí credentials/certificate aren't configured, PIX webhooks
+	// fall back to the legacy inline parsing in internal/server (no behavior change).
+	if pspRouter := newPSPRouter(cfg); pspRouter != nil {
+		workerMgr.PSPRouter = pspRouter
+	}
+
 	workerMgr.StartAll(ctx)
 
 	// 4. HTTP API server.
@@ -62,6 +74,11 @@ func main() {
 	// Wire the Paymaster service into the HTTP server for /v1/gas/* routes.
 	if workerMgr.PaymasterService != nil {
 		api.WithPaymaster(workerMgr.PaymasterService)
+	}
+
+	// Wire the PSP Router into the HTTP server so PIX webhooks route through it.
+	if workerMgr.PSPRouter != nil {
+		api.WithPSP(workerMgr.PSPRouter)
 	}
 
 	mob := mobile.New(cfg, db, workerMgr)
@@ -96,4 +113,31 @@ func main() {
 		log.Printf("Erro ao desligar HTTP server: %v", err)
 	}
 	log.Println("Aplicação finalizada com 100% de segurança de dados.")
+}
+
+// newPSPRouter builds the Efí PIX adapter behind the PSP Router when Efí
+// credentials + certificate are configured. Returns nil (never fatal) when
+// they aren't — callers must treat a nil Router as "PSP layer disabled".
+func newPSPRouter(cfg *config.Config) *psp.Router {
+	clientID := strings.TrimSpace(cfg.EfiClientID)
+	clientSecret := strings.TrimSpace(cfg.EfiClientSecret)
+	pixKey := strings.TrimSpace(cfg.EfiPixKey)
+	hasCert := strings.TrimSpace(cfg.EfiCertificatePath) != "" || strings.Trim(strings.TrimSpace(cfg.EfiCertificateP12), `"'`) != ""
+
+	if clientID == "" || clientSecret == "" || pixKey == "" || !hasCert {
+		slog.Info("psp: Efi nao configurado, PIX webhooks usarao o parsing legado inline")
+		return nil
+	}
+
+	cert, err := certutil.LoadCertificate(cfg.EfiCertificatePath, cfg.EfiCertificateKey, cfg.EfiCertificateP12, cfg.EfiCertificatePass)
+	if err != nil {
+		slog.Warn("psp: falha ao carregar certificado Efi, PIX webhooks usarao o parsing legado inline", "error", err)
+		return nil
+	}
+
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
+	efi := psp.NewEfiAdapter(clientID, clientSecret, pixKey, cfg.EfiApiBaseURL, tlsCfg)
+	router := psp.NewRouter(efi, nil)
+	slog.Info("psp: router inicializado", "activeProvider", router.ActiveProvider())
+	return router
 }

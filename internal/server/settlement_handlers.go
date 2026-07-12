@@ -131,6 +131,16 @@ func (s *Server) handlePixWebhookBuy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "webhook sem autenticacao adicional"})
 		return
 	}
+	// PSP abstraction path: when a Router is wired (cmd/api/main.go), normalise
+	// the body through the active provider adapter and process every PIX
+	// payment event independently — Efí batches multiple events per POST, and
+	// each one may settle a different buy order.
+	if s.pspRouter != nil {
+		statusCode, body := s.handlePixWebhookBuyViaPSP(r, raw, secret)
+		writeJSON(w, statusCode, body)
+		return
+	}
+
 	var req struct {
 		BuyID      string `json:"buyId"`
 		Status     string `json:"status"`
@@ -174,6 +184,50 @@ func (s *Server) handlePixWebhookBuy(w http.ResponseWriter, r *http.Request) {
 		s.workers.Bus.Publish(workers.Event{Type: "buy.paid", OrderID: req.BuyID, Payload: map[string]any{"providerId": req.ProviderID}})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handlePixWebhookBuyViaPSP parses raw through the wired PSP Router and applies
+// every normalised PixWebhookPayload as an independent buy-order settlement.
+// It never mutates HTTP state itself — callers write the returned status/body —
+// so it stays trivially testable without an httptest.Recorder.
+func (s *Server) handlePixWebhookBuyViaPSP(r *http.Request, raw []byte, secret string) (statusCode int, body map[string]any) {
+	payloads, err := s.pspRouter.ParseWebhookAll(r.Context(), raw, secret)
+	if err != nil {
+		return http.StatusBadRequest, map[string]any{"error": "payload invalido: " + err.Error()}
+	}
+
+	anyApplied := false
+	for _, p := range payloads {
+		buyID := buyIDFromEfiTxID(p.TXID)
+		if strings.TrimSpace(buyID) == "" {
+			buyID = p.EndToEndID
+		}
+		providerID := firstNonEmpty(p.EndToEndID, p.TXID)
+		if buyID == "" || providerID == "" {
+			continue // no way to correlate this event to an order; skip rather than fail the whole batch
+		}
+
+		status := settlement.PixWebhookStatus("CONCLUIDA")
+		extra := map[string]any{
+			"requestId":         requestID(r),
+			"providerPaymentId": providerID,
+			"pspProvider":       p.Provider,
+			"amountBRL":         p.AmountBRL,
+		}
+		duplicate, err := s.db.ApplyBuyProviderWebhook(r.Context(), buyID, providerID, "CONCLUIDA", status, extra)
+		if err != nil {
+			return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		}
+		if duplicate {
+			continue
+		}
+		anyApplied = true
+		if settlement.ShouldPublishBuyPaid(status) {
+			s.workers.Bus.Publish(workers.Event{Type: "buy.paid", OrderID: buyID, Payload: map[string]any{"providerId": providerID}})
+		}
+	}
+
+	return http.StatusOK, map[string]any{"ok": true, "processed": len(payloads), "applied": anyApplied}
 }
 func (s *Server) handleStripeWebhookBuy(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))

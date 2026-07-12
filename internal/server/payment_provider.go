@@ -4,18 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/pkcs12"
+	"payment-gateway/internal/certutil"
 )
 
 func (s *Server) createPaymentIntent(ctx context.Context, buyID string, amountFiat float64, fiatCurrency, paymentMethod string, customer paymentCustomerInput) (map[string]any, error) {
@@ -186,47 +183,11 @@ func (s *Server) efiHTTPClient() (*http.Client, error) {
 	}, nil
 }
 
+// loadEfiCertificate delegates to the shared certutil loader (used by both
+// this direct-charge HTTP client and the PSP EfiAdapter wired in cmd/api/main.go,
+// so PKCS#12/PEM decoding logic lives in exactly one place).
 func (s *Server) loadEfiCertificate(certPath, keyPath string) (tls.Certificate, error) {
-	if rawBase64 := strings.Trim(strings.TrimSpace(s.cfg.EfiCertificateP12), `"'`); rawBase64 != "" {
-		raw, err := base64.StdEncoding.DecodeString(rawBase64)
-		if err != nil {
-			return tls.Certificate{}, fmt.Errorf("EFI_CERTIFICATE_P12_BASE64 invalido: %w", err)
-		}
-		return decodeEfiP12(raw, s.cfg.EfiCertificatePass)
-	}
-	if strings.TrimSpace(certPath) == "" {
-		return tls.Certificate{}, fmt.Errorf("EFI_CERTIFICATE_PATH ou EFI_CERTIFICATE_P12_BASE64 nao configurado")
-	}
-	if strings.HasSuffix(strings.ToLower(certPath), ".p12") || strings.HasSuffix(strings.ToLower(certPath), ".pfx") {
-		raw, err := os.ReadFile(certPath)
-		if err != nil {
-			return tls.Certificate{}, fmt.Errorf("nao foi possivel ler certificado EfÃ­ P12: %w", err)
-		}
-		return decodeEfiP12(raw, s.cfg.EfiCertificatePass)
-	}
-	if keyPath == "" {
-		keyPath = certPath
-	}
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("certificado EfÃ­ PEM/KEY invalido: %w", err)
-	}
-	if cert.Leaf == nil && len(cert.Certificate) > 0 {
-		cert.Leaf, _ = x509.ParseCertificate(cert.Certificate[0])
-	}
-	return cert, nil
-}
-
-func decodeEfiP12(raw []byte, password string) (tls.Certificate, error) {
-	privateKey, cert, err := pkcs12.Decode(raw, password)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("certificado EfÃ­ P12 invalido; confira EFI_CERTIFICATE_PASSWORD e GODEBUG=x509negativeserial=1: %w", err)
-	}
-	return tls.Certificate{
-		Certificate: [][]byte{cert.Raw},
-		PrivateKey:  privateKey,
-		Leaf:        cert,
-	}, nil
+	return certutil.LoadCertificate(certPath, keyPath, s.cfg.EfiCertificateP12, s.cfg.EfiCertificatePass)
 }
 
 func (s *Server) efiAccessToken(ctx context.Context, client *http.Client) (string, error) {
