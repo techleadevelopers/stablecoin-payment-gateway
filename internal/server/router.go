@@ -17,6 +17,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /developers/dashboard.json", s.handleDevelopersDashboard)
 	mux.HandleFunc("GET /developers/api-keys", s.handleDeveloperAPIKeys)
 	mux.HandleFunc("GET /developers/logs", s.handleDeveloperLogs)
+	mux.HandleFunc("GET /app/agent/summary", s.handleAgentConsoleSummary)
+	mux.HandleFunc("GET /app/developer/summary", s.handleDeveloperConsoleSummary)
 	mux.HandleFunc("POST /api/admin/login", s.handleAdminLogin)
 	mux.HandleFunc("GET /api/admin/overview", s.handleAdminOverview)
 	mux.HandleFunc("GET /api/admin/transactions", s.handleAdminTransactions)
