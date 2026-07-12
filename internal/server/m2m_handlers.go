@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"payment-gateway/internal/database"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // ─── Request / Response types ────────────────────────────────────────────────
@@ -41,6 +43,9 @@ type m2mCreateResponse struct {
 // handleM2MCreateIntent creates a new agent-initiated payment intent.
 // The agent deposits RequiredUSDT on-chain; our system then pays the fiat recipient.
 func (s *Server) handleM2MCreateIntent(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeChainFX(w, r); !ok {
+		return
+	}
 	var req m2mCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON payload"})
@@ -59,6 +64,10 @@ func (s *Server) handleM2MCreateIntent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AgentWallet == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "agent_wallet is required"})
+		return
+	}
+	if !common.IsHexAddress(req.AgentWallet) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "agent_wallet must be a valid EVM address"})
 		return
 	}
 
@@ -100,6 +109,16 @@ func (s *Server) handleM2MCreateIntent(w http.ResponseWriter, r *http.Request) {
 	feeUSDT := grossUSDT * (float64(feeBps) / 10_000.0)
 	requiredUSDT := grossUSDT + feeUSDT
 
+	_, decision, policyErr := s.db.ValidateAgentPaymentPolicy(r.Context(), req.AgentWallet, "USDT", fmt.Sprintf("%.6f", requiredUSDT))
+	if policyErr != nil {
+		writeError(w, policyErr)
+		return
+	}
+	if !decision.Allowed {
+		writeAPIError(w, r, http.StatusForbidden, decision.Code, decision.Message)
+		return
+	}
+
 	// ── Intent ID (deterministic from idempotency key + wallet) ──────────────
 	intentID := m2mIntentID(req.IdempotencyKey, req.AgentWallet)
 
@@ -110,6 +129,10 @@ func (s *Server) handleM2MCreateIntent(w http.ResponseWriter, r *http.Request) {
 	)
 
 	paymentAddress := strings.ToLower(strings.TrimSpace(s.cfg.TreasuryHot))
+	if !common.IsHexAddress(paymentAddress) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "TREASURY_HOT must be a valid EVM payment address"})
+		return
+	}
 
 	in := database.M2MCreateInput{
 		ID:             intentID,
@@ -145,6 +168,9 @@ func (s *Server) handleM2MCreateIntent(w http.ResponseWriter, r *http.Request) {
 // ─── GET /agent/v1/pay/{id} ──────────────────────────────────────────────────
 
 func (s *Server) handleM2MGetIntent(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeChainFX(w, r); !ok {
+		return
+	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "intent id is required"})
@@ -190,20 +216,20 @@ func m2mIntentToResponse(i *database.AgentPaymentIntent, idempotent bool) m2mCre
 
 func intentFullView(i *database.AgentPaymentIntent) map[string]any {
 	out := map[string]any{
-		"id":               i.ID,
-		"status":           string(i.Status),
-		"payment_type":     string(i.PaymentType),
-		"amount_brl":       fmt.Sprintf("%.2f", i.AmountBRL),
-		"gross_usdt":       fmt.Sprintf("%.6f", i.GrossUSDT),
-		"fee_usdt":         fmt.Sprintf("%.6f", i.FeeUSDT),
-		"required_usdt":    fmt.Sprintf("%.6f", i.RequiredUSDT),
-		"fee_bps":          i.FeeBps,
-		"usdt_rate":        fmt.Sprintf("%.4f", i.USDTRate),
-		"payment_address":  i.PaymentAddress,
-		"expires_at":       i.ExpiresAt,
-		"attempts":         i.Attempts,
-		"created_at":       i.CreatedAt,
-		"updated_at":       i.UpdatedAt,
+		"id":              i.ID,
+		"status":          string(i.Status),
+		"payment_type":    string(i.PaymentType),
+		"amount_brl":      fmt.Sprintf("%.2f", i.AmountBRL),
+		"gross_usdt":      fmt.Sprintf("%.6f", i.GrossUSDT),
+		"fee_usdt":        fmt.Sprintf("%.6f", i.FeeUSDT),
+		"required_usdt":   fmt.Sprintf("%.6f", i.RequiredUSDT),
+		"fee_bps":         i.FeeBps,
+		"usdt_rate":       fmt.Sprintf("%.4f", i.USDTRate),
+		"payment_address": i.PaymentAddress,
+		"expires_at":      i.ExpiresAt,
+		"attempts":        i.Attempts,
+		"created_at":      i.CreatedAt,
+		"updated_at":      i.UpdatedAt,
 	}
 	if i.PixKey != "" {
 		out["pix_key"] = i.PixKey
