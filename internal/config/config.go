@@ -122,6 +122,12 @@ type Config struct {
 	// Capability provider adapters
 	CapabilityOCRURL    string
 	CapabilityOCRAPIKey string
+
+	// M2M Agent Payments (PIX + credit-card on behalf of AI agents)
+	M2MPixFeeBps          int     // default 1000 = 10%
+	M2MCreditFeeBps       int     // default 1900 = 19%
+	M2MDepositTolerancePct float64 // fraction tolerance for on-chain amount match (default 0.005)
+	M2MMaxDailyOutflowBRL float64 // max BRL settled per 24 h (0 = unlimited)
 }
 
 // LoadConfig é o cara que lê o .env e joga para dentro da estrutura acima
@@ -229,6 +235,11 @@ func LoadConfig() *Config {
 		OpenAIBaseURL:       strings.TrimRight(getEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"), "/"),
 		CapabilityOCRURL:    strings.TrimRight(getEnv("CAPABILITY_OCR_URL", ""), "/"),
 		CapabilityOCRAPIKey: getEnv("CAPABILITY_OCR_API_KEY", ""),
+
+		M2MPixFeeBps:           getEnvAsInt("M2M_PIX_FEE_BPS", 1000),
+		M2MCreditFeeBps:        getEnvAsInt("M2M_CREDIT_FEE_BPS", 1900),
+		M2MDepositTolerancePct: getEnvAsFloat("M2M_DEPOSIT_TOLERANCE_PCT", 0.005),
+		M2MMaxDailyOutflowBRL:  getEnvAsFloat("M2M_MAX_DAILY_OUTFLOW_BRL", 50000),
 	}
 }
 
