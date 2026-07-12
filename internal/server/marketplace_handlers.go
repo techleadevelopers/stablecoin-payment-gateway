@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +47,13 @@ func (s *Server) handleMarketplaceCapabilities(w http.ResponseWriter, r *http.Re
 		"model":        "capability_network",
 		"positioning":  "economic infrastructure for autonomous agents to discover, execute, meter, bill and settle digital capabilities",
 		"routing":      "providers are abstracted behind policy routing; execution is hybrid real provider when configured with provider fallback and mock/dev fallback",
+		"productionReadiness": map[string]any{
+			"catalog":                     true,
+			"meteringBillingSettlement":   true,
+			"mockDevFallback":             false,
+			"seedFixtures":                false,
+			"realProviderCredentialsNeed": []string{"OPENAI_API_KEY", "CAPABILITY_OCR_URL"},
+		},
 	})
 }
 
@@ -292,11 +298,6 @@ func (s *Server) handleMarketplacePurchaseExecute(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": "purchase expirada", "status": database.MarketplacePurchaseExpired})
 		return
 	}
-	amount, err := strconv.ParseFloat(purchase.GrossAmount, 64)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "amount interno invalido"})
-		return
-	}
 	asset, err := s.db.GetAgentSupportedAsset(r.Context(), purchase.PaymentAsset, purchase.Network)
 	if err != nil {
 		writeError(w, err)
@@ -306,8 +307,13 @@ func (s *Server) handleMarketplacePurchaseExecute(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": "contrato de pagamento nao esta na allowlist"})
 		return
 	}
+	expectedAmount, err := decimalStringToBaseUnits(purchase.GrossAmount, asset.Decimals)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "amount interno invalido"})
+		return
+	}
 	expectedLogIndex := req.LogIndex
-	receipt, err := s.verifyERC20TransferTx(r.Context(), req.TxHash, purchase.PaymentContract, purchase.PayerWallet, purchase.PaymentAddress, amount, purchase.PaymentAsset, asset.Decimals, &expectedLogIndex)
+	receipt, err := s.verifyERC20TransferTxRaw(r.Context(), req.TxHash, purchase.PaymentContract, purchase.PayerWallet, purchase.PaymentAddress, expectedAmount, purchase.PaymentAsset, asset.Decimals, &expectedLogIndex)
 	if err != nil {
 		writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": err.Error(), "status": database.MarketplacePurchasePaymentInvalid})
 		return
