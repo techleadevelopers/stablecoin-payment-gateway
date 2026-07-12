@@ -77,10 +77,11 @@ func (db *DB) ListConsoleAgents(ctx context.Context, limit int) ([]*ConsoleAgent
 		    ) activity
 		  ),
 		  a.created_at,
-		  COALESCE(a.metadata_json ->> 'dailyLimitUsdt', '500'),
-		  COALESCE(a.metadata_json ->> 'monthlyLimitUsdt', '5000'),
-		  COALESCE(a.metadata_json ->> 'maxTransactionUsdt', '100')
+		  COALESCE(p.daily_limit_usdt::text, '500'),
+		  COALESCE(p.monthly_limit_usdt::text, '5000'),
+		  COALESCE(p.max_transaction_usdt::text, '100')
 		FROM marketplace_agent_identities a
+		LEFT JOIN marketplace_agent_policies p ON p.agent_id = a.agent_id
 		ORDER BY a.created_at DESC
 		LIMIT $1`, limit)
 	if err != nil {
