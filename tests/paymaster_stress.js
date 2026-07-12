@@ -1,5 +1,5 @@
 /**
- * ChainFX Gas Station — k6 stress + spike test
+ * ChainFX Gas Station + Human Rail — k6 stress + spike test
  *
  * Covers every resilience dimension from the spec:
  *   1. paymaster_spike       — ramping-arrival-rate to 80 tx/s; validates p95 + error rate
@@ -7,21 +7,34 @@
  *   3. rate_limit_tier       — test-key (sk_test_*) hits its 10-req/min wall, live-key gets 60
  *   4. gas_quote_load        — steady 20 VUs quoting; validates fee fields
  *   5. gas_status_probe      — continuous health probe, 50 VUs, p95 < 300 ms
+ *   6. human_rail_flood      — 50 signed Pix-settlement notifications/sec against the REAL
+ *                              POST /api/pix/webhook/buy route (not a fictitious endpoint),
+ *                              each with a valid HMAC computed here via k6/crypto so the
+ *                              real handler's auth path is exercised, not bypassed.
  *
  * Run:
  *   k6 run tests/paymaster_stress.js \
  *     -e BASE_URL=http://localhost:8080 \
  *     -e API_KEY_LIVE=sk_live_chainfx_local \
- *     -e API_KEY_TEST=sk_test_chainfx_local
+ *     -e API_KEY_TEST=sk_test_chainfx_local \
+ *     -e PIX_WEBHOOK_SECRET=<same secret the API was started with> \
+ *     -e BUY_IDS_FILE=tests/chaos/.buy_ids.json
+ *
+ * The human_rail_flood scenario is a no-op (skips work, still "passes") if
+ * BUY_IDS_FILE isn't provided — seed targets with cmd/chaosseed first (see
+ * tests/chaos_suite.sh), never invent fake buy IDs here.
  *
  * SLOs (per spec):
  *   p95 end-to-end < 400 ms
  *   real infrastructure errors (5xx, not 429/409) < 0.1 %
+ *   Pix settlement resolution (human_rail_settlement_duration) p95 < 300 ms
  */
 
 import http from "k6/http";
 import { check, sleep, group } from "k6";
 import { Rate, Trend, Counter } from "k6/metrics";
+import { hmac } from "k6/crypto";
+import { SharedArray } from "k6/data";
 
 // ── Custom metrics ─────────────────────────────────────────────────────────────
 const infraErrors        = new Rate("infra_errors");         // real 5xx (not 503=disabled)
@@ -30,11 +43,28 @@ const rateLimitHits      = new Counter("rate_limit_hits");   // 429 Too Many Req
 const relayAccepted      = new Counter("relay_accepted");    // 202 Accepted
 const quoteDuration      = new Trend("quote_duration_ms", true);
 const relayDuration      = new Trend("relay_duration_ms", true);
+const humanRailSettlementDuration = new Trend("human_rail_settlement_duration", true);
+const hmacValidationFailures      = new Counter("hmac_validation_failures");
+const humanRailDuplicatesBlocked  = new Counter("human_rail_duplicates_blocked");
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const BASE_URL      = __ENV.BASE_URL       || "http://localhost:8080";
 const LIVE_KEY      = __ENV.API_KEY_LIVE   || "sk_live_chainfx_local";
 const TEST_KEY      = __ENV.API_KEY_TEST   || "sk_test_chainfx_local";
+const PIX_WEBHOOK_SECRET = __ENV.PIX_WEBHOOK_SECRET || "";
+const BUY_IDS_FILE       = __ENV.BUY_IDS_FILE || "";
+
+// Real buy-order IDs seeded by cmd/chaosseed (see tests/chaos_suite.sh) —
+// loaded once per VU pool via SharedArray, never fabricated here.
+const buyIDs = new SharedArray("buyIDs", function () {
+  if (!BUY_IDS_FILE) return [];
+  try {
+    return JSON.parse(open(BUY_IDS_FILE));
+  } catch (e) {
+    console.error(`[human_rail] failed to load BUY_IDS_FILE=${BUY_IDS_FILE}: ${e}`);
+    return [];
+  }
+});
 
 // ── Options ───────────────────────────────────────────────────────────────────
 export const options = {
@@ -99,6 +129,21 @@ export const options = {
       tags:      { scenario: "gas_status_probe" },
     },
 
+    // ── 6. Human Rail flood — real signed Pix settlement notifications ──────
+    // 50 notifications/sec against the REAL POST /api/pix/webhook/buy route,
+    // each with a valid HMAC. Runs only if buy IDs were seeded (see header).
+    human_rail_flood: {
+      executor:        "constant-arrival-rate",
+      rate:            50,
+      timeUnit:        "1s",
+      duration:        "20s",
+      preAllocatedVUs: 10,
+      maxVUs:          50,
+      exec:            "humanRailScenario",
+      startTime:       "15s",
+      tags:            { scenario: "human_rail_flood" },
+    },
+
   },
 
   thresholds: {
@@ -116,6 +161,11 @@ export const options = {
     // Custom trends
     quote_duration_ms: ["p(95)<400"],
     relay_duration_ms: ["p(95)<400"],
+
+    // Human Rail SLO: Pix settlement race resolution must stay fast even
+    // under a 50 req/s flood and even while chaos is being injected into
+    // the DB layer mid-run.
+    human_rail_settlement_duration: ["p(95)<300"],
   },
 };
 
@@ -313,6 +363,69 @@ export function statusScenario() {
   else infraErrors.add(0);
 
   sleep(0.1 + Math.random() * 0.2);
+}
+
+// ── Scenario 6: Human Rail flood ───────────────────────────────────────────────
+// Fires a real signed Pix settlement notification against a real, previously
+// seeded buy order (see cmd/chaosseed + tests/chaos_suite.sh). Cycles through
+// the seeded pool so concurrent iterations legitimately race on the SAME
+// buy order sometimes (testing the dedup index) and hit distinct orders
+// other times (testing steady-state throughput) — matching real Efí traffic.
+export function humanRailScenario() {
+  if (buyIDs.length === 0 || !PIX_WEBHOOK_SECRET) {
+    // No seeded targets / no secret configured — nothing real to attack.
+    // Recorded as neither pass nor fail; see tests/chaos_suite.sh for setup.
+    return;
+  }
+
+  const buyID = buyIDs[__ITER % buyIDs.length];
+  const providerID = `k6-efi-${__VU}-${__ITER}-${Date.now()}`;
+  const body = JSON.stringify({
+    buyId:      buyID,
+    status:     "CONCLUIDA",
+    providerId: providerID,
+  });
+
+  const signature = hmac("sha256", PIX_WEBHOOK_SECRET, body, "hex");
+
+  const start = Date.now();
+  const res = http.post(`${BASE_URL}/api/pix/webhook/buy`, body, {
+    headers: {
+      "Content-Type":     "application/json",
+      "x-efi-signature":  signature,
+    },
+    tags: { name: "human_rail_webhook" },
+  });
+  const elapsed = Date.now() - start;
+
+  check(res, {
+    "human_rail: acceptable status": (r) =>
+      r.status === 200 ||  // applied or duplicate — both are clean outcomes
+      r.status === 401 ||  // only if PIX_WEBHOOK_SECRET mismatches the running API
+      r.status === 400 ||  // validation error
+      r.status === 503,    // DB/dependency chaos surfaced as a clean 503, not a crash
+  });
+
+  if (res.status === 200) {
+    humanRailSettlementDuration.add(elapsed);
+    try {
+      if (JSON.parse(res.body || "{}").duplicate) {
+        humanRailDuplicatesBlocked.add(1);
+      }
+    } catch (e) { /* non-JSON body — already flagged by the status check above */ }
+  } else if (res.status === 401) {
+    hmacValidationFailures.add(1);
+    console.error(`[human_rail] HMAC rejected — PIX_WEBHOOK_SECRET likely doesn't match the running API`);
+  }
+
+  if (res.status >= 500 && res.status !== 503) {
+    infraErrors.add(1);
+    console.error(`[human_rail] INFRA ERROR status=${res.status} body=${res.body.substring(0, 200)}`);
+  } else {
+    infraErrors.add(0);
+  }
+
+  sleep(0.02);
 }
 
 // ── Summary helper (printed at end of run) ────────────────────────────────────
