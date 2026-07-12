@@ -44,6 +44,7 @@ type Server struct {
 	workers          *workers.WorkerManager
 	email            *email.Service
 	limiter          *rateLimiter
+	globalLimiter    *rateLimiter
 	webhookRegistry  *webhooks.Registry
 	webhooks         *webhooks.Dispatcher
 	webhookLogs      *webhooks.Logs
@@ -71,6 +72,7 @@ func New(cfg *config.Config, db *database.DB, workerMgr *workers.WorkerManager, 
 		workers:          workerMgr,
 		email:            mailer,
 		limiter:          newRateLimiter(cfg.OrderRateLimitWindowMs, cfg.OrderRateLimitMax),
+		globalLimiter:    newRateLimiter(cfg.RateLimitWindowMs, cfg.RateLimitMax),
 		webhookRegistry:  webhooks.NewRegistry(db),
 		webhooks:         webhookDispatcher,
 		webhookLogs:      webhooks.NewLogs(db),
@@ -335,7 +337,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /internal/email/marketing", s.handleMarketingEmail)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, map[string]any{"ok": true}) })
 	mux.HandleFunc("GET /readyz", s.handleReady)
-	return securityHeaders(cors(s.cfg, withRequestID(logRequests(mux))))
+	return securityHeaders(cors(s.cfg, withRequestID(logRequests(s.withSmartRateLimit(mux)))))
 }
 
 func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
@@ -2081,6 +2083,142 @@ func chainFXAPIKey(r *http.Request) string {
 	return strings.TrimSpace(r.URL.Query().Get("apiKey"))
 }
 
+func (s *Server) withSmartRateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.shouldSkipSmartRateLimit(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		key, tier := s.smartRateLimitKey(r)
+		routeClass := smartRateLimitRouteClass(r)
+		limit := smartRateLimitMax(tier, routeClass, s.cfg.RateLimitMax)
+		allowed, resetAt, remaining := s.globalLimiter.AllowN(key+":"+routeClass, limit)
+		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limit))
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+		if !allowed {
+			retryAfter := int(time.Until(resetAt).Seconds())
+			if retryAfter < 1 {
+				retryAfter = 1
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error":      "rate limit exceeded",
+				"tier":       tier,
+				"routeClass": routeClass,
+				"retryAfter": retryAfter,
+			})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) shouldSkipSmartRateLimit(r *http.Request) bool {
+	if r.Method == http.MethodOptions {
+		return true
+	}
+	switch r.URL.Path {
+	case "/healthz", "/readyz", "/api/pix/webhook", "/api/pix/webhook/buy", "/api/stripe/webhook/buy":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) smartRateLimitKey(r *http.Request) (string, string) {
+	apiKey := chainFXAPIKey(r)
+	if apiKey != "" {
+		auth := s.chainFXAuthContext(r)
+		tier := "api"
+		switch auth.Mode {
+		case "live", "live-dev":
+			tier = "live"
+		case "test", "development":
+			tier = "test"
+		}
+		if !auth.Valid {
+			tier = "invalid_key"
+		}
+		return "key:" + shortSecretHash(apiKey), tier
+	}
+	return "ip:" + clientIP(r), "anonymous"
+}
+
+func shortSecretHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+func smartRateLimitRouteClass(r *http.Request) string {
+	path := r.URL.Path
+	method := r.Method
+	if method == http.MethodGet && (path == "/openapi.json" || path == "/llms.txt" || path == "/robots.txt" || path == "/sitemap.xml" || strings.HasPrefix(path, "/.well-known/")) {
+		return "discovery"
+	}
+	if strings.HasPrefix(path, "/mcp/") {
+		return "mcp"
+	}
+	if strings.Contains(path, "/execute") || strings.Contains(path, "/usage") || strings.Contains(path, "/purchase") || strings.HasSuffix(path, "/trade/execute") {
+		return "execution"
+	}
+	if method == http.MethodPost {
+		return "write"
+	}
+	return "read"
+}
+
+func smartRateLimitMax(tier, routeClass string, configuredMax int) int {
+	if configuredMax <= 0 {
+		configuredMax = 100
+	}
+	limits := map[string]map[string]int{
+		"anonymous": {
+			"discovery": 180,
+			"read":      configuredMax,
+			"write":     20,
+			"mcp":       10,
+			"execution": 10,
+		},
+		"invalid_key": {
+			"discovery": 60,
+			"read":      30,
+			"write":     10,
+			"mcp":       5,
+			"execution": 5,
+		},
+		"test": {
+			"discovery": 600,
+			"read":      400,
+			"write":     120,
+			"mcp":       180,
+			"execution": 90,
+		},
+		"live": {
+			"discovery": 2000,
+			"read":      1200,
+			"write":     400,
+			"mcp":       800,
+			"execution": 300,
+		},
+		"api": {
+			"discovery": 600,
+			"read":      400,
+			"write":     100,
+			"mcp":       120,
+			"execution": 80,
+		},
+	}
+	if byClass, ok := limits[tier]; ok {
+		if limit, ok := byClass[routeClass]; ok {
+			return limit
+		}
+	}
+	return configuredMax
+}
+
 func csvContains(csv, value string) bool {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -3012,6 +3150,14 @@ func newRateLimiter(windowMs, max int) *rateLimiter {
 }
 
 func (l *rateLimiter) Allow(key string) bool {
+	allowed, _, _ := l.AllowN(key, l.max)
+	return allowed
+}
+
+func (l *rateLimiter) AllowN(key string, max int) (bool, time.Time, int) {
+	if max <= 0 {
+		max = l.max
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
@@ -3021,5 +3167,9 @@ func (l *rateLimiter) Allow(key string) bool {
 	}
 	b.Count++
 	l.counters[key] = b
-	return b.Count <= l.max
+	remaining := max - b.Count
+	if remaining < 0 {
+		remaining = 0
+	}
+	return b.Count <= max, b.ResetAt, remaining
 }
