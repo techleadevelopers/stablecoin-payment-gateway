@@ -1529,11 +1529,126 @@ timeline
 
 ## Documentacao Tecnica
 
+- [Consoles, API Keys, Policies e Testes E2E](#consoles-api-keys-policies-e-testes-e2e)
 - [ARCHITECTURE.md](./ARCHITECTURE.md): especificacao tecnica e operacional.
 - [schema.sql](./schema.sql): estrutura SQL.
 - [signer/README.md](./signer/README.md): signer isolado.
 - [contracts/README.md](./contracts/README.md): contratos BSC editaveis para treasury, custody e delegates.
 - [contracts/AUDIT_NOTES.md](./contracts/AUDIT_NOTES.md): notas de auditoria e plano seguro de adocao.
+
+## Consoles, API Keys, Policies e Testes E2E
+
+### Console APIs
+
+Endpoints usados pelos consoles frontend:
+
+- `GET /app/agent/summary`: resumo do Agent Console.
+- `GET /app/developer/summary`: resumo do Developer Console.
+- `GET /developer/projects`: lista projetos.
+- `POST /developer/projects`: cria projeto.
+- `GET /developer/projects/{id}`: detalhe do projeto.
+- `PATCH /developer/projects/{id}`: edita projeto.
+- `GET /developer/api-keys`: lista API keys reais.
+- `POST /developer/projects/{id}/api-keys`: cria API key vinculada ao projeto.
+- `POST /developer/api-keys/{id}/rotate`: rotaciona secret, exibido uma unica vez.
+- `POST /developer/api-keys/{id}/disabled`: desabilita API key.
+- `POST /developer/api-keys/{id}/revoked`: revoga API key.
+- `GET /agent/{id}/policy`: le policy real do agente.
+- `PATCH /agent/{id}/policy`: atualiza policy real do agente.
+
+### Persistencia nova
+
+Tabelas criadas pela migracao idempotente:
+
+- `developer_projects`: projetos por ambiente, limite de gasto e metadata.
+- `developer_api_keys`: public key, hash do secret, scopes, IP restrictions, rate limit e usage hash.
+- `developer_project_agents`: vinculo entre projeto e agente.
+- `marketplace_agent_policies`: limites, permissoes, assets, capabilities, providers e fallback por agente.
+
+Secrets de API key nunca sao persistidos em texto puro. O backend salva hash para autenticacao e `log_hash` para correlacao com `api_request_logs`.
+
+### API Keys
+
+Formatos gerados:
+
+- Sandbox: `pk_test_cfx_...` e `sk_test_cfx_...`
+- Production: `pk_live_cfx_...` e `sk_live_cfx_...`
+
+O `secretKey` aparece apenas na resposta de criacao ou rotacao. Depois disso, somente `maskedSecret` e `publicKey` ficam visiveis.
+
+As chaves criadas em `developer_api_keys` autenticam chamadas via:
+
+```http
+Authorization: Bearer sk_test_cfx_...
+```
+
+### Agent policies
+
+Campos principais:
+
+- `dailyLimitUsdt`
+- `monthlyLimitUsdt`
+- `maxTransactionUsdt`
+- `allowedAssets`
+- `allowedCapabilities`
+- `allowedProviders`
+- `permissions`
+- `requireRealProvider`
+- `mockFallback`
+
+Enforcement ativo:
+
+- purchase valida `capabilities:purchase`, asset, capability e valor maximo por transacao.
+- execution valida `capabilities:execute`, capability, provider e `requireRealProvider`.
+- enforcement existe em handler HTTP e na camada `database`, cobrindo tambem chamadas MCP/internas.
+
+### Testes E2E/MCP
+
+Flags opt-in:
+
+```env
+RUN_E2E_TESTS=false
+RUN_TESTNET_PAYMENT_TESTS=false
+RUN_LIVE_PAYMENT_TESTS=false
+E2E_BASE_URL=http://localhost:8080
+E2E_API_KEY=
+E2E_AGENT_WALLET=0x0000000000000000000000000000000000001001
+E2E_PAYER_WALLET=0x0000000000000000000000000000000000001001
+E2E_DEST_WALLET=0x0000000000000000000000000000000000001001
+E2E_PAYMENT_ASSET=USDT
+E2E_PIX_KEY=e2e@example.com
+E2E_TEST_WALLET_PRIVATE_KEY=
+E2E_TEST_TX_HASH=
+E2E_TEST_LOG_INDEX=0
+LIVE_PAYMENT_MAX_USD=1.00
+LIVE_PAYMENT_CONFIRMATION_REQUIRED=true
+```
+
+Execucao local:
+
+```powershell
+go test ./...
+```
+
+E2E HTTP/MCP contra servidor local:
+
+```powershell
+$env:RUN_E2E_TESTS="true"
+$env:E2E_API_KEY="sk_test_cfx_..."
+go test ./tests/e2e -v
+```
+
+Canario testnet:
+
+```powershell
+$env:RUN_E2E_TESTS="true"
+$env:RUN_TESTNET_PAYMENT_TESTS="true"
+$env:E2E_TEST_TX_HASH="0x..."
+$env:E2E_TEST_LOG_INDEX="0"
+go test ./tests/e2e -run TestMCPAgentTestnetPaymentExecuteCanary -v
+```
+
+Live payment tests nunca devem rodar em CI automatico. Exigem `RUN_LIVE_PAYMENT_TESTS=true`, `LIVE_PAYMENT_CONFIRMATION_REQUIRED=true` e limite explicito em `LIVE_PAYMENT_MAX_USD`.
 
 ## Licenca
 
