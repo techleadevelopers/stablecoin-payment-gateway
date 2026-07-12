@@ -2,6 +2,7 @@
 .env
 .env.local
 secrets/
+.mcpregistry_*_token
 
 # Binários compilados pelo Go (Executáveis)
 /dist/
