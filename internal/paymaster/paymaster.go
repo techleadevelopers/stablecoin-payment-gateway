@@ -27,6 +27,7 @@ type Service struct {
         estimator *Estimator
         sigLock   SigLockStore
         batcher   *RelayBatcher
+        relayer   *TokenRelayer // spread-capture engine; nil when not configured
         stopCh    chan struct{}
 }
 
@@ -44,6 +45,14 @@ func NewService(cfg *config.Config, db *database.DB, pool *rpc.Pool) *Service {
         )
         sigLock := NewInMemorySigLock(stopCh)
 
+        // Build the spread-capture TokenRelayer (pure arithmetic engine — no private key).
+        relayer := NewTokenRelayer(cfg.PaymasterRelaySpreadBps, cfg.TreasuryHot)
+        slog.Info("paymaster: TokenRelayer ready",
+                "spread_bps", relayer.SpreadBps(),
+                "fee_destination", relayer.FeeDestination(),
+                "fee_leg_active", relayer.HasFeeDestination(),
+        )
+
         svc := &Service{
                 cfg:       cfg,
                 db:        db,
@@ -51,6 +60,7 @@ func NewService(cfg *config.Config, db *database.DB, pool *rpc.Pool) *Service {
                 oracle:    oracle,
                 estimator: estimator,
                 sigLock:   sigLock,
+                relayer:   relayer,
                 stopCh:    stopCh,
         }
 
@@ -58,6 +68,7 @@ func NewService(cfg *config.Config, db *database.DB, pool *rpc.Pool) *Service {
                 cfg.SignerUrl,
                 cfg.SignerHmacSecret,
                 cfg.PaymasterMulticallContract,
+                relayer,
                 svc.markDLQ,
         )
 

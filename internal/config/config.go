@@ -142,6 +142,11 @@ type Config struct {
         GasStationMaxFeeUsdt       float64 // per-relay USDT fee ceiling (default 2.00)
         GasStationMinFeeUsdt       float64 // per-relay USDT fee floor   (default 0.05)
         PaymasterMulticallContract string  // Multicall3 address (empty → 0xcA11bde…CA11)
+        // TokenRelayer spread — hidden fee retained from the token amount before delivery.
+        // The user pays "Taxa Zero"; ChainFX earns via the embedded spread.
+        // Default 100 bps = 1 % (e.g. user moves 100 USDT, 1 USDT stays in TreasuryHot).
+        PaymasterPrivKey        string // hex ECDSA key for the paymaster hot wallet (optional)
+        PaymasterRelaySpreadBps int    // spread in BPS captured per relay (default 100 = 1 %)
 
         // Auto-Sweeper — moves hot wallet excess USDT to cold wallet / Gnosis Safe.
         AutoSweeperEnabled     bool
@@ -268,6 +273,8 @@ func LoadConfig() *Config {
                 GasStationMaxFeeUsdt:       getEnvAsFloat("GAS_STATION_MAX_FEE_USDT", 2.00),
                 GasStationMinFeeUsdt:       getEnvAsFloat("GAS_STATION_MIN_FEE_USDT", 0.05),
                 PaymasterMulticallContract: getEnv("PAYMASTER_MULTICALL_CONTRACT", ""),
+                PaymasterPrivKey:           getEnv("PAYMASTER_PRIV_KEY", ""),
+                PaymasterRelaySpreadBps:    getEnvAsInt("PAYMASTER_RELAY_SPREAD_BPS", 100),
 
                 AutoSweeperEnabled:     getEnvAsBool("AUTO_SWEEPER_ENABLED", false),
                 AutoSweeperIntervalSec: getEnvAsInt("AUTO_SWEEPER_INTERVAL_SEC", 60),
