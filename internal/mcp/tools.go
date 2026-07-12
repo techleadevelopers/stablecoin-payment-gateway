@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"payment-gateway/internal/database"
+	"payment-gateway/internal/metrics"
+	"payment-gateway/internal/money"
 	"payment-gateway/internal/webhooks"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -232,6 +234,44 @@ type toolCallRequest struct {
 
 func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+
+	// ── Per-API-key rate limiting ─────────────────────────────────────────────
+	apiKey := mcpAPIKey(r)
+	keyHash := shortMCPSecretHash(apiKey)
+	if keyHash == "" {
+		// Anonymous: bucket by client IP
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.SplitN(xff, ",", 2)
+			keyHash = "anon:" + strings.TrimSpace(parts[0])
+		} else {
+			addr := r.RemoteAddr
+			if idx := strings.LastIndex(addr, ":"); idx != -1 {
+				addr = addr[:idx]
+			}
+			keyHash = "anon:" + addr
+		}
+	}
+	limit := tierLimit(apiKey)
+	allowed, remaining, resetAt := s.rl.allow(keyHash, limit)
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limit))
+	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+	w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+	if !allowed {
+		retryAfter := int(time.Until(resetAt).Seconds())
+		if retryAfter < 1 {
+			retryAfter = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		metrics.IncMCPRateLimited()
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error":      fmt.Sprintf("rate limit exceeded: %d calls/minute allowed for this key tier", limit),
+			"retryAfter": retryAfter,
+			"resetAt":    resetAt.UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	// ── Dispatch ──────────────────────────────────────────────────────────────
 	var req toolCallRequest
 	if err := decodeJSON(r, &req); err != nil {
 		s.recordMCPToolLog(r, "", "error", "invalid_json", time.Since(start))
@@ -241,6 +281,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request) {
 	result, err := s.callTool(r.Context(), req.Name, req.Arguments)
 	if err != nil {
 		s.recordMCPToolLog(r, req.Name, "error", err.Error(), time.Since(start))
+		metrics.IncMCPToolCall("error")
 		writeJSON(w, http.StatusOK, map[string]any{
 			"isError": true,
 			"content": []map[string]any{{"type": "text", "text": err.Error()}},
@@ -248,6 +289,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordMCPToolLog(r, req.Name, "ok", "", time.Since(start))
+	metrics.IncMCPToolCall("ok")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"isError": false,
 		"content": []map[string]any{{"type": "json", "json": result}},
@@ -283,6 +325,30 @@ func mcpAPIKey(r *http.Request) string {
 		return key
 	}
 	return strings.TrimSpace(r.URL.Query().Get("apiKey"))
+}
+
+// fullMCPSecretHash returns the full 64-char SHA-256 hex of an API key.
+// Used for storing agent ownership on webhook subscriptions (IDOR fix).
+func fullMCPSecretHash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:]) // 64 chars
+}
+
+// mcpAPIKeyCtxKey is the context key used to propagate the raw API key from
+// handleToolsCall into the tool dispatcher so deep helpers can read it.
+type mcpAPIKeyCtxKey struct{}
+
+// mcpAPIKeyFromCtx retrieves the API key stashed in the context by handleToolsCall.
+// Falls back to empty string when not present (non-MCP callers).
+func mcpAPIKeyFromCtx(ctx context.Context) string {
+	if v, ok := ctx.Value(mcpAPIKeyCtxKey{}).(string); ok {
+		return v
+	}
+	return ""
 }
 
 func shortMCPSecretHash(value string) string {
@@ -341,46 +407,40 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 	case "create_webhook_subscription":
 		return s.toolCreateWebhookSubscription(ctx, args)
 	case "list_webhook_subscriptions":
-		// SECURITY: ListWebhookSubscriptions returns ALL subscriptions because the
-		// webhook_subscriptions table has no per-agent ownership column.
-		// TODO: add agent_wallet/api_key_hash column + DB migration for full IDOR fix.
-		// For now, mask targetUrl to prevent cross-agent URL enumeration.
-		subs, err := s.db.ListWebhookSubscriptions(ctx)
+		// SECURITY (IDOR fix): scope the listing to subscriptions created by THIS
+		// agent, identified by the full SHA-256 of their API key stored at creation
+		// time (migration 004 adds agent_api_key_hash to webhook_subscriptions).
+		// Agents cannot see each other's subscriptions or target URLs.
+		apiKey := mcpAPIKeyFromCtx(ctx)
+		agentHash := fullMCPSecretHash(apiKey)
+		subs, err := s.db.ListWebhookSubscriptionsByAgent(ctx, agentHash)
 		if err != nil {
 			return nil, err
 		}
 		type safeSub struct {
-			ID          string `json:"id"`
-			Provider    string `json:"provider"`
-			TargetURL   string `json:"targetUrl"`   // partially masked
-			HasSecret   bool   `json:"hasSecret"`
-			Events      []string `json:"events"`
-			Active      bool   `json:"active"`
-			Description string `json:"description,omitempty"`
-			FailureCount int   `json:"failureCount"`
+			ID           string   `json:"id"`
+			Provider     string   `json:"provider"`
+			TargetURL    string   `json:"targetUrl"`
+			HasSecret    bool     `json:"hasSecret"`
+			Events       []string `json:"events"`
+			Active       bool     `json:"active"`
+			Description  string   `json:"description,omitempty"`
+			FailureCount int      `json:"failureCount"`
 		}
-		masked := make([]safeSub, 0, len(subs))
-		agentKey := mcpAPIKey(r)
+		out := make([]safeSub, 0, len(subs))
 		for _, sub := range subs {
-			target := sub.TargetURL
-			// Mask targetUrl for agents that don't own the subscription.
-			// Owner identification is best-effort (description prefix match) until
-			// the schema supports agent_wallet on webhook_subscriptions.
-			if agentKey == "" {
-				target = maskURL(target)
-			}
-			masked = append(masked, safeSub{
-				ID:          sub.ID,
-				Provider:    sub.Provider,
-				TargetURL:   target,
-				HasSecret:   sub.HasSecret,
-				Events:      sub.Events,
-				Active:      sub.Active,
-				Description: sub.Description,
+			out = append(out, safeSub{
+				ID:           sub.ID,
+				Provider:     sub.Provider,
+				TargetURL:    sub.TargetURL, // full URL — caller owns these
+				HasSecret:    sub.HasSecret,
+				Events:       sub.Events,
+				Active:       sub.Active,
+				Description:  sub.Description,
 				FailureCount: sub.FailureCount,
 			})
 		}
-		return masked, nil
+		return out, nil
 	case "trigger_test_webhook":
 		return s.toolTriggerTestWebhook(ctx, args)
 	case "createPaymentIntent":
@@ -775,9 +835,12 @@ func (s *Server) executePaymentsFXCapability(ctx context.Context, event *databas
 	if amountBRLStr == "" || agentWallet == "" || idempotencyKey == "" {
 		return nil, fmt.Errorf("payments_fx requer: amount_brl, agent_wallet, idempotency_key no input")
 	}
-	var amountBRL float64
-	if _, err := fmt.Sscanf(amountBRLStr, "%f", &amountBRL); err != nil || amountBRL <= 0 {
-		return nil, fmt.Errorf("amount_brl deve ser positivo")
+	// ── Amount parsing — use fixed-point arithmetic to avoid float64 imprecision ──
+	// money.ParseMoney parses "123.45" → MoneyMinor (int64, ×100 = centavos BRL).
+	// All subsequent calculations stay in integer arithmetic until DB conversion.
+	amountBRLMoney, parseErr := money.ParseMoney(amountBRLStr)
+	if parseErr != nil || amountBRLMoney <= 0 {
+		return nil, fmt.Errorf("amount_brl deve ser um numero positivo valido (ex: '150.00')")
 	}
 
 	usdtRate := s.prices.GetPrice("BRL")
@@ -794,9 +857,20 @@ func (s *Server) executePaymentsFXCapability(ctx context.Context, event *databas
 		feeBps = s.cfg.M2MPixFeeBps // safe fallback
 	}
 
-	grossUSDT := amountBRL / usdtRate
-	feeUSDT := grossUSDT * float64(feeBps) / 10_000.0
-	requiredUSDT := grossUSDT + feeUSDT
+	// ── Fixed-point fee calculation ───────────────────────────────────────────
+	// money.RateFromFloat: float64 rate → RateDecimal (int64, ×1_000_000)
+	// money.TokensFromFiat: MoneyMinor ÷ RateDecimal → TokenUnits (int64, ×1_000_000)
+	// money.TokenFeeBps: TokenUnits × feeBps ÷ 10_000 → TokenUnits (no float)
+	usdtRateDecimal := money.RateFromFloat(usdtRate)
+	grossUSDTTokens := money.TokensFromFiat(amountBRLMoney, usdtRateDecimal)
+	feeUSDTTokens := money.TokenFeeBps(grossUSDTTokens, feeBps)
+	requiredUSDTTokens := grossUSDTTokens + feeUSDTTokens
+
+	// Convert back to float64 for DB persistence (NUMERIC(28,8)) and JSON.
+	amountBRL := amountBRLMoney.Float64()
+	grossUSDT := grossUSDTTokens.Float64()
+	feeUSDT := feeUSDTTokens.Float64()
+	requiredUSDT := requiredUSDTTokens.Float64()
 
 	paymentAddress := strings.ToLower(strings.TrimSpace(s.cfg.TreasuryHot))
 	reqHash := database.CanonicalRequestHash(paymentType, amountBRLStr, pixKey, idempotencyKey, agentWallet)
@@ -1182,7 +1256,11 @@ func (s *Server) toolCreateWebhookSubscription(ctx context.Context, args map[str
 	if len(events) == 0 {
 		return nil, fmt.Errorf("events deve conter pelo menos um evento válido: %v", webhooks.AllEvents())
 	}
-	return s.db.CreateWebhookSubscription(ctx, provider, targetURL, secret, description, events)
+	// SECURITY: store the creating agent's key hash for IDOR isolation.
+	// ListWebhookSubscriptionsByAgent will use this to scope list responses.
+	apiKey := mcpAPIKeyFromCtx(ctx)
+	agentKeyHash := fullMCPSecretHash(apiKey) // full 64-char SHA-256
+	return s.db.CreateWebhookSubscription(ctx, provider, targetURL, secret, description, agentKeyHash, "mcp", events)
 }
 
 func (s *Server) toolTriggerTestWebhook(ctx context.Context, args map[string]any) (any, error) {

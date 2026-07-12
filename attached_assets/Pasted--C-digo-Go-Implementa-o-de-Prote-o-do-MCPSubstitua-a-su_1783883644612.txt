@@ -1,0 +1,141 @@
+. Código Go: Implementação de Proteção do MCPSubstitua a sua lógica atual da ferramenta toolGetOrderStatus e do handler de webhook para forçar a validação de escopo e evitar vazamento de dados.mcp/tools.go (Correção de IDOR)Gopackage mcp
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"net/http"
+	"github.com/shopspring/decimal"
+)
+
+type OrderResponse struct {
+	ID                uint            `json:"id"`
+	Amount            decimal.Decimal `json:"amount"`
+	OverpaymentAmount decimal.Decimal `json:"overpayment_amount"`
+	Asset             string          `json:"asset"`
+	Status            string          `json:"status"`
+}
+
+// HashApiKey gera um hash SHA-256 seguro para buscar no banco sem expor a chave em texto plano
+func HashApiKey(apiKey string) string {
+	hash := sha256.Sum256([]byte(apiKey))
+	return hex.EncodeToString(hash[:])
+}
+
+// ToolGetOrderStatus agora exige a carteira do agente autenticado para validar ownership (Anti-IDOR)
+func (s *MCPServer) ToolGetOrderStatus(orderID uint, authenticatedAgentWallet string) (*OrderResponse, error) {
+	var order OrderResponse
+	
+	// Corrigido: A query obriga o match do ID E da carteira do agente dono da ordem
+	err := s.db.QueryRow(
+		`SELECT id, amount, overpayment_amount, asset, status 
+		 FROM orders 
+		 WHERE id = $1 AND agent_wallet = $2`, 
+		orderID, authenticatedAgentWallet,
+	).Scan(&order.ID, &order.Amount, &order.OverpaymentAmount, &order.Asset, &order.Status)
+
+	if err != nil {
+		return nil, errors.New("order not found or unauthorized access")
+	}
+
+	return &order, nil
+}
+
+// ListWebhookSubscriptions filtrado estritamente por agente
+func (s *MCPServer) ListWebhookSubscriptions(apiKey string) ([]string, error) {
+	apiKeyHash := HashApiKey(apiKey)
+	
+	rows, err := s.db.Query(
+		`SELECT target_url FROM mcp_webhook_subscriptions WHERE agent_api_key_hash = $1`, 
+		apiKeyHash,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var urls []string
+	for rows.Next() {
+		var url string
+		if err := rows.Scan(&url); err == nil {
+			urls = append(urls, url)
+		}
+	}
+	return urls, nil
+}
+🛡️ 3. Validação de Confirmações On-Chain Nativas (Floor Mínimo)No seu worker que escuta a blockchain (workers/onchain.go), garanta que mesmo se alguém injetar por engano um valor baixo de confirmações via variável de ambiente, o sistema force os mínimos de segurança para evitar ataques de gasto duplo via reorgs profundos.Gopackage workers
+
+import (
+	"context"
+	"log"
+	"os"
+	"strconv"
+)
+
+type ChainConfig struct {
+	ChainID        int
+	Name           string
+	SafeFloorBlocks uint64
+}
+
+func GetRequiredConfirmations(chainName string) uint64 {
+	// Pega o valor configurado na ENV
+	envVal := os.Getenv("ONCHAIN_CONFIRMATIONS_" + chainName)
+	configVal, err := strconv.ParseUint(envVal, 10, 64)
+	
+	// Define os pisos mínimos de segurança incontornáveis para produção real
+	var floor uint64
+	switch chainName {
+	case "POLYGON":
+		floor = 64 // Proteção robusta contra reorgs agressivos da Polygon
+	case "BSC":
+		floor = 3  // Mínimo padrão seguro para BSC fast blocks
+	default:
+		floor = 12 // Fallback defensivo para outras chains EVM
+	}
+
+	if err != nil || configVal < floor {
+		return floor // Override forçado para o piso seguro
+	}
+	
+	return configVal
+}
+
+func (w *OnChainWorker) ProcessBlocks(ctx context.Context) {
+	requiredBSC := GetRequiredConfirmations("BSC")
+	requiredPolygon := GetRequiredConfirmations("POLYGON")
+
+	log.Printf("[Worker Setup] Rodando monitoramento seguro. Mínimo de confirmações exigido -> BSC: %d, Polygon: %d", requiredBSC, requiredPolygon)
+	
+	// Execução do loop do worker...
+}
+📊 4. Script k6 de Teste Focado em Latência (Infra Pronta)Como salvamos os scripts em Go para a lógica de negócio interna, salve este arquivo stress_production.js para rodar na sua pipeline antes do deploy, garantindo o monitoramento do $P50$ e $P95$ sob pressão direto no endpoint exposto do gateway:JavaScriptimport http from 'k6/http';
+import { check } from 'k6';
+
+export const options = {
+    scenarios: {
+        constant_load: {
+            executor: 'constant-arrival-rate',
+            rate: 200,             // 200 requisições simultâneas por segundo
+            timeUnit: '1s',
+            duration: '1m',        // Teste de consistência de 1 minuto
+            preAllocatedVUs: 100,
+            maxVUs: 300,
+        },
+    },
+    thresholds: {
+        http_req_duration: ['p50<100', 'p95<200'], // Garantia contratual de SLO de produção
+        http_req_failed: ['rate<0.0001'],          // Erro máximo aceitável de 0.01%
+    },
+};
+
+export default function () {
+	const params = {
+		headers: {
+			'Content-Type': 'application/json',
+			'X-Agent-API-Key': 'prod_clean_test_key_abc123'
+		},
+	};
+    const res = http.get('https://api.chainfx.local/agent/v1/capabilities', params);
+    check(res, { 'status is 200': (r) => r.status === 200 });
+}

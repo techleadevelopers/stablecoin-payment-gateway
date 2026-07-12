@@ -21,6 +21,12 @@ type WebhookSubscription struct {
 	Events          []string   `json:"events"`
 	Active          bool       `json:"active"`
 	Description     string     `json:"description,omitempty"`
+	// AgentKeyHash is the full SHA-256 hex of the MCP API key that created this
+	// subscription. Empty for web/mobile origins. Used to enforce IDOR isolation:
+	// MCP callers only see subscriptions matching their own key hash.
+	AgentKeyHash string `json:"-"`
+	// CreatedBy is "mcp" | "web" | "mobile". Populated after migration 004.
+	CreatedBy       string     `json:"createdBy,omitempty"`
 	CreatedAt       time.Time  `json:"createdAt"`
 	UpdatedAt       time.Time  `json:"updatedAt"`
 	LastTriggeredAt *time.Time `json:"lastTriggeredAt,omitempty"`
@@ -30,12 +36,22 @@ type WebhookSubscription struct {
 }
 
 // CreateWebhookSubscription inserts a new outbound automation subscription.
-func (db *DB) CreateWebhookSubscription(ctx context.Context, provider, targetURL, secret, description string, events []string) (*WebhookSubscription, error) {
+// CreateWebhookSubscription inserts a new outbound automation subscription.
+// agentKeyHash: full SHA-256 hex of the MCP API key (pass "" for web/mobile).
+// createdBy: "mcp" | "web" | "mobile" (defaults to "web" when empty).
+func (db *DB) CreateWebhookSubscription(ctx context.Context, provider, targetURL, secret, description, agentKeyHash, createdBy string, events []string) (*WebhookSubscription, error) {
 	id := NewID()
+	if createdBy == "" {
+		createdBy = "web"
+	}
+	var agentHash sql.NullString
+	if agentKeyHash != "" {
+		agentHash = sql.NullString{String: agentKeyHash, Valid: true}
+	}
 	_, err := db.SQL.ExecContext(ctx, `
-		INSERT INTO webhook_subscriptions (id, provider, target_url, secret, events, description)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		id, provider, targetURL, secret, pq.Array(events), description)
+		INSERT INTO webhook_subscriptions (id, provider, target_url, secret, events, description, agent_api_key_hash, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		id, provider, targetURL, secret, pq.Array(events), description, agentHash, createdBy)
 	if err != nil {
 		return nil, err
 	}
@@ -46,9 +62,10 @@ func (db *DB) CreateWebhookSubscription(ctx context.Context, provider, targetURL
 func (db *DB) GetWebhookSubscription(ctx context.Context, id string) (*WebhookSubscription, error) {
 	row := db.SQL.QueryRowContext(ctx, `
 		SELECT id, provider, target_url, secret, events, active, COALESCE(description, ''),
-		       created_at, updated_at, last_triggered_at, last_status_code, last_error, failure_count
+		       created_at, updated_at, last_triggered_at, last_status_code, last_error, failure_count,
+		       COALESCE(agent_api_key_hash, ''), COALESCE(created_by, 'web')
 		FROM webhook_subscriptions WHERE id = $1`, id)
-	return scanWebhookSubscription(row)
+	return scanWebhookSubscriptionFull(row)
 }
 
 // ListWebhookSubscriptions returns every configured subscription.
@@ -64,6 +81,35 @@ func (db *DB) ListWebhookSubscriptions(ctx context.Context) ([]*WebhookSubscript
 	var out []*WebhookSubscription
 	for rows.Next() {
 		sub, err := scanWebhookSubscription(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sub)
+	}
+	return out, rows.Err()
+}
+
+// ListWebhookSubscriptionsByAgent returns subscriptions owned by a specific MCP agent
+// (filtered by agent_api_key_hash). If agentKeyHash is empty, returns all subscriptions
+// (for admin/dashboard use). This is the IDOR-safe variant for MCP callers.
+func (db *DB) ListWebhookSubscriptionsByAgent(ctx context.Context, agentKeyHash string) ([]*WebhookSubscription, error) {
+	if agentKeyHash == "" {
+		return db.ListWebhookSubscriptions(ctx)
+	}
+	rows, err := db.SQL.QueryContext(ctx, `
+SELECT id, provider, target_url, secret, events, active, COALESCE(description, ''),
+       created_at, updated_at, last_triggered_at, last_status_code, last_error, failure_count,
+       COALESCE(agent_api_key_hash, ''), COALESCE(created_by, 'web')
+FROM webhook_subscriptions
+WHERE agent_api_key_hash = $1
+ORDER BY created_at DESC`, agentKeyHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*WebhookSubscription
+	for rows.Next() {
+		sub, err := scanWebhookSubscriptionFull(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -205,6 +251,9 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+// scanWebhookSubscription scans the legacy 13-column result (no agent columns).
+// Used by ListWebhookSubscriptions and ListActiveWebhookSubscriptionsForEvent
+// which join across all subscriptions without agent ownership context.
 func scanWebhookSubscription(row rowScanner) (*WebhookSubscription, error) {
 	var sub WebhookSubscription
 	var secret sql.NullString
@@ -219,6 +268,39 @@ func scanWebhookSubscription(row rowScanner) (*WebhookSubscription, error) {
 	}
 	sub.Secret = secret.String
 	sub.HasSecret = secret.Valid && secret.String != ""
+	if lastTriggeredAt.Valid {
+		sub.LastTriggeredAt = &lastTriggeredAt.Time
+	}
+	if lastStatusCode.Valid {
+		v := int(lastStatusCode.Int64)
+		sub.LastStatusCode = &v
+	}
+	if lastError.Valid {
+		sub.LastError = &lastError.String
+	}
+	return &sub, nil
+}
+
+// scanWebhookSubscriptionFull scans the 15-column result that includes
+// agent_api_key_hash and created_by (available after migration 004).
+func scanWebhookSubscriptionFull(row rowScanner) (*WebhookSubscription, error) {
+	var sub WebhookSubscription
+	var secret sql.NullString
+	var lastTriggeredAt sql.NullTime
+	var lastStatusCode sql.NullInt64
+	var lastError sql.NullString
+	var agentHash, createdBy string
+	if err := row.Scan(
+		&sub.ID, &sub.Provider, &sub.TargetURL, &secret, pq.Array(&sub.Events), &sub.Active, &sub.Description,
+		&sub.CreatedAt, &sub.UpdatedAt, &lastTriggeredAt, &lastStatusCode, &lastError, &sub.FailureCount,
+		&agentHash, &createdBy,
+	); err != nil {
+		return nil, err
+	}
+	sub.Secret = secret.String
+	sub.HasSecret = secret.Valid && secret.String != ""
+	sub.AgentKeyHash = agentHash
+	sub.CreatedBy = createdBy
 	if lastTriggeredAt.Valid {
 		sub.LastTriggeredAt = &lastTriggeredAt.Time
 	}

@@ -38,7 +38,8 @@ func (reg *Registry) Create(ctx context.Context, provider, targetURL, secret, de
 	if len(validEvents) == 0 {
 		return nil, fmt.Errorf("events deve conter pelo menos um evento válido: %v", AllEvents())
 	}
-	return reg.db.CreateWebhookSubscription(ctx, provider, targetURL, secret, description, validEvents)
+	// Web/admin callers have no MCP API key — pass empty hash, "web" origin.
+	return reg.db.CreateWebhookSubscription(ctx, provider, targetURL, secret, description, "", "web", validEvents)
 }
 
 // Get returns a single subscription by id.

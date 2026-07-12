@@ -120,5 +120,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /internal/email/marketing", s.handleMarketingEmail)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, map[string]any{"ok": true}) })
 	mux.HandleFunc("GET /readyz", s.handleReady)
+	// Prometheus-compatible metrics endpoint — protected by admin bearer auth.
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	return securityHeaders(cors(s.cfg, withRequestID(s.withDeveloperRequestLog(s.withPublicSurfaceGuards(s.withSmartRateLimit(mux))))))
 }

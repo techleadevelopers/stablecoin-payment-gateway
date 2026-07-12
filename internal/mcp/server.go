@@ -15,11 +15,17 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	"payment-gateway/internal/agents"
 	"payment-gateway/internal/config"
 	"payment-gateway/internal/database"
+	"payment-gateway/internal/metrics"
 	"payment-gateway/internal/webhooks"
 	"payment-gateway/internal/workers"
 )
@@ -41,11 +47,87 @@ type Server struct {
 	prices   PriceSource
 	agents   *agents.Client
 	dispatch *webhooks.Dispatcher
+	rl       *mcpRateLimiter // per-API-key sliding-window limiter for /mcp/tools/call
+}
+
+// ─── Per-API-key rate limiter (sliding window, stdlib only) ──────────────────
+
+// mcpRateLimiter enforces a per-API-key call budget on POST /mcp/tools/call.
+// Limits (calls per minute):
+//
+//	"live" keys  (sk_live_cfx_*) : 120/min
+//	"test" keys  (sk_test_cfx_*) :  40/min
+//	anonymous / no key           :   5/min
+type mcpRateLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]*mcpBucket
+}
+
+type mcpBucket struct {
+	timestamps []time.Time
+	limit      int
+}
+
+func newMCPRateLimiter() *mcpRateLimiter {
+	return &mcpRateLimiter{buckets: make(map[string]*mcpBucket)}
+}
+
+// allow returns (allowed, remaining, resetAt).
+func (rl *mcpRateLimiter) allow(key string, limit int) (bool, int, time.Time) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	window := time.Minute
+	cutoff := now.Add(-window)
+	resetAt := now.Add(window)
+
+	b, ok := rl.buckets[key]
+	if !ok {
+		b = &mcpBucket{limit: limit}
+		rl.buckets[key] = b
+	}
+
+	// Evict timestamps outside the sliding window
+	idx := 0
+	for idx < len(b.timestamps) && b.timestamps[idx].Before(cutoff) {
+		idx++
+	}
+	b.timestamps = b.timestamps[idx:]
+
+	remaining := b.limit - len(b.timestamps)
+	if remaining <= 0 {
+		if len(b.timestamps) > 0 {
+			resetAt = b.timestamps[0].Add(window)
+		}
+		return false, 0, resetAt
+	}
+	b.timestamps = append(b.timestamps, now)
+	return true, remaining - 1, resetAt
+}
+
+// tierLimit returns calls-per-minute for a given MCP API key.
+func tierLimit(apiKey string) int {
+	switch {
+	case strings.HasPrefix(apiKey, "sk_live_"):
+		return 120
+	case strings.HasPrefix(apiKey, "sk_test_"):
+		return 40
+	default:
+		return 5
+	}
 }
 
 // New builds an MCP server bound to the platform's shared services.
 func New(db *database.DB, cfg *config.Config, prices *workers.PriceWorker, agentsClient *agents.Client, dispatcher *webhooks.Dispatcher) *Server {
-	return &Server{db: db, cfg: cfg, prices: prices, agents: agentsClient, dispatch: dispatcher}
+	return &Server{
+		db:       db,
+		cfg:      cfg,
+		prices:   prices,
+		agents:   agentsClient,
+		dispatch: dispatcher,
+		rl:       newMCPRateLimiter(),
+	}
 }
 
 // Authorize is called before every MCP request. It must write an error

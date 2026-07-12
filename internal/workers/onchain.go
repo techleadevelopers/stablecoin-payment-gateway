@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 
 	"payment-gateway/internal/config"
+	"payment-gateway/internal/metrics"
 	"payment-gateway/internal/database"
 	"payment-gateway/internal/models"
 	rpcpool "payment-gateway/internal/rpc"
@@ -27,6 +28,12 @@ const (
 	defaultBSCConfirmations     = uint64(6)
 	defaultPolygonConfirmations = uint64(128)
 	scanBlockRange              = uint64(50)
+
+	// Absolute safety floors — these cannot be overridden by environment variables.
+	// Setting BSC_MIN_CONFIRMATIONS < 3 or POLYGON_MIN_CONFIRMATIONS < 64 will
+	// be silently clamped to these values to prevent double-spend via reorgs.
+	minSafeBSCConfirmations     = uint64(3)
+	minSafePolygonConfirmations = uint64(64)
 )
 
 type onchainNetworkConfig struct {
@@ -60,14 +67,32 @@ func NewOnchainWorker(bus *EventBus, db *database.DB, cfg *config.Config) *Oncha
 	if bscConf == 0 {
 		bscConf = defaultBSCConfirmations
 	}
+	// SECURITY: enforce absolute safety floors — prevents misconfiguration
+	// (e.g. BSC_MIN_CONFIRMATIONS=1) from enabling double-spend via reorgs.
+	if bscConf < minSafeBSCConfirmations {
+		slog.Warn("OnchainWorker: BSC_MIN_CONFIRMATIONS abaixo do piso de seguranca, sobrescrevendo",
+			"configured", bscConf, "floor", minSafeBSCConfirmations)
+		bscConf = minSafeBSCConfirmations
+	}
+
 	polyConf := cfg.PolygonMinConfirmations
 	if polyConf == 0 {
 		polyConf = defaultPolygonConfirmations
 	}
+	if polyConf < minSafePolygonConfirmations {
+		slog.Warn("OnchainWorker: POLYGON_MIN_CONFIRMATIONS abaixo do piso de seguranca, sobrescrevendo",
+			"configured", polyConf, "floor", minSafePolygonConfirmations)
+		polyConf = minSafePolygonConfirmations
+	}
+
+	// Register effective floors with the metrics package for Prometheus export.
+	metrics.SetOnchainConfirmationFloor("BSC", bscConf)
+	metrics.SetOnchainConfirmationFloor("POLYGON", polyConf)
+
 	slog.Info("OnchainWorker: confirmacoes configuradas",
 		"bsc_confirmations", bscConf,
 		"polygon_confirmations", polyConf,
-		"note", "aumente via BSC_MIN_CONFIRMATIONS / POLYGON_MIN_CONFIRMATIONS se reorgs forem detectados")
+		"note", "piso minimo de seguranca: BSC>=3, Polygon>=64; aumentar se reorgs forem detectados")
 
 	for _, network := range []onchainNetworkConfig{
 		{Name: "BSC", RPCUrls: cfg.BscRpcUrls, TokenContract: cfg.BscUsdtContract, TokenDecimals: 18, RequiredConfirmations: bscConf},
@@ -338,6 +363,8 @@ func (ow *OnchainWorker) matchM2MDeposit(ctx context.Context, network onchainNet
 			"tx", txHash,
 			"network", network.Name,
 			"action_required", "verificar e restituir ou registrar saldo excedente")
+		// Emit Prometheus counter — triggers alert if chainfx_m2m_overpayment_total > 0
+		metrics.IncOverpayment(chosen.IntentID, overpaymentUSDT)
 		ow.bus.Publish(Event{
 			Type:    "m2m.overpayment.detected",
 			OrderID: chosen.IntentID,
