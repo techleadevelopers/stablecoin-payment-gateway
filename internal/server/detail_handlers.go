@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
@@ -101,18 +100,18 @@ func (s *Server) handleAppFees(w http.ResponseWriter, r *http.Request) {
 				"description": "PIX → USDT (usuário compra stablecoin)",
 				"flow":        "web / mobile",
 				"model":       "spread sobre cotação",
-				"spreadBps":   s.buySpreadBps(),
+				"spreadBps":   s.buySpreadBpsForFeesPage(),
 				"exampleBRL":  500,
-				"exampleUSDT": fmtRate(500, rate, s.buySpreadBps()),
+				"exampleUSDT": fmtRate(500, rate, s.buySpreadBpsForFeesPage()),
 			},
 			{
 				"layer":       "sell",
 				"description": "USDT → PIX (usuário vende stablecoin)",
 				"flow":        "web / mobile",
 				"model":       "spread sobre cotação",
-				"spreadBps":   s.sellSpreadBps(),
+				"spreadBps":   s.sellSpreadBps(100, rate),
 				"exampleUSDT": 100,
-				"exampleBRL":  fmtSell(100, rate, s.sellSpreadBps()),
+				"exampleBRL":  fmtSell(100, rate, s.sellSpreadBps(100, rate)),
 			},
 			{
 				"layer":       "marketplace_purchase",
@@ -542,13 +541,9 @@ func latencyBuckets(ms int) map[string]any {
 	}
 }
 
-func (s *Server) buySpreadBps() int {
+func (s *Server) buySpreadBpsForFeesPage() int {
 	// ChainFX buy spread: look up from config if present, else return standard 200bps
 	return 200
-}
-
-func (s *Server) sellSpreadBps() int {
-	return 150
 }
 
 func fmtRate(brl, rate float64, spreadBps int) string {
