@@ -1,0 +1,95 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.techleadevelopers/chainfx-mcp",
+  "title": "ChainFX Capability Network",
+  "description": "AI agent capability marketplace with stablecoin payments, metering and settlement.",
+  "websiteUrl": "https://www.chainfx.store",
+  "repository": {
+    "url": "https://github.com/chainfx/payment-gateway",
+    "source": "github"
+  },
+  "version": "1.2.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://stablecoin-payment-gateway-production-3ee2.up.railway.app/mcp/initialize",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer ChainFX API key. Use a live or test key issued by ChainFX.",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "tool": "mcp-publisher",
+      "version": "1.0.0",
+      "build_info": {
+        "service": "chainfx-mcp",
+        "public_title": "ChainFX Capability Network MCP",
+        "release_channel": "production",
+        "timestamp": "2026-07-11T00:00:00Z"
+      }
+    },
+    "store.chainfx/product": {
+      "category": "capability-marketplace",
+      "positioning": "economic infrastructure for autonomous agents",
+      "primary_flow": [
+        "discover_capability",
+        "purchase_capability",
+        "pay_stablecoin",
+        "receive_access_grant",
+        "execute_capability",
+        "meter_usage",
+        "settle_provider"
+      ],
+      "featured_tools": [
+        "searchCapabilities",
+        "listCapabilities",
+        "getCapability",
+        "getCapabilityContract",
+        "purchaseCapability",
+        "getPurchase",
+        "executeCapability",
+        "chooseRoute",
+        "getUsage",
+        "listAssets",
+        "quote",
+        "trade",
+        "settlementStatus"
+      ],
+      "featured_capabilities": [
+        "semantic_memory",
+        "llm_chat",
+        "document_ocr",
+        "payments_fx",
+        "capability_discovery",
+        "aml_screening"
+      ],
+      "payments": {
+        "assets": [
+          "USDT",
+          "USDC"
+        ],
+        "networks": [
+          "BSC"
+        ],
+        "settlement": "stablecoin"
+      },
+      "production_readiness": {
+        "catalog": true,
+        "metering_billing_settlement": true,
+        "mock_dev_fallback": false,
+        "seed_fixtures": false
+      },
+      "docs": {
+        "openapi": "https://stablecoin-payment-gateway-production-3ee2.up.railway.app/openapi.json",
+        "agent_capabilities": "https://stablecoin-payment-gateway-production-3ee2.up.railway.app/agent/v1/capabilities",
+        "well_known": "https://stablecoin-payment-gateway-production-3ee2.up.railway.app/.well-known/ai-services.json"
+      }
+    }
+  }
+}
