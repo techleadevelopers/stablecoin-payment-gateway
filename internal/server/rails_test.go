@@ -96,6 +96,52 @@ func TestMCPInitializeRouteUsesAPIKeyAuth(t *testing.T) {
 	}
 }
 
+func TestCORSPreflightAllowsTraceHeaders(t *testing.T) {
+	cfg := &config.Config{AllowedOrigins: "https://chatgpt.com"}
+	req := httptest.NewRequest(http.MethodOptions, "/readyz", nil)
+	req.Header.Set("Origin", "https://chatgpt.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	req.Header.Set("Access-Control-Request-Headers", "X-Request-Id, X-Correlation-Id, X-Trace-Id")
+	rec := httptest.NewRecorder()
+
+	cors(cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("preflight should not reach next handler")
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 preflight, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://chatgpt.com" {
+		t.Fatalf("expected allowed origin to be reflected, got %q", got)
+	}
+	allowHeaders := rec.Header().Get("Access-Control-Allow-Headers")
+	for _, header := range []string{"X-Request-Id", "X-Correlation-Id", "X-Trace-Id"} {
+		if !strings.Contains(allowHeaders, header) {
+			t.Fatalf("expected %s in Access-Control-Allow-Headers, got %q", header, allowHeaders)
+		}
+	}
+}
+
+func TestWebAvailabilityAliasesBypassAuthAndDB(t *testing.T) {
+	cfg := &config.Config{ChainFXRequireAPIKey: true}
+	wm := workers.NewWorkerManager(nil, cfg, nil, nil)
+	s := New(cfg, nil, wm, nil)
+
+	for _, path := range []string{"/admin", "/app/agent/", "/app/developer/"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+
+		s.Handler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200 availability response, got %d body=%s", path, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"ok":true`) {
+			t.Fatalf("%s: expected ok response, got %s", path, rec.Body.String())
+		}
+	}
+}
+
 func TestSmartRateLimitSkipsCriticalWebhooks(t *testing.T) {
 	s := &Server{cfg: &config.Config{}}
 	for _, path := range []string{"/api/pix/webhook", "/api/pix/webhook/buy", "/api/efi/charges/webhook/buy"} {
