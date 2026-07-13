@@ -2,63 +2,69 @@
 
 ## Produto
 
-O módulo mobile expõe a API do app ChainFX para usuários finais comprarem, venderem e acompanharem stablecoins, carteiras, KYC, DCA, swaps, notificações e webhooks.
+O modulo mobile expoe a API do app ChainFX para usuarios finais comprarem, venderem e acompanharem stablecoins, carteiras, KYC, DCA, swaps, notificacoes e webhooks.
 
-O produto mobile é a camada humana do gateway:
+O mobile e a camada humana do gateway:
 
-- compra de cripto com PIX/cartão;
+- compra de cripto com PIX/cartao;
 - venda de USDT para PIX;
-- carteira BSC do usuário;
-- cotação e catálogo multi-asset;
-- KYC e limites por nível;
-- estratégias DCA;
-- notificações e webhooks do usuário;
+- carteira BSC do usuario;
+- cotacao e catalogo multi-asset;
+- KYC e limites por nivel;
+- estrategias DCA;
+- notificacoes e webhooks do usuario;
 - status operacional via health check.
 
-O mobile não substitui o MCP/agent rail. Ele atende usuário final em app React Native; o MCP atende agentes autônomos e integrações máquina-máquina.
+O mobile nao substitui o MCP/agent rail. Ele atende usuario final em app React Native; o MCP atende agentes autonomos e integracoes maquina-maquina.
 
 ## Fluxos Principais
 
-### Autenticação
+### Autenticacao
 
 1. `POST /api/mobile/auth/register`
 2. `POST /api/mobile/auth/login`
 3. Cliente usa `Authorization: Bearer <accessToken>`
-4. `POST /api/mobile/auth/refresh` renova sessão
+4. `POST /api/mobile/auth/refresh` renova sessao
 5. `POST /api/mobile/auth/logout` revoga refresh token salvo
+
+O refresh token e salvo no banco como digest SHA-256 do token completo. Isso evita o limite de 72 bytes do bcrypt em JWTs longos e permite revogacao no logout.
 
 ### Compra
 
 1. App chama `POST /api/mobile/order/buy`.
 2. Handler mobile encaminha para `/api/buy`.
-3. Ordem é associada ao `user_id`.
-4. Usuário acompanha em `/api/mobile/order/{id}` ou `/api/mobile/orders`.
+3. Ordem e associada ao `user_id`.
+4. Usuario acompanha em `/api/mobile/order/{id}` ou `/api/mobile/orders`.
 
 ### Venda / PIX
 
 1. App chama `POST /api/mobile/order/sell` ou `POST /api/mobile/pix/generate`.
 2. Handler encaminha para `/api/order`.
-3. On-chain worker monitora depósito USDT.
-4. Payout PIX é executado pelo worker principal.
+3. On-chain worker monitora deposito USDT.
+4. Payout PIX e executado pelo worker principal.
 
 ### Carteira
 
-`POST /api/mobile/wallet/generate` cria uma EOA e retorna a private key uma única vez para o cliente guardar. O backend salva apenas o endereço.
+`POST /api/mobile/wallet/generate` agora registra uma wallet EVM criada no cliente/agente:
 
-Importante: esse modelo é simples para MVP, mas coloca a geração de chave privada no backend. Para produção, preferir geração client-side ou MPC/custódia formal.
+```json
+{ "wallet_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e" }
+```
+
+O backend valida o endereco, salva o checksum address e nunca gera nem retorna private key.
 
 ### KYC
 
-Há dois fluxos:
+Ha dois fluxos:
 
 - legado: `/api/mobile/user/kyc` e `/api/mobile/user/kyc/status`;
-- v2 assíncrono: `/api/mobile/kyc/submit`, `/api/mobile/kyc/status`, `/api/mobile/kyc/history`, `/api/mobile/kyc/limits`.
+- v2 assincrono: `/api/mobile/kyc/submit`, `/api/mobile/kyc/status`, `/api/mobile/kyc/history`, `/api/mobile/kyc/limits`.
 
-O worker `KYCWorker` consome eventos `kyc.submitted` e aprova níveis 1 e 2 automaticamente; nível 3 fica em revisão.
+O worker `KYCWorker` consome eventos `kyc.submitted` e aprova niveis 1 e 2 automaticamente; nivel 3 fica em revisao.
 
 ## Rotas
 
-### Públicas
+### Publicas
 
 - `GET /api/mobile/health`
 - `GET /api/mobile/assets`
@@ -81,7 +87,8 @@ O worker `KYCWorker` consome eventos `kyc.submitted` e aprova níveis 1 e 2 auto
 - PIX: `POST /api/mobile/pix/generate`, `GET /api/mobile/pix/status/{id}`, `POST /api/mobile/pix/copy`
 - DCA: `POST /api/mobile/dca/create`, `GET /api/mobile/dca/strategies`, `PUT /api/mobile/dca/{id}`, `DELETE /api/mobile/dca/{id}`, `GET /api/mobile/dca/{id}/status`
 - Security: `POST /api/mobile/security/pin`, `POST /api/mobile/security/biometry`, `POST /api/mobile/security/2fa`, `GET /api/mobile/security/devices`, `DELETE /api/mobile/security/device`
-- Contracts: `POST /api/mobile/contracts/payout`, `GET /api/mobile/contracts/vault`, `GET /api/mobile/contracts/delegate`, `POST /api/mobile/contracts/pause`, `POST /api/mobile/contracts/unpause`
+- Contracts read-only: `GET /api/mobile/contracts/vault`, `GET /api/mobile/contracts/delegate`
+- Contracts bloqueados no mobile: `POST /api/mobile/contracts/payout`, `POST /api/mobile/contracts/pause`, `POST /api/mobile/contracts/unpause` retornam `403` ate existir escopo admin/internal.
 - Notifications: `GET /api/mobile/notifications`, `PUT /api/mobile/notifications/read`, `DELETE /api/mobile/notifications/{id}`, `POST /api/mobile/notifications/token`
 - Swap: `POST /api/mobile/swap/quote`, `POST /api/mobile/swap/execute`, `GET /api/mobile/swap/{id}`, `GET /api/mobile/swaps`
 - User webhooks: `POST /api/mobile/webhooks/subscribe`, `GET /api/mobile/webhooks`, `DELETE /api/mobile/webhooks/{id}`, `PUT /api/mobile/webhooks/{id}/toggle`
@@ -91,91 +98,72 @@ O worker `KYCWorker` consome eventos `kyc.submitted` e aprova níveis 1 e 2 auto
 
 - `POST /api/mobile/pix/confirm`
 
-Essa rota é pública porque é pensada como webhook de provider. Ela deve permanecer protegida indiretamente pela validação/HMAC do handler interno `/api/pix/webhook`.
+Essa rota e publica porque e pensada como webhook de provider. Ela deve permanecer protegida indiretamente pela validacao/HMAC do handler interno `/api/pix/webhook`.
 
-## Configuração
+## Idempotencia
 
-Variáveis principais:
+As rotas financeiras abaixo usam `Idempotency-Key`:
 
-- `MOBILE_JWT_SECRET`: segredo HS256 do access token, mínimo 32 chars.
-- `MOBILE_REFRESH_SECRET`: segredo HS256 do refresh token, mínimo 32 chars recomendado.
+- `POST /api/mobile/order/buy`
+- `POST /api/mobile/order/sell`
+- `POST /api/mobile/order/swap`
+- `POST /api/mobile/pix/generate`
+- `POST /api/mobile/dca/create`
+- `POST /api/mobile/swap/execute`
+
+Se o cliente nao enviar a chave, o servidor gera uma e devolve nos headers. Operacoes 2xx sao marcadas como `completed`; falhas sao marcadas como `failed` para permitir retry.
+
+## Configuracao
+
+- `MOBILE_JWT_SECRET`: segredo HS256 do access token, minimo 32 chars.
+- `MOBILE_REFRESH_SECRET`: segredo HS256 do refresh token, minimo 32 chars recomendado.
 - `MOBILE_JWT_EXPIRES_MIN`: TTL do access token, default 15.
 - `MOBILE_REFRESH_EXPIRES_DAYS`: TTL do refresh token, default 7.
 - `FCM_SERVER_KEY`: push notification.
 - `ALLOWED_ORIGINS`: origens permitidas.
 
-Em produção, o servidor entra em panic se `MOBILE_JWT_SECRET` ou `MOBILE_REFRESH_SECRET` estiver usando valores default.
+Em producao, o servidor entra em panic se `MOBILE_JWT_SECRET` ou `MOBILE_REFRESH_SECRET` estiver usando valores default.
 
-## Auditoria Técnica
+Antes de deployar as rotas financeiras com idempotencia, aplique `migrations/009_mobile_operation_ids.sql` na base cloud. Sem essa tabela, o middleware falha fechado com `503`.
 
-### OK
+## Auditoria Tecnica
 
-- Mobile é encapsulado via `mobile.Wrap(api.Handler())`, sem mexer nas rotas existentes.
-- JWT access token é obrigatório nas rotas sensíveis.
-- Refresh token é comparado com hash salvo no banco antes de renovar.
-- Refresh token é limpo no logout.
-- Webhooks mobile têm validação SSRF na criação e o delivery também revalida antes do envio.
-- Health check cobre database, price worker, RPC config, event bus e JWT config.
-- Produção bloqueia secrets mobile default.
+### Corrigido neste modulo
 
-### Gaps Críticos
+- `auth/refresh`: refresh token nao usa mais bcrypt no JWT inteiro; handlers tambem retornam erro se a persistencia da sessao falhar.
+- `wallet/generate`: backend nao gera nem retorna private key; apenas registra endereco EVM client-side.
+- `contracts/payout`, `contracts/pause`, `contracts/unpause`: bloqueados para JWT mobile comum com `403`.
+- `settings`: `GET`, `PUT` e `settings/limits` usam persistencia via tabela `settings`.
+- `idempotency`: middleware agora finaliza status `completed`/`failed` e foi aplicado nas rotas financeiras mobile.
+- `schema`: `operation_ids` foi adicionado em `schema_mobile_base.sql` e na migracao `009_mobile_operation_ids.sql`.
 
-1. `auth/refresh` falha após registro/login.
+### Riscos Restantes
 
-Motivo: `SaveRefreshToken` usa bcrypt para hashear o JWT completo. JWT refresh normalmente tem mais de 72 bytes, e bcrypt rejeita senha longa. Os handlers ignoram o erro retornado por `SaveRefreshToken`, então o token não é salvo e `auth/refresh` retorna sessão encerrada.
+- Criar autenticacao admin/internal propria para mutacoes de contrato, em namespace fora do app mobile.
+- Adicionar testes Go especificos para auth refresh, wallet registration, settings persistence e idempotency replay.
+- Reexecutar E2E na URL cloud apos deploy dessa versao.
 
-Correção recomendada:
+## Testes em Producao
 
-- salvar SHA-256/HMAC-SHA256 do refresh token em vez de bcrypt; ou
-- gerar refresh token opaco curto, com entropia alta, e hashear esse token.
-
-2. `wallet/generate` gera private key no backend e retorna ao app.
-
-Isso funciona para MVP, mas é um risco operacional e regulatório. Produção deveria migrar para geração client-side, wallet custodial formal, MPC, ou fluxo explícito com consentimento e criptografia client-side.
-
-3. Endpoints de contrato expõem comandos sensíveis atrás apenas do JWT mobile.
-
-`/api/mobile/contracts/payout`, `/pause`, `/unpause` não devem ser acessíveis por usuário comum. Mesmo que hoje pareçam stubs/eventos, devem exigir escopo admin/internal ou sair do namespace mobile.
-
-4. Settings ainda são mock.
-
-`GET /settings`, `PUT /settings` e `/settings/limits` retornam dados fixos e não persistem alterações.
-
-5. Idempotência existe mas não está aplicada nas rotas money-moving mobile.
-
-`requireIdempotency` foi implementado, mas as rotas `order/buy`, `order/sell`, `pix/generate`, `swap/execute`, `contracts/payout` não estão envelopadas por ele.
-
-## Testes em Produção
-
-Base testada:
+Base testada anteriormente:
 
 ```text
 https://stablecoin-payment-gateway-production-3ee2.up.railway.app
 ```
 
-Comandos foram executados com `curl.exe` no PowerShell usando payload JSON via arquivo ASCII para evitar problemas de quoting.
-
-Resultado observado em 2026-07-13:
+Resultado observado em 2026-07-13 antes deste patch:
 
 - `GET /api/mobile/health`: `200`, ok.
-- `GET /api/mobile/assets`: `200`, retornou 6 assets.
+- `GET /api/mobile/assets`: `200`, retornou assets.
 - `GET /api/mobile/user/profile` sem token: `401`, ok.
-- `POST /api/mobile/auth/register`: `201`, criou usuário e tokens.
+- `POST /api/mobile/auth/register`: `201`, criou usuario e tokens.
 - `GET /api/mobile/user/profile` com token: `200`.
-- `GET /api/mobile/wallet/address`: `200`, sem wallet gerada.
-- `GET /api/mobile/settings`: `200`, dados mock.
+- `GET /api/mobile/wallet/address`: `200`.
+- `GET /api/mobile/settings`: `200`, ainda mock antes do patch.
 - `GET /api/mobile/kyc/limits`: `200`.
-- `POST /api/mobile/swap/quote`: `200`, quote USDT->USDC.
-- `POST /api/mobile/security/pin` com PIN curto: `400`, validação ok.
-- `POST /api/mobile/auth/refresh`: `401`, bug confirmado.
+- `POST /api/mobile/swap/quote`: `200`.
+- `POST /api/mobile/security/pin` com PIN curto: `400`.
+- `POST /api/mobile/auth/refresh`: `401`, bug confirmado antes do patch.
 - `POST /api/mobile/auth/logout`: `200`.
 
-## Checklist de Produção
-
-- Corrigir armazenamento/validação de refresh token.
-- Remover geração backend de private key ou marcar como MVP/inseguro no produto.
-- Colocar endpoints `/contracts/*` sob autorização admin/internal.
-- Aplicar idempotência em rotas que criam ordem, swap ou payout.
-- Persistir settings de usuário.
-- Adicionar testes Go para auth, refresh, SSRF, wallet, KYC e rotas money-moving.
-- Adicionar testes E2E mobile com usuário sintético e cleanup.
+Depois do deploy deste patch, `auth/refresh` deve retornar `200` para token recem emitido e `wallet/generate` deve exigir `wallet_address`.
