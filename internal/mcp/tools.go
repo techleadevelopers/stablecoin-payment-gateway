@@ -1582,6 +1582,14 @@ func (s *Server) toolCreateM2MPaymentIntent(ctx context.Context, args map[string
 	}
 
 	feeLabel := fmt.Sprintf("%d%% (%d bps)", feeBps/100, feeBps)
+	destinationLabel := "destino fiat"
+	if paymentType == "pix" {
+		destinationLabel = "PIX informado"
+	}
+	if paymentType == "credit_card" {
+		destinationLabel = "link/fatura/cartao informado"
+	}
+
 	resp := map[string]any{
 		"intent_id":       intent.ID,
 		"status":          string(intent.Status),
@@ -1595,7 +1603,7 @@ func (s *Server) toolCreateM2MPaymentIntent(ctx context.Context, args map[string
 		"payment_address": intent.PaymentAddress,
 		"expires_at":      intent.ExpiresAt,
 		"idempotent":      isIdempotent,
-		"next_step":       "Deposite exatamente required_usdt em USDT (BEP-20 ou Polygon) para payment_address. O sistema paga o PIX automaticamente apos a confirmacao on-chain.",
+		"next_step":       fmt.Sprintf("Deposite exatamente required_usdt em USDT para payment_address antes de expires_at. A ChainFX conciliara pelo valor exato e pagara o %s apos a confirmacao on-chain.", destinationLabel),
 	}
 	if intent.PixKey != "" {
 		resp["pix_key"] = intent.PixKey
