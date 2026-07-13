@@ -130,8 +130,6 @@ type Config struct {
 	M2MDepositTolerancePct float64 // fraction tolerance for on-chain amount match (default 0.005)
 	M2MMaxDailyOutflowBRL  float64 // max BRL settled per 24 h (0 = unlimited)
 	M2MDepositAddresses    string  // comma-separated unique deposit addresses for pending M2M intents
-	M2MCardProviderURL     string  // optional HTTP adapter for credit-card/bill payment settlement
-	M2MCardProviderAPIKey  string  // bearer token for the card provider adapter
 
 	// On-chain reorg protection — minimum block confirmations before accepting a deposit.
 	// BSC is finalistic with low reorg depth; Polygon can have deep reorgs.
@@ -270,8 +268,6 @@ func LoadConfig() *Config {
 		M2MDepositTolerancePct:  getEnvAsFloat("M2M_DEPOSIT_TOLERANCE_PCT", 0.005),
 		M2MMaxDailyOutflowBRL:   getEnvAsFloat("M2M_MAX_DAILY_OUTFLOW_BRL", 50000),
 		M2MDepositAddresses:     getEnv("M2M_DEPOSIT_ADDRESSES", ""),
-		M2MCardProviderURL:      strings.TrimRight(getEnv("M2M_CARD_PROVIDER_URL", ""), "/"),
-		M2MCardProviderAPIKey:   getEnv("M2M_CARD_PROVIDER_API_KEY", ""),
 		BSCMinConfirmations:     getEnvAsUint64("BSC_MIN_CONFIRMATIONS", 6),
 		PolygonMinConfirmations: getEnvAsUint64("POLYGON_MIN_CONFIRMATIONS", 128),
 
