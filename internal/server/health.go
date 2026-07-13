@@ -10,6 +10,17 @@ import (
 	"payment-gateway/internal/database"
 )
 
+func (s *Server) handleWebAvailability(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"surface":   "web",
+		"path":      r.URL.Path,
+		"ready":     "/readyz",
+		"health":    "/healthz",
+		"dashboard": "/developers/dashboard",
+	})
+}
+
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
@@ -17,8 +28,8 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "db": false, "error": err.Error()})
 		return
 	}
-	gaps := s.operationalGaps()
 	certOK, certErr := s.efiCertificateReady()
+	gaps := s.operationalGapsWithCertificate(certOK)
 	status := http.StatusOK
 	if s.cfg.IsProduction() && (len(gaps) > 0 || !certOK) {
 		status = http.StatusServiceUnavailable
@@ -41,20 +52,22 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) operationalGaps() []string {
+	certOK, _ := s.efiCertificateReady()
+	return s.operationalGapsWithCertificate(certOK)
+}
+
+func (s *Server) operationalGapsWithCertificate(certOK bool) []string {
 	checks := map[string]bool{
-		"pix_provider": s.efiPixConfigured(),
-		"efi_certificate": func() bool {
-			ok, _ := s.efiCertificateReady()
-			return ok
-		}(),
-		"pix_webhook":    defaultString(s.cfg.PixWebhookSecret, s.cfg.WebhookSecret) != "",
-		"efi_card":       s.efiChargesConfigured(),
-		"signer":         s.cfg.SignerUrl != "" && s.cfg.SignerHmacSecret != "",
-		"signer_private": !strings.Contains(strings.ToLower(strings.TrimSpace(s.cfg.SignerUrl)), "up.railway.app"),
-		"lgpd_secret":    s.cfg.LGPDSecret != "",
-		"no_simulations": !s.cfg.AllowSimulations,
-		"sweep_not_stub": !s.cfg.EnableSweepStub,
-		"treasury_hot":   s.cfg.TreasuryHot != "",
+		"pix_provider":    s.efiPixConfigured(),
+		"efi_certificate": certOK,
+		"pix_webhook":     defaultString(s.cfg.PixWebhookSecret, s.cfg.WebhookSecret) != "",
+		"efi_card":        s.efiChargesConfigured(),
+		"signer":          s.cfg.SignerUrl != "" && s.cfg.SignerHmacSecret != "",
+		"signer_private":  !strings.Contains(strings.ToLower(strings.TrimSpace(s.cfg.SignerUrl)), "up.railway.app"),
+		"lgpd_secret":     s.cfg.LGPDSecret != "",
+		"no_simulations":  !s.cfg.AllowSimulations,
+		"sweep_not_stub":  !s.cfg.EnableSweepStub,
+		"treasury_hot":    s.cfg.TreasuryHot != "",
 	}
 	if strings.EqualFold(s.cfg.SignerNetwork, "bsc") || strings.EqualFold(s.cfg.SignerNetwork, "evm") {
 		checks["signer_bsc"] = true
