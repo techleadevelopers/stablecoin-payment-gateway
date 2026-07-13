@@ -18,6 +18,13 @@ type paymentCustomerInput struct {
 	Address   map[string]any
 }
 
+type paymentCardInput struct {
+	PaymentToken   string
+	Brand          string
+	Installments   int
+	BillingAddress map[string]any
+}
+
 func nestedFloat(root map[string]any, keys ...string) float64 {
 	var current any = root
 	for _, key := range keys {
@@ -77,6 +84,15 @@ func firstNonNilMap(values ...map[string]any) map[string]any {
 		}
 	}
 	return nil
+}
+
+func firstPositiveInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func nestedString(root map[string]any, keys ...string) string {
