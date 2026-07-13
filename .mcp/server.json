@@ -16,8 +16,8 @@
       "headers": [
         {
           "name": "Authorization",
-          "description": "Bearer ChainFX API key. Use a live or test key issued by ChainFX.",
-          "isRequired": true,
+          "description": "Optional for discovery. Required as Bearer ChainFX API key for purchases, execution, private status and M2M payments.",
+          "isRequired": false,
           "isSecret": true
         }
       ]
