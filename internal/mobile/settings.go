@@ -1,62 +1,94 @@
 package mobile
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
 
-// ============================================
-// 🔷 SETTINGS HANDLERS
-// ============================================
+	"payment-gateway/internal/models"
+)
 
-// handleGetSettings - GET /api/mobile/settings
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	// TODO: Buscar configurações do banco de dados usando userID
-	// userID := userIDFromCtx(r)
-	// settings, err := s.db.GetSettings(r.Context(), userID)
-
-	settings := map[string]any{
-		"dark_mode":             true,
-		"language":              "pt-BR",
-		"currency":              "BRL",
-		"notifications_enabled": true,
-		"daily_limit":           10000.00,
+	uid := userIDFromCtx(r)
+	settings, err := mobileDB(s.db).GetSettings(r.Context(), uid)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
 	}
-
 	writeJSON(w, http.StatusOK, settings)
 }
 
-// handleUpdateSettings - PUT /api/mobile/settings
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		DarkMode            *bool   `json:"dark_mode"`
-		Language            *string `json:"language"`
-		Currency            *string `json:"currency"`
-		NotificationsEnabled *bool  `json:"notifications_enabled"`
+		DarkMode             *bool    `json:"dark_mode"`
+		Language             *string  `json:"language"`
+		Currency             *string  `json:"currency"`
+		NotificationsEnabled *bool    `json:"notifications_enabled"`
+		DailyLimit           *float64 `json:"daily_limit"`
 	}
-
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid payload"})
 		return
 	}
 
-	// TODO: Atualizar configurações no banco
-	// userID := userIDFromCtx(r)
-	// err := s.db.UpdateSettings(r.Context(), userID, req)
+	uid := userIDFromCtx(r)
+	settings, err := mobileDB(s.db).GetSettings(r.Context(), uid)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if settings == nil {
+		settings = &models.UserSettings{UserID: uid, DarkMode: true, Language: "pt-BR", Currency: "BRL", NotificationsEnabled: true, DailyLimit: 10000}
+	}
+	settings.UserID = uid
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"message": "configurações atualizadas",
-	})
+	if req.DarkMode != nil {
+		settings.DarkMode = *req.DarkMode
+	}
+	if req.Language != nil {
+		if lang := strings.TrimSpace(*req.Language); lang != "" {
+			settings.Language = lang
+		}
+	}
+	if req.Currency != nil {
+		if currency := strings.ToUpper(strings.TrimSpace(*req.Currency)); currency != "" {
+			settings.Currency = currency
+		}
+	}
+	if req.NotificationsEnabled != nil {
+		settings.NotificationsEnabled = *req.NotificationsEnabled
+	}
+	if req.DailyLimit != nil {
+		if *req.DailyLimit <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "daily_limit deve ser maior que zero"})
+			return
+		}
+		settings.DailyLimit = *req.DailyLimit
+	}
+
+	if err := mobileDB(s.db).UpsertSettings(r.Context(), settings); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
 }
 
-// handleGetLimits - GET /api/mobile/settings/limits
 func (s *Server) handleGetLimits(w http.ResponseWriter, r *http.Request) {
-	// TODO: Buscar limites do usuário
-	// userID := userIDFromCtx(r)
-	// limits, err := s.db.GetUserLimits(r.Context(), userID)
+	uid := userIDFromCtx(r)
+	settings, err := mobileDB(s.db).GetSettings(r.Context(), uid)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 
+	dailyLimit := 10000.0
+	if settings != nil && settings.DailyLimit > 0 {
+		dailyLimit = settings.DailyLimit
+	}
+	usedToday := 0.0
 	writeJSON(w, http.StatusOK, map[string]any{
-		"daily_limit":         10000.00,
-		"used_today":          2500.00,
-		"remaining":           7500.00,
-		"max_per_transaction": 5000.00,
+		"daily_limit":         dailyLimit,
+		"used_today":          usedToday,
+		"remaining":           dailyLimit - usedToday,
+		"max_per_transaction": dailyLimit,
 	})
 }
