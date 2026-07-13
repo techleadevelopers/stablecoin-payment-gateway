@@ -1,15 +1,14 @@
 package mobile
 
 import (
-        "context"
-        "database/sql"
-        "errors"
-        "fmt"
-        "time"
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"time"
 
-        "golang.org/x/crypto/bcrypt"
-
-        "payment-gateway/internal/database"
+	"payment-gateway/internal/database"
         "payment-gateway/internal/models"
 )
 
@@ -89,13 +88,15 @@ func (q *mobileQueries) SaveRefreshToken(ctx context.Context, userID, token stri
         // Store a bcrypt hash, not the raw token. This way a DB dump never leaks
         // usable refresh tokens, and revocation (ClearRefreshToken) truly invalidates
         // all sessions — handleRefresh validates via CompareHashAndPassword.
-        hash, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.DefaultCost)
-        if err != nil {
-                return fmt.Errorf("SaveRefreshToken: hash: %w", err)
-        }
-        _, err = q.sql.ExecContext(ctx,
-                "UPDATE users SET refresh_token_hash=$1 WHERE id=$2", string(hash), userID)
-        return err
+	hash := refreshTokenDigest(token)
+	_, err := q.sql.ExecContext(ctx,
+		"UPDATE users SET refresh_token_hash=$1 WHERE id=$2", hash, userID)
+	return err
+}
+
+func refreshTokenDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 func (q *mobileQueries) ClearRefreshToken(ctx context.Context, userID string) error {
