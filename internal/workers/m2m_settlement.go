@@ -170,6 +170,28 @@ func (w *M2MSettlementWorker) settleOne(ctx context.Context, intentID string) {
 
 // runSettlement calls the configured fiat settlement adapter with retry + exponential back-off.
 func (w *M2MSettlementWorker) runSettlement(ctx context.Context, intent *database.AgentPaymentIntent) error {
+	if intent.PaymentType == database.M2MTypeCreditCard {
+		if err := w.queueCardPayment(ctx, intent); err != nil {
+			_, lTx, lErr := w.db.AcquireM2MSettlementLock(ctx, intent.ID)
+			if lErr == nil && lTx != nil {
+				_ = w.db.MarkM2MFailed(ctx, lTx, intent.ID, err.Error(), true)
+			}
+			w.bus.Publish(Event{
+				Type:    "m2m.settlement.failed",
+				OrderID: intent.ID,
+				Payload: map[string]any{
+					"intent_id":    intent.ID,
+					"permanent":    true,
+					"error":        err.Error(),
+					"attempts":     intent.Attempts,
+					"payment_type": string(intent.PaymentType),
+					"amount_brl":   intent.AmountBRL,
+				},
+			})
+			return err
+		}
+		return nil
+	}
 
 	retryCfg := resilience.RetryConfig{
 		MaxAttempts: m2mMaxAttempts,
@@ -195,7 +217,7 @@ func (w *M2MSettlementWorker) runSettlement(ctx context.Context, intent *databas
 			return true
 		},
 		func(ctx context.Context) error {
-			id, st, callErr := w.callFiatSettlement(ctx, intent)
+			id, st, callErr := w.callEfiSettlement(ctx, intent)
 			if callErr != nil {
 				return callErr
 			}
@@ -269,9 +291,33 @@ func (w *M2MSettlementWorker) runSettlement(ctx context.Context, intent *databas
 	return nil
 }
 
-// callFiatSettlement routes the intent to the settlement adapter for its payment type.
+// queueCardPayment publishes the destination payment data for the operator/RPA.
+// The intent remains in "settling" until the real fiat payment is confirmed.
+func (w *M2MSettlementWorker) queueCardPayment(_ context.Context, intent *database.AgentPaymentIntent) error {
+	if intent.PaymentLink == "" && intent.Barcode == "" {
+		return fmt.Errorf("destino de cartao ausente na intent %s: payment_link ou barcode obrigatorio", intent.ID)
+	}
+	w.bus.Publish(Event{
+		Type:    "m2m.card_payment.due",
+		OrderID: intent.ID,
+		Payload: map[string]any{
+			"intent_id":        intent.ID,
+			"payment_type":     string(intent.PaymentType),
+			"amount_brl":       fmt.Sprintf("%.2f", intent.AmountBRL),
+			"payment_link":     intent.PaymentLink,
+			"barcode":          intent.Barcode,
+			"beneficiary_name": intent.BeneficiaryName,
+			"due_date":         intent.DueDate,
+			"agent_wallet":     intent.AgentWallet,
+			"deposit_tx":       intent.DepositTx,
+		},
+	})
+	return nil
+}
+
+// callEfiSettlement routes PIX intents to Efí.
 // Returns (provider settlement ID, provider status, error).
-func (w *M2MSettlementWorker) callFiatSettlement(ctx context.Context, intent *database.AgentPaymentIntent) (string, string, error) {
+func (w *M2MSettlementWorker) callEfiSettlement(ctx context.Context, intent *database.AgentPaymentIntent) (string, string, error) {
 	switch intent.PaymentType {
 	case database.M2MTypePix:
 		if w.cfg.EfiClientID == "" || w.cfg.EfiClientSecret == "" {
@@ -281,60 +327,9 @@ func (w *M2MSettlementWorker) callFiatSettlement(ctx context.Context, intent *da
 			return "", "", fmt.Errorf("pix_key ausente na intent %s", intent.ID)
 		}
 		return w.callEfiPix(ctx, intent.ID, intent.PixKey, intent.AmountBRL)
-	case database.M2MTypeCreditCard:
-		if intent.PaymentLink == "" && intent.Barcode == "" {
-			return "", "", fmt.Errorf("destino de cartao ausente na intent %s: payment_link ou barcode obrigatorio", intent.ID)
-		}
-		return w.callCardProvider(ctx, intent)
 	default:
 		return "", "", fmt.Errorf("payment_type nao suportado: %s", intent.PaymentType)
 	}
-}
-
-func (w *M2MSettlementWorker) callCardProvider(ctx context.Context, intent *database.AgentPaymentIntent) (string, string, error) {
-	if strings.TrimSpace(w.cfg.M2MCardProviderURL) == "" {
-		return "", "", fmt.Errorf("M2M_CARD_PROVIDER_URL nao configurado para liquidar credit_card")
-	}
-	payload := map[string]any{
-		"intent_id":        intent.ID,
-		"amount_brl":       fmt.Sprintf("%.2f", intent.AmountBRL),
-		"payment_link":     intent.PaymentLink,
-		"barcode":          intent.Barcode,
-		"beneficiary_name": intent.BeneficiaryName,
-		"due_date":         intent.DueDate,
-		"agent_wallet":     intent.AgentWallet,
-	}
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.cfg.M2MCardProviderURL, bytes.NewReader(body))
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if w.cfg.M2MCardProviderAPIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+w.cfg.M2MCardProviderAPIKey)
-	}
-	resp, err := w.client.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("card provider request: %w", err)
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-	if resp.StatusCode >= 400 {
-		return "", "", fmt.Errorf("card provider status %d: %s", resp.StatusCode, string(respBody))
-	}
-	var result struct {
-		ID     string `json:"id"`
-		TxID   string `json:"tx_id"`
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", "", fmt.Errorf("card provider response parse: %w", err)
-	}
-	settlementID := firstNonEmptyWorker(result.ID, result.TxID)
-	if settlementID == "" {
-		return "", "", fmt.Errorf("card provider: id vazio na resposta")
-	}
-	return settlementID, firstNonEmptyWorker(result.Status, "submitted"), nil
 }
 
 func (w *M2MSettlementWorker) callEfiPix(ctx context.Context, intentID, pixKey string, amountBRL float64) (string, string, error) {
@@ -432,13 +427,4 @@ func (w *M2MSettlementWorker) checkDailyOutflow(ctx context.Context, thisBRL flo
 			used, thisBRL, maxBRL)
 	}
 	return nil
-}
-
-func firstNonEmptyWorker(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
