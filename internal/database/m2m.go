@@ -33,34 +33,36 @@ const (
 
 // AgentPaymentIntent is the full state of one M2M payment intent.
 type AgentPaymentIntent struct {
-	ID                string          `json:"id"`
-	IdempotencyKey    string          `json:"-"`
-	AgentWallet       string          `json:"agent_wallet"`
-	PaymentType       M2MPaymentType  `json:"payment_type"`
-	PixKey            string          `json:"pix_key,omitempty"`
-	PaymentLink       string          `json:"payment_link,omitempty"`
-	Barcode           string          `json:"barcode,omitempty"`
-	BeneficiaryName   string          `json:"beneficiary_name,omitempty"`
-	DueDate           string          `json:"due_date,omitempty"`
-	AmountBRL         float64         `json:"amount_brl"`
-	FeeBps            int             `json:"fee_bps"`
-	FeeUSDT           float64         `json:"fee_usdt"`
-	GrossUSDT         float64         `json:"gross_usdt"`
-	RequiredUSDT      float64         `json:"required_usdt"`
-	USDTRate          float64         `json:"usdt_rate"`
-	PaymentAddress    string          `json:"payment_address"`
-	Status            M2MIntentStatus `json:"status"`
-	DepositTx         *string         `json:"deposit_tx,omitempty"`
-	DepositAmountUSDT *float64        `json:"deposit_amount_usdt,omitempty"`
-	EfiEndToEndID     *string         `json:"efi_end_to_end_id,omitempty"`
-	EfiStatus         *string         `json:"efi_status,omitempty"`
-	ErrorMessage      *string         `json:"error_message,omitempty"`
-	Attempts          int             `json:"attempts"`
-	RequestHash       string          `json:"request_hash"`
-	ExpiresAt         time.Time       `json:"expires_at"`
-	SettledAt         *time.Time      `json:"settled_at,omitempty"`
-	CreatedAt         time.Time       `json:"created_at"`
-	UpdatedAt         time.Time       `json:"updated_at"`
+	ID                    string          `json:"id"`
+	IdempotencyKey        string          `json:"-"`
+	AgentWallet           string          `json:"agent_wallet"`
+	PaymentType           M2MPaymentType  `json:"payment_type"`
+	PixKey                string          `json:"pix_key,omitempty"`
+	PaymentLink           string          `json:"payment_link,omitempty"`
+	Barcode               string          `json:"barcode,omitempty"`
+	BeneficiaryName       string          `json:"beneficiary_name,omitempty"`
+	DueDate               string          `json:"due_date,omitempty"`
+	AmountBRL             float64         `json:"amount_brl"`
+	FeeBps                int             `json:"fee_bps"`
+	FeeUSDT               float64         `json:"fee_usdt"`
+	GrossUSDT             float64         `json:"gross_usdt"`
+	RequiredUSDT          float64         `json:"required_usdt"`
+	USDTRate              float64         `json:"usdt_rate"`
+	PaymentAddress        string          `json:"payment_address"`
+	Status                M2MIntentStatus `json:"status"`
+	DepositTx             *string         `json:"deposit_tx,omitempty"`
+	DepositAmountUSDT     *float64        `json:"deposit_amount_usdt,omitempty"`
+	EfiEndToEndID         *string         `json:"efi_end_to_end_id,omitempty"`
+	EfiStatus             *string         `json:"efi_status,omitempty"`
+	SettlementReceiptURL  string          `json:"settlement_receipt_url,omitempty"`
+	SettlementReceiptNote string          `json:"settlement_receipt_note,omitempty"`
+	ErrorMessage          *string         `json:"error_message,omitempty"`
+	Attempts              int             `json:"attempts"`
+	RequestHash           string          `json:"request_hash"`
+	ExpiresAt             time.Time       `json:"expires_at"`
+	SettledAt             *time.Time      `json:"settled_at,omitempty"`
+	CreatedAt             time.Time       `json:"created_at"`
+	UpdatedAt             time.Time       `json:"updated_at"`
 }
 
 // M2MCreateInput contains the validated fields for creating a new intent.
@@ -167,7 +169,7 @@ func (db *DB) GetAgentPaymentIntent(ctx context.Context, id string) (*AgentPayme
 SELECT id, idempotency_key, agent_wallet, payment_type, pix_key, payment_link, barcode, beneficiary_name, due_date,
        amount_brl, fee_bps, fee_usdt, gross_usdt, required_usdt, usdt_rate,
        payment_address, status, deposit_tx, deposit_amount_usdt,
-       efi_end_to_end_id, efi_status, error_message, attempts,
+       efi_end_to_end_id, efi_status, settlement_receipt_url, settlement_receipt_note, error_message, attempts,
        request_hash, expires_at, settled_at, created_at, updated_at
 FROM agent_payment_intents
 WHERE id = $1`
@@ -374,10 +376,19 @@ func (db *DB) MarkM2MSettling(ctx context.Context, tx *sql.Tx, intentID string) 
 
 // MarkM2MSettled records successful settlement and commits the lock transaction.
 func (db *DB) MarkM2MSettled(ctx context.Context, tx *sql.Tx, intentID, efiEndToEndID, efiStatus string) error {
+	return db.MarkM2MSettledWithReceipt(ctx, tx, intentID, efiEndToEndID, efiStatus, "", "")
+}
+
+// MarkM2MSettledWithReceipt records successful settlement and stores an optional receipt for the agent.
+func (db *DB) MarkM2MSettledWithReceipt(ctx context.Context, tx *sql.Tx, intentID, efiEndToEndID, efiStatus, receiptURL, receiptNote string) error {
+	receiptURLValue := sql.NullString{String: receiptURL, Valid: receiptURL != ""}
+	receiptNoteValue := sql.NullString{String: receiptNote, Valid: receiptNote != ""}
 	_, err := tx.ExecContext(ctx,
 		`UPDATE agent_payment_intents
-		 SET status='settled', efi_end_to_end_id=$2, efi_status=$3, settled_at=NOW(), updated_at=NOW()
-		 WHERE id=$1`, intentID, efiEndToEndID, efiStatus)
+		 SET status='settled', efi_end_to_end_id=$2, efi_status=$3,
+		     settlement_receipt_url=$4, settlement_receipt_note=$5,
+		     settled_at=NOW(), updated_at=NOW()
+		 WHERE id=$1`, intentID, efiEndToEndID, efiStatus, receiptURLValue, receiptNoteValue)
 	if err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("m2m: mark settled: %w", err)
@@ -385,6 +396,8 @@ func (db *DB) MarkM2MSettled(ctx context.Context, tx *sql.Tx, intentID, efiEndTo
 	_ = txAppendAuditLog(ctx, tx, intentID, "settlement_succeeded", map[string]any{
 		"efi_end_to_end_id": efiEndToEndID,
 		"efi_status":        efiStatus,
+		"receipt_url":       receiptURL,
+		"receipt_note":      receiptNote,
 	})
 	return tx.Commit()
 }
@@ -427,7 +440,7 @@ func (db *DB) ListAgentPaymentIntentsByWallet(ctx context.Context, wallet, statu
 SELECT id, idempotency_key, agent_wallet, payment_type, pix_key, payment_link, barcode, beneficiary_name, due_date,
        amount_brl, fee_bps, fee_usdt, gross_usdt, required_usdt, usdt_rate,
        payment_address, status, deposit_tx, deposit_amount_usdt,
-       efi_end_to_end_id, efi_status, error_message, attempts,
+       efi_end_to_end_id, efi_status, settlement_receipt_url, settlement_receipt_note, error_message, attempts,
        request_hash, expires_at, settled_at, created_at, updated_at
 FROM   agent_payment_intents
 WHERE  `
@@ -454,7 +467,7 @@ func (db *DB) GetPaidCryptoIntents(ctx context.Context) ([]AgentPaymentIntent, e
 SELECT id, idempotency_key, agent_wallet, payment_type, pix_key, payment_link, barcode, beneficiary_name, due_date,
        amount_brl, fee_bps, fee_usdt, gross_usdt, required_usdt, usdt_rate,
        payment_address, status, deposit_tx, deposit_amount_usdt,
-       efi_end_to_end_id, efi_status, error_message, attempts,
+       efi_end_to_end_id, efi_status, settlement_receipt_url, settlement_receipt_note, error_message, attempts,
        request_hash, expires_at, settled_at, created_at, updated_at
 FROM   agent_payment_intents
 WHERE  status = 'paid_crypto'
@@ -505,7 +518,7 @@ func txGetIntentByIdempotencyKey(ctx context.Context, tx *sql.Tx, key string) (*
 SELECT id, idempotency_key, agent_wallet, payment_type, pix_key, payment_link, barcode, beneficiary_name, due_date,
        amount_brl, fee_bps, fee_usdt, gross_usdt, required_usdt, usdt_rate,
        payment_address, status, deposit_tx, deposit_amount_usdt,
-       efi_end_to_end_id, efi_status, error_message, attempts,
+       efi_end_to_end_id, efi_status, settlement_receipt_url, settlement_receipt_note, error_message, attempts,
        request_hash, expires_at, settled_at, created_at, updated_at
 FROM   agent_payment_intents WHERE idempotency_key = $1`
 	row := tx.QueryRowContext(ctx, q, key)
@@ -546,14 +559,14 @@ func scanIntent(row *sql.Row) (*AgentPaymentIntent, error) {
 
 func scanIntentFull(row rowScanner) (*AgentPaymentIntent, error) {
 	var i AgentPaymentIntent
-	var pixKey, paymentLink, barcode, beneficiaryName, dueDate, depositTx, efiID, efiStatus, errMsg sql.NullString
+	var pixKey, paymentLink, barcode, beneficiaryName, dueDate, depositTx, efiID, efiStatus, receiptURL, receiptNote, errMsg sql.NullString
 	var depositUSDT sql.NullFloat64
 	var settledAt sql.NullTime
 	err := row.Scan(
 		&i.ID, &i.IdempotencyKey, &i.AgentWallet, &i.PaymentType, &pixKey, &paymentLink, &barcode, &beneficiaryName, &dueDate,
 		&i.AmountBRL, &i.FeeBps, &i.FeeUSDT, &i.GrossUSDT, &i.RequiredUSDT, &i.USDTRate,
 		&i.PaymentAddress, &i.Status, &depositTx, &depositUSDT,
-		&efiID, &efiStatus, &errMsg, &i.Attempts,
+		&efiID, &efiStatus, &receiptURL, &receiptNote, &errMsg, &i.Attempts,
 		&i.RequestHash, &i.ExpiresAt, &settledAt, &i.CreatedAt, &i.UpdatedAt,
 	)
 	if err != nil {
@@ -575,6 +588,7 @@ func scanIntentFull(row rowScanner) (*AgentPaymentIntent, error) {
 	if efiStatus.Valid {
 		i.EfiStatus = &efiStatus.String
 	}
+	applyM2MReceiptFields(&i, receiptURL, receiptNote)
 	if errMsg.Valid {
 		i.ErrorMessage = &errMsg.String
 	}
@@ -586,14 +600,14 @@ func scanIntentFull(row rowScanner) (*AgentPaymentIntent, error) {
 
 func scanIntentFullRow(rows *sql.Rows) (*AgentPaymentIntent, error) {
 	var i AgentPaymentIntent
-	var pixKey, paymentLink, barcode, beneficiaryName, dueDate, depositTx, efiID, efiStatus, errMsg sql.NullString
+	var pixKey, paymentLink, barcode, beneficiaryName, dueDate, depositTx, efiID, efiStatus, receiptURL, receiptNote, errMsg sql.NullString
 	var depositUSDT sql.NullFloat64
 	var settledAt sql.NullTime
 	err := rows.Scan(
 		&i.ID, &i.IdempotencyKey, &i.AgentWallet, &i.PaymentType, &pixKey, &paymentLink, &barcode, &beneficiaryName, &dueDate,
 		&i.AmountBRL, &i.FeeBps, &i.FeeUSDT, &i.GrossUSDT, &i.RequiredUSDT, &i.USDTRate,
 		&i.PaymentAddress, &i.Status, &depositTx, &depositUSDT,
-		&efiID, &efiStatus, &errMsg, &i.Attempts,
+		&efiID, &efiStatus, &receiptURL, &receiptNote, &errMsg, &i.Attempts,
 		&i.RequestHash, &i.ExpiresAt, &settledAt, &i.CreatedAt, &i.UpdatedAt,
 	)
 	if err != nil {
@@ -615,6 +629,7 @@ func scanIntentFullRow(rows *sql.Rows) (*AgentPaymentIntent, error) {
 	if efiStatus.Valid {
 		i.EfiStatus = &efiStatus.String
 	}
+	applyM2MReceiptFields(&i, receiptURL, receiptNote)
 	if errMsg.Valid {
 		i.ErrorMessage = &errMsg.String
 	}
@@ -636,5 +651,14 @@ func applyM2MDestinationFields(i *AgentPaymentIntent, paymentLink, barcode, bene
 	}
 	if dueDate.Valid {
 		i.DueDate = dueDate.String
+	}
+}
+
+func applyM2MReceiptFields(i *AgentPaymentIntent, receiptURL, receiptNote sql.NullString) {
+	if receiptURL.Valid {
+		i.SettlementReceiptURL = receiptURL.String
+	}
+	if receiptNote.Valid {
+		i.SettlementReceiptNote = receiptNote.String
 	}
 }
