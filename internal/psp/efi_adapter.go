@@ -103,9 +103,9 @@ func (e *EfiAdapter) CreateCharge(ctx context.Context, charge PixCharge) (*PixCh
 	}
 
 	var result struct {
-		TxID         string `json:"txid"`
+		TxID          string `json:"txid"`
 		PixCopiaECola string `json:"pixCopiaECola"`
-		Calendario   struct {
+		Calendario    struct {
 			Criacao   string `json:"criacao"`
 			Expiracao int    `json:"expiracao"`
 		} `json:"calendario"`
@@ -185,14 +185,17 @@ func (e *EfiAdapter) ParseWebhookAll(_ context.Context, body []byte, _ string) (
 	return out, nil
 }
 
-// HealthCheck calls GET /v2/cob with a non-existent probe TXID.
-// 404 = provider up (charge not found is expected); anything else = degraded.
+const efiHealthProbeTxID = "CHAINFXHEALTHPROBE0000000001"
+
+// HealthCheck calls GET /v2/cob with a syntactically valid, non-existent TXID.
+// Efí validates txid before lookup; invalid probes return 400 and create false
+// alarms. 404 = provider up (charge not found is expected); 200 is also healthy.
 func (e *EfiAdapter) HealthCheck(ctx context.Context) error {
 	token, err := e.getToken(ctx)
 	if err != nil {
 		return fmt.Errorf("efi health: auth failed: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.baseURL+"/v2/cob/chainfx-healthprobe-000", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.baseURL+"/v2/cob/"+efiHealthProbeTxID, nil)
 	if err != nil {
 		return err
 	}
