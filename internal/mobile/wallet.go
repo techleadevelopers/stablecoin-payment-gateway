@@ -1,10 +1,10 @@
 package mobile
 
 import (
-	"fmt"
 	"net/http"
+	"strings"
 
-	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
