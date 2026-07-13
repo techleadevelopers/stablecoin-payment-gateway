@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -67,12 +68,42 @@ func (s *Server) requireIdempotency(opType string, next http.HandlerFunc) http.H
 			if errors.Is(err, errProceed) {
 				// Transaction committed — call the real handler
 				w.Header().Set("Idempotency-Key", key)
-				next(w, r.WithContext(withIdempotencyKey(r.Context(), key)))
+				nextReq := r.WithContext(withIdempotencyKey(r.Context(), key))
+				rec := &idempotencyResponseRecorder{ResponseWriter: w}
+				next(rec, nextReq)
+				status := rec.status
+				if status == 0 {
+					status = http.StatusOK
+				}
+				if status >= 200 && status < 300 {
+					s.markIdempotencyComplete(nextReq, rec.body.String())
+				} else {
+					s.markIdempotencyFailed(nextReq, rec.body.String())
+				}
 			}
 			// All other errors were already written to w inside the transaction
 			return
 		}
 	}
+}
+
+type idempotencyResponseRecorder struct {
+	http.ResponseWriter
+	status int
+	body   bytes.Buffer
+}
+
+func (r *idempotencyResponseRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *idempotencyResponseRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	_, _ = r.body.Write(b)
+	return r.ResponseWriter.Write(b)
 }
 
 // errProceed is a sentinel used to signal "transaction ok, call next handler".
@@ -166,7 +197,7 @@ func (s *Server) runIdempotencyTransaction(
 		})
 		return nil // NOT errProceed
 
-	// "failed" and "pending" → retry allowed, fall through
+		// "failed" and "pending" → retry allowed, fall through
 	}
 
 	// Transition to 'processing' atomically within the same transaction
