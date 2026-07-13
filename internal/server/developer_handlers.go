@@ -50,6 +50,9 @@ func (s *Server) handleDeveloperLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdminConsoleKey(w, r) {
+		return
+	}
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
