@@ -481,6 +481,7 @@ func (db *DB) StatsPixLast24h(ctx context.Context, pixCpf, pixPhone string) (Pix
                 SELECT COUNT(*)::int, COALESCE(SUM(amount_brl),0)::float8
                 FROM orders
                 WHERE created_at >= now() - interval '24 hours'
+                  AND status NOT IN ('expirada','erro','incidente_validacao')
                   AND (($1 <> '' AND pix_cpf_hash = $1) OR ($2 <> '' AND pix_phone_hash = $2))`,
 		pixCpfHash, pixPhoneHash).Scan(&count, &total)
 	return PixStats{Count: count, Total: total}, err
