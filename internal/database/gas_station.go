@@ -68,13 +68,16 @@ func (db *DB) CreateGasRelayRequest(ctx context.Context, p CreateGasRelayParams)
 			(user_address, sig_r, sig_s, sig_hash, tx_to, tx_data,
 			 fee_usdt, gas_price_gwei, gas_limit, status)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')
-		ON CONFLICT (sig_hash) DO UPDATE SET updated_at = NOW()
+		ON CONFLICT (sig_hash) DO NOTHING
 		RETURNING id`
 	var id string
 	err := db.SQL.QueryRowContext(ctx, q,
 		p.UserAddress, p.SigR, p.SigS, p.SigHash, p.TxTo, p.TxData,
 		p.FeeUSDT, p.GasPriceGwei, p.GasLimit,
 	).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("CreateGasRelayRequest: duplicate sig_hash")
+	}
 	if err != nil {
 		return "", fmt.Errorf("CreateGasRelayRequest: %w", err)
 	}
