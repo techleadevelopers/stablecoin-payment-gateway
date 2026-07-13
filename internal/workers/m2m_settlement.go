@@ -43,7 +43,7 @@ func NewM2MSettlementWorker(bus *EventBus, db *database.DB, cfg *config.Config) 
 		db:     db,
 		cfg:    cfg,
 		client: httpclient.Default(),
-		dlq:    NewDLQ(1000, nil),
+		dlq:    NewPersistentDLQ(db, 1000),
 	}
 }
 
