@@ -327,22 +327,55 @@ func (q *mobileQueries) ListOrdersByUser(ctx context.Context, userID string, lim
 		limit = 20
 	}
 	rows, err := q.sql.QueryContext(ctx, `
-                SELECT id, amount_brl, amount_usdt, fee_brl, payout_brl, status,
-                       asset, network, rate_locked, tx_hash, created_at, updated_at
-                FROM orders WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`, userID, limit)
+                SELECT id, kind, amount_brl, crypto_amount, fee_brl, payout_brl,
+                       status, asset, network, rate_locked, tx_hash, created_at, updated_at
+                FROM (
+                        SELECT id::text,
+                               'sell'::text AS kind,
+                               amount_brl::float8,
+                               btc_amount::float8 AS crypto_amount,
+                               COALESCE(fee_brl, 0)::float8 AS fee_brl,
+                               COALESCE(payout_brl, 0)::float8 AS payout_brl,
+                               status,
+                               asset,
+                               network,
+                               rate_locked::float8,
+                               tx_hash,
+                               created_at,
+                               updated_at
+                        FROM orders
+                        WHERE user_id=$1::uuid
+                        UNION ALL
+                        SELECT id::text,
+                               'buy'::text AS kind,
+                               amount_brl::float8,
+                               crypto_amount::float8,
+                               COALESCE(fee_brl, 0)::float8 AS fee_brl,
+                               COALESCE(payout_brl, 0)::float8 AS payout_brl,
+                               status,
+                               asset,
+                               'BSC'::text AS network,
+                               rate_locked::float8,
+                               tx_hash_out AS tx_hash,
+                               created_at,
+                               updated_at
+                        FROM buy_orders
+                        WHERE user_id=$1::uuid
+                ) mobile_orders
+                ORDER BY created_at DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []map[string]any
 	for rows.Next() {
-		var id, status, asset, network string
+		var id, kind, status, asset, network string
 		var amtBRL, amtUSDT, feeBRL, payoutBRL, rateLocked float64
 		var txHash *string
 		var createdAt, updatedAt interface{}
-		_ = rows.Scan(&id, &amtBRL, &amtUSDT, &feeBRL, &payoutBRL, &status, &asset, &network, &rateLocked, &txHash, &createdAt, &updatedAt)
+		_ = rows.Scan(&id, &kind, &amtBRL, &amtUSDT, &feeBRL, &payoutBRL, &status, &asset, &network, &rateLocked, &txHash, &createdAt, &updatedAt)
 		out = append(out, map[string]any{
-			"id": id, "status": status, "asset": asset, "network": network,
+			"id": id, "kind": kind, "status": status, "asset": asset, "network": network,
 			"amountBrl": amtBRL, "amountCrypto": amtUSDT, "feeBrl": feeBRL,
 			"payoutBrl": payoutBRL, "rateLocked": rateLocked,
 			"txHash": txHash, "createdAt": createdAt, "updatedAt": updatedAt,
@@ -354,7 +387,14 @@ func (q *mobileQueries) ListOrdersByUser(ctx context.Context, userID string, lim
 // TagOrderUser sets user_id on an order (used after anonymous order creation).
 func (q *mobileQueries) TagOrderUser(ctx context.Context, orderID, userID string) error {
 	_, err := q.sql.ExecContext(ctx,
-		"UPDATE orders SET user_id=$1 WHERE id=$2 AND user_id IS NULL", userID, orderID)
+		"UPDATE orders SET user_id=$1::uuid WHERE id=$2::uuid AND user_id IS NULL", userID, orderID)
+	return err
+}
+
+// TagBuyOrderUser sets user_id on a buy order created through the mobile API.
+func (q *mobileQueries) TagBuyOrderUser(ctx context.Context, orderID, userID string) error {
+	_, err := q.sql.ExecContext(ctx,
+		"UPDATE buy_orders SET user_id=$1::uuid WHERE id=$2::uuid AND user_id IS NULL", userID, orderID)
 	return err
 }
 
