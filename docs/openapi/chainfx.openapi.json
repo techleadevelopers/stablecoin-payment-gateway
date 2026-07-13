@@ -40,7 +40,7 @@
           "fiat": { "type": "string", "example": "BRL" },
           "asset": { "type": "string", "example": "USDT" },
           "amount": { "type": "number", "example": 500 },
-          "paymentMethod": { "type": "string", "example": "pix" }
+          "paymentMethod": { "type": "string", "enum": ["pix", "credit_card"], "example": "pix" }
         }
       },
       "QuoteResponse": {
@@ -65,7 +65,10 @@
           "asset": { "type": "string", "example": "USDT" },
           "amount": { "type": "number", "example": 500 },
           "wallet": { "type": "string", "example": "0x000000000000000000000000000000000000dEaD" },
-          "paymentMethod": { "type": "string", "example": "pix" },
+          "paymentMethod": { "type": "string", "enum": ["pix", "credit_card"], "example": "pix" },
+          "paymentToken": { "type": "string", "description": "Efí payment_token generated in the frontend by the official Efí JavaScript library." },
+          "cardBrand": { "type": "string", "enum": ["visa", "mastercard", "amex", "elo"], "example": "visa" },
+          "installments": { "type": "integer", "minimum": 1, "example": 1 },
           "customer": {
             "type": "object",
             "properties": {
