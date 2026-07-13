@@ -114,21 +114,21 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/mobile/wallet/history", s.requireAuth(s.handleWalletHistory))
 
 	// ── Orders ────────────────────────────────────────────────────────────────
-	mux.HandleFunc("POST /api/mobile/order/buy", s.requireAuth(s.handleMobileBuy))
-	mux.HandleFunc("POST /api/mobile/order/sell", s.requireAuth(s.handleMobileSell))
-	mux.HandleFunc("POST /api/mobile/order/swap", s.requireAuth(s.handleMobileSwap))
+	mux.HandleFunc("POST /api/mobile/order/buy", s.requireAuth(s.requireIdempotency("mobile.order.buy", s.handleMobileBuy)))
+	mux.HandleFunc("POST /api/mobile/order/sell", s.requireAuth(s.requireIdempotency("mobile.order.sell", s.handleMobileSell)))
+	mux.HandleFunc("POST /api/mobile/order/swap", s.requireAuth(s.requireIdempotency("mobile.order.swap", s.handleMobileSwap)))
 	mux.HandleFunc("GET /api/mobile/order/{id}", s.requireAuth(s.handleMobileGetOrder))
 	mux.HandleFunc("GET /api/mobile/orders", s.requireAuth(s.handleMobileListOrders))
 	mux.HandleFunc("POST /api/mobile/order/cancel", s.requireAuth(s.handleMobileCancelOrder))
 
 	// ── PIX ───────────────────────────────────────────────────────────────────
-	mux.HandleFunc("POST /api/mobile/pix/generate", s.requireAuth(s.handlePixGenerate))
+	mux.HandleFunc("POST /api/mobile/pix/generate", s.requireAuth(s.requireIdempotency("mobile.pix.generate", s.handlePixGenerate)))
 	mux.HandleFunc("POST /api/mobile/pix/confirm", s.handlePixConfirm)
 	mux.HandleFunc("GET /api/mobile/pix/status/{id}", s.requireAuth(s.handlePixStatus))
 	mux.HandleFunc("POST /api/mobile/pix/copy", s.requireAuth(s.handlePixCopy))
 
 	// ── DCA ───────────────────────────────────────────────────────────────────
-	mux.HandleFunc("POST /api/mobile/dca/create", s.requireAuth(s.handleDCACreate))
+	mux.HandleFunc("POST /api/mobile/dca/create", s.requireAuth(s.requireIdempotency("mobile.dca.create", s.handleDCACreate)))
 	mux.HandleFunc("GET /api/mobile/dca/strategies", s.requireAuth(s.handleDCAList))
 	mux.HandleFunc("PUT /api/mobile/dca/{id}", s.requireAuth(s.handleDCAUpdate))
 	mux.HandleFunc("DELETE /api/mobile/dca/{id}", s.requireAuth(s.handleDCADelete))
@@ -187,7 +187,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// ── Phase 5: Swap (crypto→crypto) ────────────────────────────────────────
 	mux.HandleFunc("POST /api/mobile/swap/quote", s.requireAuth(s.handleSwapQuote))
-	mux.HandleFunc("POST /api/mobile/swap/execute", s.requireAuth(s.handleSwapExecute))
+	mux.HandleFunc("POST /api/mobile/swap/execute", s.requireAuth(s.requireIdempotency("mobile.swap.execute", s.handleSwapExecute)))
 	mux.HandleFunc("GET /api/mobile/swap/{id}", s.requireAuth(s.handleGetSwap))
 	mux.HandleFunc("GET /api/mobile/swaps", s.requireAuth(s.handleListSwaps))
 
