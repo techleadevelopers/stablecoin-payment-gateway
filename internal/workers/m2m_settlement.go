@@ -418,9 +418,8 @@ func (w *M2MSettlementWorker) checkDailyOutflow(ctx context.Context, thisBRL flo
 	}
 	used, err := w.db.M2MDailyOutflowBRL(ctx)
 	if err != nil {
-		// Fail-open: if we can't read the limit, log and proceed.
 		slog.Warn("M2MSettlement: erro ao verificar daily outflow", "err", err)
-		return nil
+		return fmt.Errorf("daily outflow cap unavailable: %w", err)
 	}
 	if used+thisBRL > maxBRL {
 		return fmt.Errorf("daily outflow cap atingido: used=%.2f + this=%.2f > max=%.2f BRL",
