@@ -323,7 +323,7 @@ func (s *Server) efiAccessToken(ctx context.Context, client *http.Client) (strin
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil || strings.TrimSpace(data.AccessToken) == "" {
-		return "", fmt.Errorf("EfÃ­ OAuth respondeu token invÃ¡lido")
+		return "", fmt.Errorf("EfÃ­ OAuth respondeu token inválido")
 	}
 	return data.AccessToken, nil
 }
