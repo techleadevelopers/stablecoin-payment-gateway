@@ -100,85 +100,83 @@ func riskHealthSignal(stats *database.RiskDashboardStats, dailyCap float64) stri
 
 func (s *Server) handleMCPCapabilityRegistry(w http.ResponseWriter, r *http.Request) {
 	base := publicBaseURL(r)
-	caps, err := s.db.ListMarketplaceCapabilities(r.Context(), s.db.EmptyMarketplaceFilters())
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-
-	capDocs := make([]map[string]any, 0, len(caps))
-	for _, c := range caps {
-		doc := map[string]any{
-			"id":          c.ID,
-			"slug":        c.Slug,
-			"displayName": c.DisplayName,
-			"description": c.Description,
-			"category":    c.Category,
-			"routingMode": c.RoutingMode,
-			"providers":   c.Providers,
-			"contractUrl": base + "/marketplace/capabilities/" + c.ID + "/contract",
-			"purchaseUrl": base + "/marketplace/capabilities/" + c.ID + "/purchase",
-			"executeUrl":  base + "/agent/v1/capabilities/" + c.ID + "/execute",
+	s.writeCachedDiscoveryJSON(w, r, "mcp-capabilities:"+base, time.Minute, func() (any, error) {
+		caps, err := s.db.ListMarketplaceCapabilities(r.Context(), s.db.EmptyMarketplaceFilters())
+		if err != nil {
+			return nil, err
 		}
-		capDocs = append(capDocs, doc)
-	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"version":      "1.0",
-		"generatedAt":  time.Now().UTC(),
-		"network":      "ChainFX Capability Network",
-		"serverName":   "chainfx-mcp",
-		"mcpEndpoint":  base + "/mcp/initialize",
-		"capabilities": capDocs,
-		"tools": []map[string]any{
-			{
-				"name":        "createPaymentIntent",
-				"description": "Create an M2M PIX or credit_card payment intent funded by BSC USDT.",
-				"endpoint":    base + "/mcp/tools/call",
-				"rest":        base + "/agent/v1/pay",
-				"inputs":      []string{"type", "amount_brl", "pix_key", "idempotency_key", "agent_wallet"},
+		capDocs := make([]map[string]any, 0, len(caps))
+		for _, c := range caps {
+			doc := map[string]any{
+				"id":          c.ID,
+				"slug":        c.Slug,
+				"displayName": c.DisplayName,
+				"description": c.Description,
+				"category":    c.Category,
+				"routingMode": c.RoutingMode,
+				"providers":   c.Providers,
+				"contractUrl": base + "/marketplace/capabilities/" + c.ID + "/contract",
+				"purchaseUrl": base + "/marketplace/capabilities/" + c.ID + "/purchase",
+				"executeUrl":  base + "/agent/v1/capabilities/" + c.ID + "/execute",
+			}
+			capDocs = append(capDocs, doc)
+		}
+
+		return map[string]any{
+			"version":      "1.0",
+			"generatedAt":  time.Now().UTC(),
+			"network":      "ChainFX Capability Network",
+			"serverName":   "chainfx-mcp",
+			"mcpEndpoint":  base + "/mcp/initialize",
+			"capabilities": capDocs,
+			"tools": []map[string]any{
+				{
+					"name":        "createPaymentIntent",
+					"description": "Create an M2M PIX or credit_card payment intent funded by BSC USDT.",
+					"endpoint":    base + "/mcp/tools/call",
+					"rest":        base + "/agent/v1/pay",
+					"inputs":      []string{"type", "amount_brl", "pix_key", "idempotency_key", "agent_wallet"},
+				},
+				{
+					"name":        "getPaymentIntent",
+					"description": "Read status for an M2M payment intent.",
+					"endpoint":    base + "/mcp/tools/call",
+					"rest":        base + "/agent/v1/pay/{id}",
+					"inputs":      []string{"intent_id"},
+				},
+				{
+					"name":        "listAgentPaymentIntents",
+					"description": "List recent M2M payment intents for one agent wallet.",
+					"endpoint":    base + "/mcp/tools/call",
+					"inputs":      []string{"agentWallet", "status"},
+				},
 			},
-			{
-				"name":        "getPaymentIntent",
-				"description": "Read status for an M2M payment intent.",
-				"endpoint":    base + "/mcp/tools/call",
-				"rest":        base + "/agent/v1/pay/{id}",
-				"inputs":      []string{"intent_id"},
+			"agentPayments": map[string]any{
+				"createUrl":      base + "/agent/v1/pay",
+				"statusUrl":      base + "/agent/v1/pay/{id}",
+				"types":          []string{"pix", "credit_card"},
+				"fundingAsset":   "USDT",
+				"fundingNetwork": "BSC",
+				"lifecycle":      []string{"create_intent", "deposit_required_usdt", "match_deposit_by_address", "settle_recipient", "poll_status"},
 			},
-			{
-				"name":        "listAgentPaymentIntents",
-				"description": "List recent M2M payment intents for one agent wallet.",
-				"endpoint":    base + "/mcp/tools/call",
-				"inputs":      []string{"agentWallet", "status"},
+			"payment": map[string]any{
+				"assets":   []string{"USDT", "USDC"},
+				"networks": []string{"BSC"},
+				"note":     "Pay on-chain → receive access grant → execute with quota metering",
 			},
-		},
-		"agentPayments": map[string]any{
-			"createUrl":      base + "/agent/v1/pay",
-			"statusUrl":      base + "/agent/v1/pay/{id}",
-			"types":          []string{"pix", "credit_card"},
-			"fundingAsset":   "USDT",
-			"fundingNetwork": "BSC",
-			"lifecycle":      []string{"create_intent", "deposit_required_usdt", "match_deposit_by_address", "settle_recipient", "poll_status"},
-		},
-		"payment": map[string]any{
-			"assets":   []string{"USDT", "USDC"},
-			"networks": []string{"BSC"},
-			"note":     "Pay on-chain → receive access grant → execute with quota metering",
-		},
-		"discovery": map[string]string{
-			"openapi":   base + "/openapi.json",
-			"llmsTxt":   base + "/llms.txt",
-			"wellKnown": base + "/.well-known/ai-services.json",
-		},
+			"discovery": map[string]string{
+				"openapi":   base + "/openapi.json",
+				"llmsTxt":   base + "/llms.txt",
+				"wellKnown": base + "/.well-known/ai-services.json",
+			},
+		}, nil
 	})
 }
 
 // ─── Agent Pricing Policy endpoints ──────────────────────────────────────────
 
 func (s *Server) handleGetAgentPricingPolicy(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizeChainFX(w, r); !ok {
-		return
-	}
 	wallet := strings.ToLower(strings.TrimSpace(r.PathValue("wallet")))
 	env := strings.TrimSpace(r.URL.Query().Get("env"))
 	if env == "" {
