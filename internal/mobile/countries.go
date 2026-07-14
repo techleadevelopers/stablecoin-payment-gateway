@@ -16,6 +16,7 @@ import (
 
 // handleListCountries — GET /api/mobile/countries
 func (s *Server) handleListCountries(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", mobileStaticCacheControl)
 	if cached, ok := s.getMobileCache("countries:list"); ok {
 		writeJSON(w, http.StatusOK, cached)
 		return
@@ -34,6 +35,7 @@ func (s *Server) handleListCountries(w http.ResponseWriter, r *http.Request) {
 
 // handleGetCountry — GET /api/mobile/countries/{code}
 func (s *Server) handleGetCountry(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", mobileStaticCacheControl)
 	code := strings.ToUpper(r.PathValue("code"))
 	cacheKey := "countries:get:" + code
 	if cached, ok := s.getMobileCache(cacheKey); ok {
@@ -62,6 +64,7 @@ func (s *Server) handleGetCountry(w http.ResponseWriter, r *http.Request) {
 
 // handleListCountryRails — GET /api/mobile/countries/{code}/rails
 func (s *Server) handleListCountryRails(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", mobileStaticCacheControl)
 	code := strings.ToUpper(r.PathValue("code"))
 	cacheKey := "countries:rails:" + code
 	if cached, ok := s.getMobileCache(cacheKey); ok {
@@ -83,6 +86,7 @@ func (s *Server) handleListCountryRails(w http.ResponseWriter, r *http.Request) 
 // handleDetectCountry — GET /api/mobile/countries/detect
 // Detects country from CF-IPCountry / X-Country-Code header or defaults to BR.
 func (s *Server) handleDetectCountry(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", mobileStaticCacheControl)
 	code := r.Header.Get("CF-IPCountry")
 	if code == "" {
 		code = r.Header.Get("X-Country-Code")
