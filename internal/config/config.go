@@ -138,6 +138,12 @@ type Config struct {
 	M2MMaxDailyOutflowBRL  float64 // max BRL settled per 24 h (0 = unlimited)
 	M2MDepositAddresses    string  // comma-separated unique deposit addresses for pending M2M intents
 
+	// EIP-712 typed intents for MCP/mobile/stablecoin rails.
+	EIP712DomainName        string
+	EIP712DomainVersion     string
+	EIP712ChainID           int64
+	EIP712VerifyingContract string
+
 	// On-chain reorg protection — minimum block confirmations before accepting a deposit.
 	// BSC is finalistic with low reorg depth; Polygon can have deep reorgs.
 	BSCMinConfirmations     uint64 // default 6
@@ -282,6 +288,10 @@ func LoadConfig() *Config {
 		M2MDepositTolerancePct:  getEnvAsFloat("M2M_DEPOSIT_TOLERANCE_PCT", 0.005),
 		M2MMaxDailyOutflowBRL:   getEnvAsFloat("M2M_MAX_DAILY_OUTFLOW_BRL", 50000),
 		M2MDepositAddresses:     getEnv("M2M_DEPOSIT_ADDRESSES", ""),
+		EIP712DomainName:        getEnv("EIP712_DOMAIN_NAME", "ChainFX"),
+		EIP712DomainVersion:     getEnv("EIP712_DOMAIN_VERSION", "1"),
+		EIP712ChainID:           int64(getEnvAsInt("EIP712_CHAIN_ID", 56)),
+		EIP712VerifyingContract: getEnv("EIP712_VERIFYING_CONTRACT", firstNonEmptyConfig(getEnv("TREASURY_HOT", ""), getEnv("SELL_WALLET_ADDRESS", "0x7e3BF3FDfeF16040CE3ec60A663381766d3dB375"))),
 		BSCMinConfirmations:     getEnvAsUint64("BSC_MIN_CONFIRMATIONS", 6),
 		PolygonMinConfirmations: getEnvAsUint64("POLYGON_MIN_CONFIRMATIONS", 128),
 
@@ -393,6 +403,15 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func firstNonEmptyConfig(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func getBscRpcUrls() string {
