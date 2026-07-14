@@ -100,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /mcp/capabilities.json", s.handleMCPCapabilityRegistry)
 	mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("GET /rates", s.handleChainFXRates)
+	mux.HandleFunc("GET /api/rates", s.handleChainFXRates)
 	mux.HandleFunc("POST /quote", s.handleChainFXQuote)
 	mux.HandleFunc("POST /buy", s.handleChainFXBuy)
 	mux.HandleFunc("POST /sell", s.handleChainFXSell)
