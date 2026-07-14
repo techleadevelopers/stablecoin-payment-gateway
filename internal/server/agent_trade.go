@@ -118,18 +118,19 @@ func (s *Server) handleAgentTradeQuote(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentAssets(w http.ResponseWriter, r *http.Request) {
-	assets, err := s.agentTradeAssets(r.Context())
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"network":              "BSC",
-		"pricingModel":         "stablecoin pairs are quoted 1:1 before ChainFX fee",
-		"treasuryInventory":    "receiveAsset settlement requires ChainFX treasury inventory for that token",
-		"supportedPairs":       "any enabled stablecoin pair with different symbols",
-		"defaultGatewayFeeBps": agentGatewayFeeBps,
-		"assets":               assets,
+	s.writeCachedDiscoveryJSON(w, r, "agent-assets", time.Minute, func() (any, error) {
+		assets, err := s.agentTradeAssets(r.Context())
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"network":              "BSC",
+			"pricingModel":         "stablecoin pairs are quoted 1:1 before ChainFX fee",
+			"treasuryInventory":    "receiveAsset settlement requires ChainFX treasury inventory for that token",
+			"supportedPairs":       "any enabled stablecoin pair with different symbols",
+			"defaultGatewayFeeBps": agentGatewayFeeBps,
+			"assets":               assets,
+		}, nil
 	})
 }
 
