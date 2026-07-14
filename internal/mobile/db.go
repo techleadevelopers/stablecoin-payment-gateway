@@ -148,15 +148,16 @@ func (q *mobileQueries) DeleteDevice(ctx context.Context, userID, deviceID strin
 
 func (q *mobileQueries) CreateDCA(ctx context.Context, userID, symbol string, amount float64, freq models.DCAFrequency) (*models.DCAStrategy, error) {
 	next := nextDCAExecution(freq)
-	var id string
+	d := &models.DCAStrategy{}
 	err := q.sql.QueryRowContext(ctx, `
                 INSERT INTO dca_strategies (user_id, token_symbol, amount_brl, frequency, next_execution)
-                VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-		userID, symbol, amount, string(freq), next).Scan(&id)
-	if err != nil {
-		return nil, err
-	}
-	return q.GetDCA(ctx, id)
+                VALUES ($1,$2,$3,$4,$5)
+                RETURNING id,user_id,token_symbol,amount_brl,frequency,active,
+                          total_invested,total_tokens,next_execution,created_at`,
+		userID, symbol, amount, string(freq), next).Scan(
+		&d.ID, &d.UserID, &d.TokenSymbol, &d.AmountBRL, &d.Frequency,
+		&d.Active, &d.TotalInvested, &d.TotalTokens, &d.NextExecution, &d.CreatedAt)
+	return d, err
 }
 
 func (q *mobileQueries) GetDCA(ctx context.Context, id string) (*models.DCAStrategy, error) {
