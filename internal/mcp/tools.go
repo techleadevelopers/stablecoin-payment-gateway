@@ -228,7 +228,7 @@ func schema(props map[string]string) map[string]any {
 }
 
 func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"tools": s.tools()})
+	writeCachedJSON(w, http.StatusOK, s.toolsListJSON)
 }
 
 type toolCallRequest struct {
