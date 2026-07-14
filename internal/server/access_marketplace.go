@@ -28,74 +28,76 @@ var erc20TransferTopic = common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952
 
 func (s *Server) handleAIServicesWellKnown(w http.ResponseWriter, r *http.Request) {
 	base := publicBaseURL(r)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"name":        "ChainFX Agent Liquidity Rail",
-		"version":     "1.0",
-		"description": "AI agents can acquire API access, execute BSC stablecoin liquidity trades, and create M2M PIX or credit-card payment intents funded with USDT.",
-		"capabilities": []string{
-			"crypto_purchase",
-			"crypto_sale",
-			"stablecoin_exchange",
-			"agent_payments",
-			"api_access_purchase",
-			"marketplace_api_purchase",
-			"mcp_tools",
-		},
-		"networks": []map[string]any{{
-			"chain":        "BSC",
-			"chainId":      56,
-			"assets":       []string{"USDT", "USDC"},
-			"legacyAssets": []string{"BUSD"},
-		}},
-		"api": map[string]string{
-			"baseUrl":      base + "/agent/v1",
-			"capabilities": base + "/agent/v1/capabilities",
-			"openapi":      base + "/openapi.json",
-		},
-		"authentication": map[string]any{
-			"current": "bearer_api_key_for_mcp_and_developer_routes",
-			"agentTrade": []string{
-				"wallet_address",
-				"request_hash",
-				"nonce",
-				"idempotency_key",
-				"onchain_payment_receipt",
+	s.writeCachedDiscoveryJSON(w, r, "well-known-ai-services:"+base, time.Minute, func() (any, error) {
+		return map[string]any{
+			"name":        "ChainFX Agent Liquidity Rail",
+			"version":     "1.0",
+			"description": "AI agents can acquire API access, execute BSC stablecoin liquidity trades, and create M2M PIX or credit-card payment intents funded with USDT.",
+			"capabilities": []string{
+				"crypto_purchase",
+				"crypto_sale",
+				"stablecoin_exchange",
+				"agent_payments",
+				"api_access_purchase",
+				"marketplace_api_purchase",
+				"mcp_tools",
 			},
-			"planned": "wallet_signature_headers: X-Agent-Wallet, X-Agent-Timestamp, X-Agent-Nonce, X-Agent-Signature",
-		},
-		"payment": map[string]any{
-			"asset":          "USDT",
-			"network":        "BSC",
-			"chainId":        56,
-			"gatewayFeeBps":  agentGatewayFeeBps,
-			"gatewayFeeNote": "ChainFX keeps 6%; providers receive 94%. Example: 10 USDT -> ChainFX 0.60, provider 9.40.",
-		},
-		"discovery": map[string]string{
-			"openapi":      base + "/openapi.json",
-			"mcp":          base + "/mcp/initialize",
-			"x402":         base + "/.well-known/x402.json",
-			"marketplace":  base + "/marketplace/apis",
-			"capabilities": base + "/marketplace/capabilities",
-			"products":     base + "/marketplace/products",
-			"agentProfile": base + "/agent/v1/capabilities",
-			"llms":         base + "/llms.txt",
-		},
-		"agentLiquidityRail": map[string]any{
-			"quote":         base + "/agent/v1/trade/quote",
-			"execute":       base + "/agent/v1/trade/execute",
-			"assets":        base + "/agent/v1/assets",
-			"supportedFlow": "enabled BSC stablecoin pairs with different symbols",
-			"feeBps":        agentGatewayFeeBps,
-		},
-		"agentPayments": map[string]any{
-			"create":         base + "/agent/v1/pay",
-			"status":         base + "/agent/v1/pay/{id}",
-			"types":          []string{"pix", "credit_card"},
-			"fundingAsset":   "USDT",
-			"fundingNetwork": "BSC",
-			"feesBps":        map[string]int{"pix": s.cfg.M2MPixFeeBps, "credit_card": s.cfg.M2MCreditFeeBps},
-			"flow":           "agent creates intent -> deposits required_usdt to payment_address -> ChainFX settles PIX/card recipient",
-		},
+			"networks": []map[string]any{{
+				"chain":        "BSC",
+				"chainId":      56,
+				"assets":       []string{"USDT", "USDC"},
+				"legacyAssets": []string{"BUSD"},
+			}},
+			"api": map[string]string{
+				"baseUrl":      base + "/agent/v1",
+				"capabilities": base + "/agent/v1/capabilities",
+				"openapi":      base + "/openapi.json",
+			},
+			"authentication": map[string]any{
+				"current": "bearer_api_key_for_mcp_and_developer_routes",
+				"agentTrade": []string{
+					"wallet_address",
+					"request_hash",
+					"nonce",
+					"idempotency_key",
+					"onchain_payment_receipt",
+				},
+				"planned": "wallet_signature_headers: X-Agent-Wallet, X-Agent-Timestamp, X-Agent-Nonce, X-Agent-Signature",
+			},
+			"payment": map[string]any{
+				"asset":          "USDT",
+				"network":        "BSC",
+				"chainId":        56,
+				"gatewayFeeBps":  agentGatewayFeeBps,
+				"gatewayFeeNote": "ChainFX keeps 6%; providers receive 94%. Example: 10 USDT -> ChainFX 0.60, provider 9.40.",
+			},
+			"discovery": map[string]string{
+				"openapi":      base + "/openapi.json",
+				"mcp":          base + "/mcp/initialize",
+				"x402":         base + "/.well-known/x402.json",
+				"marketplace":  base + "/marketplace/apis",
+				"capabilities": base + "/marketplace/capabilities",
+				"products":     base + "/marketplace/products",
+				"agentProfile": base + "/agent/v1/capabilities",
+				"llms":         base + "/llms.txt",
+			},
+			"agentLiquidityRail": map[string]any{
+				"quote":         base + "/agent/v1/trade/quote",
+				"execute":       base + "/agent/v1/trade/execute",
+				"assets":        base + "/agent/v1/assets",
+				"supportedFlow": "enabled BSC stablecoin pairs with different symbols",
+				"feeBps":        agentGatewayFeeBps,
+			},
+			"agentPayments": map[string]any{
+				"create":         base + "/agent/v1/pay",
+				"status":         base + "/agent/v1/pay/{id}",
+				"types":          []string{"pix", "credit_card"},
+				"fundingAsset":   "USDT",
+				"fundingNetwork": "BSC",
+				"feesBps":        map[string]int{"pix": s.cfg.M2MPixFeeBps, "credit_card": s.cfg.M2MCreditFeeBps},
+				"flow":           "agent creates intent -> deposits required_usdt to payment_address -> ChainFX settles PIX/card recipient",
+			},
+		}, nil
 	})
 }
 
