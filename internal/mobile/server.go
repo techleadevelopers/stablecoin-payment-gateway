@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"payment-gateway/internal/config"
 	"payment-gateway/internal/database"
@@ -64,6 +65,8 @@ type Server struct {
 	db      *database.DB
 	workers *workers.WorkerManager
 	hub     *wsHub
+	cacheMu sync.RWMutex
+	cache   map[string]mobileCacheEntry
 }
 
 // New creates a new mobile Server.
@@ -74,6 +77,7 @@ func New(cfg *config.Config, db *database.DB, wm *workers.WorkerManager) *Server
 		db:      db,
 		workers: wm,
 		hub:     newWsHub(),
+		cache:   make(map[string]mobileCacheEntry),
 	}
 	go s.hub.run()
 	return s
@@ -115,9 +119,9 @@ func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 		}
 	}
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id, X-Correlation-Id, X-Trace-Id, X-Idempotency-Key")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key, X-Idempotency-Key, X-Request-Id, X-Correlation-Id, X-Trace-Id")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
+	w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id, Idempotency-Key, Idempotency-Key-Source, Idempotent-Replayed")
 	w.Header().Set("Access-Control-Max-Age", "600")
 }
 
