@@ -30,7 +30,7 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		Email        string  `json:"email"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "JSON invÃ¡lido"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "JSON inválido"})
 		return
 	}
 	if req.PixCpf == "" || req.PixPhone == "" {
