@@ -16,6 +16,10 @@ import (
 
 // handleListCountries — GET /api/mobile/countries
 func (s *Server) handleListCountries(w http.ResponseWriter, r *http.Request) {
+	if cached, ok := s.getMobileCache("countries:list"); ok {
+		writeJSON(w, http.StatusOK, cached)
+		return
+	}
 	countries, err := mobileDB(s.db).ListCountries(r.Context())
 	if err != nil {
 		countries = fallbackMobileCountries()
@@ -23,12 +27,19 @@ func (s *Server) handleListCountries(w http.ResponseWriter, r *http.Request) {
 	if countries == nil {
 		countries = []models.Country{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"countries": countries, "count": len(countries)})
+	response := map[string]any{"countries": countries, "count": len(countries)}
+	s.setMobileCache("countries:list", response, mobileCatalogCacheTTL)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // handleGetCountry — GET /api/mobile/countries/{code}
 func (s *Server) handleGetCountry(w http.ResponseWriter, r *http.Request) {
 	code := strings.ToUpper(r.PathValue("code"))
+	cacheKey := "countries:get:" + code
+	if cached, ok := s.getMobileCache(cacheKey); ok {
+		writeJSON(w, http.StatusOK, cached)
+		return
+	}
 	country, err := mobileDB(s.db).GetCountry(r.Context(), code)
 	if err != nil {
 		country = fallbackMobileCountry(code)
@@ -41,15 +52,22 @@ func (s *Server) handleGetCountry(w http.ResponseWriter, r *http.Request) {
 	if len(rails) == 0 {
 		rails = fallbackMobileRails(code)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"country": country,
 		"rails":   rails,
-	})
+	}
+	s.setMobileCache(cacheKey, response, mobileCatalogCacheTTL)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // handleListCountryRails — GET /api/mobile/countries/{code}/rails
 func (s *Server) handleListCountryRails(w http.ResponseWriter, r *http.Request) {
 	code := strings.ToUpper(r.PathValue("code"))
+	cacheKey := "countries:rails:" + code
+	if cached, ok := s.getMobileCache(cacheKey); ok {
+		writeJSON(w, http.StatusOK, cached)
+		return
+	}
 	rails, err := mobileDB(s.db).ListRailsByCountry(r.Context(), code)
 	if err != nil {
 		rails = fallbackMobileRails(code)
@@ -57,7 +75,9 @@ func (s *Server) handleListCountryRails(w http.ResponseWriter, r *http.Request) 
 	if rails == nil {
 		rails = []models.PaymentRail{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"rails": rails, "count": len(rails)})
+	response := map[string]any{"rails": rails, "count": len(rails)}
+	s.setMobileCache(cacheKey, response, mobileCatalogCacheTTL)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // handleDetectCountry — GET /api/mobile/countries/detect
@@ -71,6 +91,11 @@ func (s *Server) handleDetectCountry(w http.ResponseWriter, r *http.Request) {
 		code = "BR"
 	}
 	code = strings.ToUpper(strings.TrimSpace(code))
+	cacheKey := "countries:detect:" + code
+	if cached, ok := s.getMobileCache(cacheKey); ok {
+		writeJSON(w, http.StatusOK, cached)
+		return
+	}
 
 	country, _ := mobileDB(s.db).GetCountry(r.Context(), code)
 	if country == nil {
@@ -84,11 +109,13 @@ func (s *Server) handleDetectCountry(w http.ResponseWriter, r *http.Request) {
 	if rails == nil {
 		rails = fallbackMobileRails(country.Code)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"detected_code": code,
 		"country":       country,
 		"rails":         rails,
-	})
+	}
+	s.setMobileCache(cacheKey, response, mobileCatalogCacheTTL)
+	writeJSON(w, http.StatusOK, response)
 }
 
 func fallbackMobileCountries() []models.Country {
