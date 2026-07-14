@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"payment-gateway/internal/config"
+	"payment-gateway/internal/metrics"
 )
 
 type penaltyBox struct {
@@ -87,8 +88,11 @@ func (p *penaltyBox) banned(key string, now time.Time) (bool, time.Time) {
 	}
 	entry.lastActivity = now
 	if now.Before(entry.bannedUntil) {
+		metrics.IncPenaltyBoxBlockedRequest()
+		metrics.SetPenaltyBoxActiveBans(p.activeBansLocked(now))
 		return true, entry.bannedUntil
 	}
+	metrics.SetPenaltyBoxActiveBans(p.activeBansLocked(now))
 	return false, time.Time{}
 }
 
@@ -113,13 +117,20 @@ func (p *penaltyBox) recordViolation(key string, now time.Time) (bool, time.Time
 		entry.offenses = 0
 	}
 	entry.violations++
+	metrics.IncPenaltyBoxViolation()
 	if entry.violations < p.threshold {
+		metrics.SetPenaltyBoxActiveBans(p.activeBansLocked(now))
 		return false, time.Time{}
 	}
 	entry.offenses++
 	entry.violations = 0
 	entry.windowStart = now
 	entry.bannedUntil = now.Add(p.banDuration(entry.offenses))
+	metrics.IncPenaltyBoxBan()
+	if entry.offenses > 1 {
+		metrics.IncPenaltyBoxEscalation()
+	}
+	metrics.SetPenaltyBoxActiveBans(p.activeBansLocked(now))
 	return true, entry.bannedUntil
 }
 
@@ -144,6 +155,17 @@ func (p *penaltyBox) cleanupLocked(now time.Time) {
 			delete(p.entries, key)
 		}
 	}
+	metrics.SetPenaltyBoxActiveBans(p.activeBansLocked(now))
+}
+
+func (p *penaltyBox) activeBansLocked(now time.Time) int {
+	active := 0
+	for _, entry := range p.entries {
+		if entry != nil && now.Before(entry.bannedUntil) {
+			active++
+		}
+	}
+	return active
 }
 
 func penaltyKeyForRequest(r *http.Request, routeClass string) string {
