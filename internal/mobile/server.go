@@ -111,16 +111,32 @@ func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
 	if allowed == "*" {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 	} else {
-		for _, item := range strings.Split(allowed, ",") {
-			if strings.TrimSpace(item) == origin && origin != "" {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				break
-			}
+		if isMobileAllowedOrigin(origin, allowed) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
 		}
 	}
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id, X-Correlation-Id, X-Trace-Id, X-Idempotency-Key")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
+	w.Header().Set("Access-Control-Max-Age", "600")
+}
+
+func isMobileAllowedOrigin(origin, configured string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return false
+	}
+	for _, item := range strings.Split(configured, ",") {
+		if strings.TrimSpace(item) == origin {
+			return true
+		}
+	}
+	normalized := strings.TrimSuffix(strings.ToLower(origin), "/")
+	if normalized == "https://chainfx.store" || normalized == "https://www.chainfx.store" {
+		return true
+	}
+	return strings.HasPrefix(normalized, "https://swapped-cryptocurrensy-") &&
+		strings.HasSuffix(normalized, "-d3v-techle4ds-projects.vercel.app")
 }
 
 func (s *Server) registerRoutes(mux *http.ServeMux) {
