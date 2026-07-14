@@ -10,6 +10,9 @@ type mobileCacheEntry struct {
 const (
 	mobileHotCacheTTL     = 15 * time.Second
 	mobileCatalogCacheTTL = 5 * time.Minute
+
+	mobileStaticCacheControl = "public, max-age=60, stale-while-revalidate=300"
+	mobileRateCacheControl   = "public, max-age=15, stale-while-revalidate=60"
 )
 
 func (s *Server) getMobileCache(key string) (any, bool) {
