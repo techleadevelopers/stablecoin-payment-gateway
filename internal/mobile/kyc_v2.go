@@ -145,6 +145,7 @@ func (s *Server) handleKYCHistory(w http.ResponseWriter, r *http.Request) {
 // handleKYCLimits — GET /api/mobile/kyc/limits
 // Public — returns the KYC level table so the app can display upgrade prompts.
 func (s *Server) handleKYCLimits(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", mobileStaticCacheControl)
 	type level struct {
 		Level      string  `json:"level"`
 		Label      string  `json:"label"`
