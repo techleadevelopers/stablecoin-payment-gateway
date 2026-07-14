@@ -92,7 +92,10 @@ func (s *Server) shouldSkipSmartRateLimit(r *http.Request) bool {
 		return true
 	}
 	switch r.URL.Path {
-	case "/healthz", "/readyz", "/api/pix/webhook", "/api/pix/webhook/buy", "/api/efi/charges/webhook/buy":
+	case "/healthz", "/readyz", "/api/mobile/health",
+		"/api/rates", "/rates", "/api/price", "/price",
+		"/mcp/initialize", "/mcp/tools/list", "/mcp/resources/list", "/mcp/prompts/list",
+		"/api/pix/webhook", "/api/pix/webhook/buy", "/api/efi/charges/webhook/buy":
 		return true
 	default:
 		return false
@@ -126,6 +129,9 @@ func shortSecretHash(value string) string {
 func smartRateLimitRouteClass(r *http.Request) string {
 	path := r.URL.Path
 	method := r.Method
+	if path == "/api/rates" || path == "/rates" || path == "/api/price" || path == "/price" || path == "/api/quote" || path == "/quote" {
+		return "read"
+	}
 	if method == http.MethodGet && (path == "/openapi.json" || path == "/llms.txt" || path == "/robots.txt" || path == "/sitemap.xml" || strings.HasPrefix(path, "/.well-known/")) {
 		return "discovery"
 	}
@@ -247,9 +253,10 @@ func (s *Server) withDeveloperRequestLog(next http.Handler) http.Handler {
 		if status == 0 {
 			status = http.StatusOK
 		}
+		rec.Flush()
 		duration := time.Since(start)
 		slog.Info("http_request", "request_id", requestID(r), "method", r.Method, "path", r.URL.Path, "status", status, "duration_ms", duration.Milliseconds())
-		if s == nil || s.db == nil || s.shouldSkipDeveloperRequestLog(r) {
+		if s == nil || s.db == nil || s.shouldSkipDeveloperRequestLog(r) || status == http.StatusTooManyRequests {
 			return
 		}
 		apiKey := chainFXAPIKey(r)
@@ -283,7 +290,7 @@ func (s *Server) withDeveloperRequestLog(next http.Handler) http.Handler {
 		if auth.APIKeyLogHash != "" {
 			apiKeyHash = auth.APIKeyLogHash
 		}
-		_ = s.db.RecordAPIRequestLog(context.Background(), database.APIRequestLogInput{
+		s.enqueueAPIRequestLog(database.APIRequestLogInput{
 			RequestID:   requestID(r),
 			Method:      r.Method,
 			Path:        r.URL.Path,
@@ -304,10 +311,34 @@ func (s *Server) shouldSkipDeveloperRequestLog(r *http.Request) bool {
 		return true
 	}
 	switch r.URL.Path {
-	case "/healthz", "/readyz":
+	case "/healthz", "/readyz", "/api/mobile/health",
+		"/api/rates", "/rates", "/api/price", "/price", "/api/quote", "/quote",
+		"/mcp/initialize", "/mcp/tools/list", "/mcp/resources/list", "/mcp/prompts/list",
+		"/api/admin/overview":
 		return true
 	default:
 		return false
+	}
+}
+
+func (s *Server) enqueueAPIRequestLog(in database.APIRequestLogInput) {
+	if s == nil || s.db == nil || s.requestLogQueue == nil {
+		return
+	}
+	select {
+	case s.requestLogQueue <- in:
+	default:
+		s.requestLogDrops.Add(1)
+	}
+}
+
+func (s *Server) runRequestLogWorker() {
+	for in := range s.requestLogQueue {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := s.db.RecordAPIRequestLog(ctx, in); err != nil {
+			slog.Warn("developer_request_log_failed", "error", err)
+		}
+		cancel()
 	}
 }
 
