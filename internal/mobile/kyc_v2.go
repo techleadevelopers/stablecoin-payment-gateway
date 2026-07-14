@@ -130,7 +130,7 @@ func (s *Server) handleKYCStatusV2(w http.ResponseWriter, r *http.Request) {
 // handleKYCHistory — GET /api/mobile/kyc/history
 func (s *Server) handleKYCHistory(w http.ResponseWriter, r *http.Request) {
 	uid := userIDFromCtx(r)
-	list, err := mobileDB(s.db).ListKYCByUser(r.Context(), uid)
+	list, err := mobileDB(s.db).ListKYCByUser(r.Context(), uid, 20)
 	if err != nil {
 		slog.Error("erro interno", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "erro interno"})
