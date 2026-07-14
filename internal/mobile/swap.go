@@ -42,12 +42,12 @@ func (s *Server) handleSwapQuote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pw := s.PriceCache()
-	if pw == nil {
+	if false && pw == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "serviço de cotação indisponível"})
 		return
 	}
-	fromBRL := assetPriceInBRL(pw, req.FromAsset)
-	toBRL := assetPriceInBRL(pw, req.ToAsset)
+	fromBRL := mobileAssetPriceBRL(pw, req.FromAsset)
+	toBRL := mobileAssetPriceBRL(pw, req.ToAsset)
 
 	if fromBRL <= 0 || toBRL <= 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
@@ -103,13 +103,23 @@ func (s *Server) handleSwapExecute(w http.ResponseWriter, r *http.Request) {
 
 	// Validate assets exist and are active
 	db := mobileDB(s.db)
-	fromAsset, err := db.GetAsset(r.Context(), req.FromAsset)
-	if err != nil || fromAsset == nil || !fromAsset.Active {
+	fromAsset, _, err := s.mobileAssetBySymbol(r.Context(), req.FromAsset)
+	if err != nil && fromAsset == nil {
+		slog.Error("erro interno", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "erro interno"})
+		return
+	}
+	if fromAsset == nil || !fromAsset.Active {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ativo de origem inválido ou inativo"})
 		return
 	}
-	toAsset, err := db.GetAsset(r.Context(), req.ToAsset)
-	if err != nil || toAsset == nil || !toAsset.Active {
+	toAsset, _, err := s.mobileAssetBySymbol(r.Context(), req.ToAsset)
+	if err != nil && toAsset == nil {
+		slog.Error("erro interno", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "erro interno"})
+		return
+	}
+	if toAsset == nil || !toAsset.Active {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ativo de destino inválido ou inativo"})
 		return
 	}
