@@ -49,7 +49,7 @@
 
 1. **Informe sua Wallet** - Cole o endereÃ§o da sua carteira (ETH, BTC, USDT)
 2. **Escolha o método de pagamento**:
-   - ðŸ’° **PIX** - InstantÃ¢neo e sem taxas extras
+   -  **PIX** - InstantÃ¢neo e sem taxas extras
    -  **VISA** - CartÃ£o de crédito internacional
    -  **Mastercard** - CartÃ£o de crédito internacional
 3. **Confirme a transação** e receba suas criptos em segundos
@@ -89,7 +89,7 @@ O frontend gera `payment_token` com o SDK JavaScript oficial da Efí. O backend 
 Estados Efí `approved` e `waiting` ficam pendentes; não liberam cripto automaticamente.
 
 
-## ðŸ”„ Fluxo de Venda (Sell)
+##  Fluxo de Venda (Sell)
 
 ### Venda suas criptos e receba em reais
 
@@ -1129,7 +1129,7 @@ Na camada de custodia, o signer agora possui:
 
 Em producao, use `CUSTODY_MODE=paper` primeiro. `shadow` serve para observar sem bloquear. `live` fica reservado para uma etapa futura com resposta automatica depois de validacao operacional.
 
-# ðŸ—ï¸ Complete Technical Architecture
+#  Complete Technical Architecture
 
 ##  Mobile + Backend Ecosystem
 
@@ -1266,7 +1266,7 @@ graph TB
 
 ---
 
-# ðŸ“Š Mobile API (50+ Endpoints)
+# Mobile API (50+ Endpoints)
 
 | Module | Endpoints | Methods | Auth |
 |---------|-----------|----------|------|
@@ -1285,7 +1285,7 @@ graph TB
 
 ---
 
-# ðŸ”„ Asynchronous Workers
+# Asynchronous Workers
 
 | Worker | Responsibility | Interval | Dependencies |
 |----------|---------------|-----------|--------------|
@@ -1297,7 +1297,7 @@ graph TB
 
 ---
 
-# ðŸ›¡ï¸ Resilience Layer
+# Resilience Layer
 
 ```yaml
 Circuit Breaker:
@@ -1327,7 +1327,7 @@ Dead Letter Queue:
 
 ---
 
-# ðŸš€ Technology Stack
+# Technology Stack
 
 | Layer | Technology |
 |--------|------------|
@@ -1348,7 +1348,7 @@ Dead Letter Queue:
 | Architecture | Event-Driven Microservices |
 | Resilience | Circuit Breaker, Retry, RPC Fallback, DLQ |
 
-# ðŸ—„ï¸ Database Schema (Mobile)
+#  Database Schema (Mobile)
 
 ## Core Tables
 
@@ -1373,7 +1373,7 @@ Dead Letter Queue:
 
 ---
 
-# ðŸ” Security Controls
+# Security Controls
 
 | Layer | Control | Details |
 |--------|----------|---------|
@@ -1391,7 +1391,7 @@ Dead Letter Queue:
 
 ---
 
-# ðŸ“ˆ Performance Metrics
+#  Performance Metrics
 
 ```yaml
 SLO Targets:
@@ -1411,7 +1411,7 @@ Monitoring:
 
 ---
 
-# ðŸš€ Deployment Strategy
+#  Deployment Strategy
 
 ## Infrastructure
 
@@ -1469,7 +1469,7 @@ Scaling:
     - Multi-Provider Fallback
 ```
 
-# ðŸ“ Environment Variables
+#  Environment Variables
 
 ```env
 # ============================================================
@@ -1533,7 +1533,7 @@ PIX_WEBHOOK_SECRET=xxx
 
 ---
 
-# ðŸŽ¯ Evolution Roadmap
+#  Evolution Roadmap
 
 ```mermaid
 timeline
