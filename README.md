@@ -6,23 +6,23 @@
 
 ---
 
-## ðŸ“± ChainFx - Instant PIX to Stablecoin Payments
+##  ChainFx - Instant PIX to Stablecoin Payments
 
-**ChainFx** Ã© uma plataforma Web3 que permite comprar e vender stablecoins como USDT (Tether.io) e EURUSD (Digital Euro Dollar) de forma instantÃ¢nea e segura. Com integraÃ§Ã£o via PIX, vocÃª pode realizar transaÃ§Ãµes em segundos com total confiabilidade.
+**ChainFx** Ã© uma plataforma Web3 que permite comprar e vender stablecoins como USDT (Tether.io) e EURUSD (Digital Euro Dollar) de forma instantÃ¢nea e segura. Com integração via PIX, vocÃª pode realizar transações em segundos com total confiabilidade.
 
-### âœ¨ Diferenciais da Plataforma
+###  Diferenciais da Plataforma
 
-- âš¡ **Compre e venda cripto instantaneamente** via PIX
-- ðŸ”’ **TransaÃ§Ãµes seguras** e sem complicaÃ§Ãµes
-- ðŸ‘¥ **950.000+ usuÃ¡rios** confiam na ChainFx
-- ðŸ’³ **30+ opÃ§Ãµes** de pagamento locais
-- ðŸª™ **100+ criptomoedas** disponÃ­veis
+-  **Compre e venda cripto instantaneamente** via PIX
+-  **Transações seguras** e sem complicações
+- **950.000+ usuários** confiam na ChainFx
+-  **30+ opções** de pagamento locais
+-  **100+ criptomoedas** disponÃ­veis
 
 ---
 
-## ðŸ›’ Fluxo de Compra (Buy) - Step 1
+##  Fluxo de Compra (Buy) - Step 1
 
-### Informe o valor e visualize a cotaÃ§Ã£o
+### Informe o valor e visualize a cotação
 
 <div align="center">
   <img src="https://res.cloudinary.com/limpeja/image/upload/v1783058374/compra-removebg-preview_ikab4t.png" alt="ChainFx - Tela de Compra" width="600" />
@@ -32,12 +32,12 @@
 
 1. Selecione a moeda que deseja pagar (BRL)
 2. Informe o valor que deseja comprar
-3. Visualize a cotaÃ§Ã£o atualizada em tempo real
-4. Confirme a quantidade de cripto que irÃ¡ receber
+3. Visualize a cotação atualizada em tempo real
+4. Confirme a quantidade de cripto que irá receber
 
 ---
 
-## ðŸ’³ Fluxo de Pagamento - Step 2
+##  Fluxo de Pagamento - Step 2
 
 ### Insira sua wallet e escolha o mÃ©todo de pagamento
 
@@ -50,13 +50,13 @@
 1. **Informe sua Wallet** - Cole o endereÃ§o da sua carteira (ETH, BTC, USDT)
 2. **Escolha o mÃ©todo de pagamento**:
    - ðŸ’° **PIX** - InstantÃ¢neo e sem taxas extras
-   - ðŸ’³ **VISA** - CartÃ£o de crÃ©dito internacional
-   - ðŸ’³ **Mastercard** - CartÃ£o de crÃ©dito internacional
-3. **Confirme a transaÃ§Ã£o** e receba suas criptos em segundos
+   -  **VISA** - CartÃ£o de crÃ©dito internacional
+   -  **Mastercard** - CartÃ£o de crÃ©dito internacional
+3. **Confirme a transação** e receba suas criptos em segundos
 
 ---
 
-## ðŸ’³ Fluxo de Pagamento - Step 3 (PIX)
+##  Fluxo de Pagamento - Step 3 (PIX)
 
 ### Escaneie o QR Code e confirme o pagamento
 
@@ -69,13 +69,13 @@
 1. **Escaneie o QR Code** - Utilize o app do seu banco para escanear o cÃ³digo PIX
 2. **Copie o cÃ³digo PIX** - Caso prefira, copie o cÃ³digo e cole no seu banco
 3. **Confirme o pagamento** - Realize o pagamento no valor exibido
-4. **Receba suas criptos** - ApÃ³s a confirmaÃ§Ã£o do pagamento, suas criptos serÃ£o entregues em segundos
+4. **Receba suas criptos** - ApÃ³s a confirmação do pagamento, suas criptos serÃ£o entregues em segundos
 
 ---
 
-## ðŸ’³ Fluxo de Pagamento - Step 3 (CartÃ£o de CrÃ©dito - Efí)
+##  Fluxo de Pagamento - Step 3 (CartÃ£o de CrÃ©dito - Efí)
 
-### IntegraÃ§Ã£o consolidada via EfÃ­ Bank
+### Integração consolidada via EfÃ­ Bank
 
 <div align="center">
   <img src="https://res.cloudinary.com/limpeja/image/upload/v1783064734/998ededc-2291-40d7-86c9-6906faea7998_lsbpws.png" alt="ChainFx - Tela de Pagamento" width="480" />
@@ -83,8 +83,8 @@
 
 O frontend gera `payment_token` com o SDK JavaScript oficial da Efí. O backend nunca recebe dados brutos do cartão; ele recebe o token, cria a cobrança Efí e libera cripto somente quando o webhook/consulta retorna status `paid`.
 
-- ðŸ’³ **VISA** - CartÃ£o de crÃ©dito internacional
-- ðŸ’³ **Mastercard** - CartÃ£o de crÃ©dito internacional
+-  **VISA** - CartÃ£o de crÃ©dito internacional
+-  **Mastercard** - CartÃ£o de crÃ©dito internacional
 
 Estados Efí `approved` e `waiting` ficam pendentes; não liberam cripto automaticamente.
 
@@ -96,7 +96,7 @@ Estados Efí `approved` e `waiting` ficam pendentes; não liberam cripto automat
 1. Selecione a criptomoeda que deseja vender
 2. Informe a quantidade
 3. Escolha o mÃ©todo de recebimento (PIX)
-4. Confirme a transaÃ§Ã£o e receba em sua conta
+4. Confirme a transação e receba em sua conta
 
 ---
 
@@ -915,23 +915,23 @@ Fase 5 sera integrada futuramente com foco em expansao operacional:
 
 ## SeguranÃ§a de CustÃ³dia com EIP-7702
 
-O signer Go inclui uma camada opcional de proteÃ§Ã£o de custÃ³dia baseada em EIP-7702. O objetivo nÃ£o Ã© executar arbitragem nem alterar o fluxo PIX, mas proteger a hot wallet contra delegaÃ§Ãµes inesperadas de conta EOA.
+O signer Go inclui uma camada opcional de proteção de custÃ³dia baseada em EIP-7702. O objetivo nÃ£o Ã© executar arbitragem nem alterar o fluxo PIX, mas proteger a hot wallet contra delegações inesperadas de conta EOA.
 
-O EIP-7702 introduz transaÃ§Ãµes `SET_CODE` (`type 0x04`) com `authorizationList`, permitindo que uma EOA autorize temporariamente/de forma controlada a execuÃ§Ã£o de cÃ³digo delegado. Isso Ã© poderoso para account abstraction, batching e session keys, mas tambÃ©m cria um novo risco operacional: se a hot wallet autorizar um delegate desconhecido ou comprometido, a custÃ³dia pode ser afetada.
+O EIP-7702 introduz transações `SET_CODE` (`type 0x04`) com `authorizationList`, permitindo que uma EOA autorize temporariamente/de forma controlada a execução de cÃ³digo delegado. Isso Ã© poderoso para account abstraction, batching e session keys, mas tambÃ©m cria um novo risco operacional: se a hot wallet autorizar um delegate desconhecido ou comprometido, a custÃ³dia pode ser afetada.
 
 Por isso o signer tem um `CustodyGuard`:
 
 ```text
 Signer monitora pending/latest blocks
--> detecta transaÃ§Ãµes EIP-7702 type 0x04
+-> detecta transações EIP-7702 type 0x04
 -> lÃª authorizationList
--> recupera a authority/wallet que assinou a autorizaÃ§Ã£o
+-> recupera a authority/wallet que assinou a autorização
 -> se a authority for uma wallet protegida e o delegate nÃ£o estiver na allowlist:
    signer entra em lockdown
    /hd/transfer deixa de assinar novas saÃ­das
 ```
 
-ConfiguraÃ§Ã£o opcional no serviÃ§o do signer:
+Configuração opcional no serviÃ§o do signer:
 
 ```env
 CUSTODY_GUARD_ENABLED=true
@@ -941,7 +941,7 @@ CUSTODY_ALLOWED_SELECTORS=
 CUSTODY_PROTECTED_WALLETS=
 ```
 
-A hot wallet derivada de `EVM_PRIVATE_KEY` entra automaticamente na lista protegida. `CUSTODY_PROTECTED_WALLETS` serve para adicionar outras carteiras. `CUSTODY_TRUSTED_DELEGATES` deve conter somente contratos auditados e esperados. Se o bytecode de um delegate confiÃ¡vel mudar ou surgir delegate desconhecido, o signer bloqueia a assinatura atÃ© intervenÃ§Ã£o operacional.
+A hot wallet derivada de `EVM_PRIVATE_KEY` entra automaticamente na lista protegida. `CUSTODY_PROTECTED_WALLETS` serve para adicionar outras carteiras. `CUSTODY_TRUSTED_DELEGATES` deve conter somente contratos auditados e esperados. Se o bytecode de um delegate confiável mudar ou surgir delegate desconhecido, o signer bloqueia a assinatura atÃ© intervenção operacional.
 
 ## Custodia Operacional em Producao
 
@@ -1131,7 +1131,7 @@ Em producao, use `CUSTODY_MODE=paper` primeiro. `shadow` serve para observar sem
 
 # ðŸ—ï¸ Complete Technical Architecture
 
-## ðŸ“± Mobile + Backend Ecosystem
+##  Mobile + Backend Ecosystem
 
 ```mermaid
 graph TB
