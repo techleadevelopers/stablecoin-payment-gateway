@@ -268,7 +268,10 @@ func TestSmartRateLimitRouteClasses(t *testing.T) {
 		{http.MethodPost, "/mcp/initialize", "discovery"},
 		{http.MethodPost, "/mcp/tools/list", "discovery"},
 		{http.MethodPost, "/mcp/resources/list", "discovery"},
-		{http.MethodPost, "/mcp/tools/call", "mcp"},
+		{http.MethodPost, "/mcp/tools/call", "mcp_tool"},
+		{http.MethodPost, "/mcp/resources/read", "mcp_resource_read"},
+		{http.MethodGet, "/mcp/capabilities.json", "public_discovery"},
+		{http.MethodGet, "/marketplace/capabilities", "public_discovery"},
 		{http.MethodPost, "/marketplace/purchase/mp_1/execute", "execution"},
 		{http.MethodPost, "/api/order", "write"},
 		{http.MethodPost, "/api/quote", "read"},
@@ -280,11 +283,11 @@ func TestSmartRateLimitRouteClasses(t *testing.T) {
 			t.Fatalf("%s %s: expected class %s, got %s", tc.method, tc.path, tc.want, got)
 		}
 	}
-	if got := smartRateLimitMax("live", "mcp", 100); got != 2000 {
-		t.Fatalf("expected live MCP limit 2000, got %d", got)
+	if got := smartRateLimitMax("live", "mcp_tool", 100); got != 2400 {
+		t.Fatalf("expected live MCP tool limit 2400, got %d", got)
 	}
-	if got := smartRateLimitMax("test", "mcp", 100); got != 600 {
-		t.Fatalf("expected test MCP limit 600, got %d", got)
+	if got := smartRateLimitMax("test", "mcp_tool", 100); got != 1200 {
+		t.Fatalf("expected test MCP tool limit 1200, got %d", got)
 	}
 	if got := smartRateLimitMax("anonymous", "read", 100); got != 600 {
 		t.Fatalf("expected anonymous read limit 600 for availability probes, got %d", got)
