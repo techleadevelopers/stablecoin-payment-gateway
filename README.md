@@ -8,7 +8,7 @@
 
 ##  ChainFx - Instant PIX to Stablecoin Payments
 
-**ChainFx** é uma plataforma Web3 que permite comprar e vender stablecoins como USDT (Tether.io) e EURUSD (Digital Euro Dollar) de forma instantÃ¢nea e segura. Com integração via PIX, vocÃª pode realizar transações em segundos com total confiabilidade.
+**ChainFx** é uma plataforma Web3 que permite comprar e vender stablecoins como USDT (Tether.io) e EURUSD (Digital Euro Dollar) de forma instantânea e segura. Com integração via PIX, você pode realizar transações em segundos com total confiabilidade.
 
 ###  Diferenciais da Plataforma
 
@@ -16,7 +16,7 @@
 -  **Transações seguras** e sem complicações
 - **950.000+ usuários** confiam na ChainFx
 -  **30+ opções** de pagamento locais
--  **100+ criptomoedas** disponÃ­veis
+-  **100+ criptomoedas** disponíveis
 
 ---
 
@@ -47,11 +47,11 @@
 
 **Como funciona:**
 
-1. **Informe sua Wallet** - Cole o endereÃ§o da sua carteira (ETH, BTC, USDT)
+1. **Informe sua Wallet** - Cole o endereço da sua carteira (ETH, BTC, USDT)
 2. **Escolha o método de pagamento**:
-   -  **PIX** - InstantÃ¢neo e sem taxas extras
-   -  **VISA** - CartÃ£o de crédito internacional
-   -  **Mastercard** - CartÃ£o de crédito internacional
+   -  **PIX** - Instantâneo e sem taxas extras
+   -  **VISA** - Cartão de crédito internacional
+   -  **Mastercard** - Cartão de crédito internacional
 3. **Confirme a transação** e receba suas criptos em segundos
 
 ---
@@ -66,16 +66,16 @@
 
 **Como funciona:**
 
-1. **Escaneie o QR Code** - Utilize o app do seu banco para escanear o cÃ³digo PIX
-2. **Copie o cÃ³digo PIX** - Caso prefira, copie o cÃ³digo e cole no seu banco
+1. **Escaneie o QR Code** - Utilize o app do seu banco para escanear o código PIX
+2. **Copie o código PIX** - Caso prefira, copie o código e cole no seu banco
 3. **Confirme o pagamento** - Realize o pagamento no valor exibido
-4. **Receba suas criptos** - ApÃ³s a confirmação do pagamento, suas criptos serÃ£o entregues em segundos
+4. **Receba suas criptos** - Após a confirmação do pagamento, suas criptos serão entregues em segundos
 
 ---
 
-##  Fluxo de Pagamento - Step 3 (CartÃ£o de Crédito - Efí)
+##  Fluxo de Pagamento - Step 3 (Cartão de Crédito - Efí)
 
-### Integração consolidada via EfÃ­ Bank
+### Integração consolidada via Efí Bank
 
 <div align="center">
   <img src="https://res.cloudinary.com/limpeja/image/upload/v1783064734/998ededc-2291-40d7-86c9-6906faea7998_lsbpws.png" alt="ChainFx - Tela de Pagamento" width="480" />
@@ -83,8 +83,8 @@
 
 O frontend gera `payment_token` com o SDK JavaScript oficial da Efí. O backend nunca recebe dados brutos do cartão; ele recebe o token, cria a cobrança Efí e libera cripto somente quando o webhook/consulta retorna status `paid`.
 
--  **VISA** - CartÃ£o de crédito internacional
--  **Mastercard** - CartÃ£o de crédito internacional
+-  **VISA** - Cartão de crédito internacional
+-  **Mastercard** - Cartão de crédito internacional
 
 Estados Efí `approved` e `waiting` ficam pendentes; não liberam cripto automaticamente.
 
@@ -698,7 +698,7 @@ Planejado para integracao futura:
 
 - Fase 5: expansao de assets, paises e rails adicionais.
 
-Nao faz parte do escopo atual:
+Não faz parte do escopo atual:
 
 - Bridge entre redes.
 - Pool, AMM, DEX, LP ou yield.
@@ -913,25 +913,25 @@ Fase 5 sera integrada futuramente com foco em expansao operacional:
 - limites e compliance por mercado;
 - SDKs adicionais como Go e PHP.
 
-## SeguranÃ§a de CustÃ³dia com EIP-7702
+## Segurança de Custódia com EIP-7702
 
-O signer Go inclui uma camada opcional de proteção de custÃ³dia baseada em EIP-7702. O objetivo nÃ£o é executar arbitragem nem alterar o fluxo PIX, mas proteger a hot wallet contra delegações inesperadas de conta EOA.
+O signer Go inclui uma camada opcional de proteção de custódia baseada em EIP-7702. O objetivo não é executar arbitragem nem alterar o fluxo PIX, mas proteger a hot wallet contra delegações inesperadas de conta EOA.
 
-O EIP-7702 introduz transações `SET_CODE` (`type 0x04`) com `authorizationList`, permitindo que uma EOA autorize temporariamente/de forma controlada a execução de cÃ³digo delegado. Isso é poderoso para account abstraction, batching e session keys, mas também cria um novo risco operacional: se a hot wallet autorizar um delegate desconhecido ou comprometido, a custÃ³dia pode ser afetada.
+O EIP-7702 introduz transações `SET_CODE` (`type 0x04`) com `authorizationList`, permitindo que uma EOA autorize temporariamente/de forma controlada a execução de código delegado. Isso é poderoso para account abstraction, batching e session keys, mas também cria um novo risco operacional: se a hot wallet autorizar um delegate desconhecido ou comprometido, a custódia pode ser afetada.
 
 Por isso o signer tem um `CustodyGuard`:
 
 ```text
 Signer monitora pending/latest blocks
 -> detecta transações EIP-7702 type 0x04
--> lÃª authorizationList
+-> lê authorizationList
 -> recupera a authority/wallet que assinou a autorização
--> se a authority for uma wallet protegida e o delegate nÃ£o estiver na allowlist:
+-> se a authority for uma wallet protegida e o delegate não estiver na allowlist:
    signer entra em lockdown
-   /hd/transfer deixa de assinar novas saÃ­das
+   /hd/transfer deixa de assinar novas saídas
 ```
 
-Configuração opcional no serviÃ§o do signer:
+Configuração opcional no serviço do signer:
 
 ```env
 CUSTODY_GUARD_ENABLED=true
@@ -1270,18 +1270,18 @@ graph TB
 
 | Module | Endpoints | Methods | Auth |
 |---------|-----------|----------|------|
-| **Auth** | `/api/mobile/auth/register`<br>`/api/mobile/auth/login`<br>`/api/mobile/auth/refresh`<br>`/api/mobile/auth/logout` | POST<br>POST<br>POST<br>POST | âŒ<br>âŒ<br>âŒ<br>âœ… |
-| **User** | `/api/mobile/user/profile`<br>`/api/mobile/user/profile`<br>`/api/mobile/user/kyc`<br>`/api/mobile/user/kyc/status` | GET<br>PUT<br>POST<br>GET | âœ…<br>âœ…<br>âœ…<br>âœ… |
-| **Wallet** | `/api/mobile/wallet/balance`<br>`/api/mobile/wallet/tokens`<br>`/api/mobile/wallet/address`<br>`/api/mobile/wallet/generate`<br>`/api/mobile/wallet/history` | GET<br>GET<br>GET<br>POST<br>GET | âœ…<br>âœ…<br>âœ…<br>âœ…<br>âœ… |
-| **Orders** | `/api/mobile/order/buy`<br>`/api/mobile/order/sell`<br>`/api/mobile/order/swap`<br>`/api/mobile/order/{id}`<br>`/api/mobile/orders`<br>`/api/mobile/order/cancel` | POST<br>POST<br>POST<br>GET<br>GET<br>POST | âœ…<br>âœ…<br>âœ…<br>âœ…<br>âœ…<br>âœ… |
-| **PIX** | `/api/mobile/pix/generate`<br>`/api/mobile/pix/confirm`<br>`/api/mobile/pix/status/{id}`<br>`/api/mobile/pix/copy` | POST<br>POST<br>GET<br>POST | âœ…<br>âŒ<br>âœ…<br>âœ… |
-| **DCA** | `/api/mobile/dca/create`<br>`/api/mobile/dca/strategies`<br>`/api/mobile/dca/{id}`<br>`/api/mobile/dca/{id}`<br>`/api/mobile/dca/{id}/status` | POST<br>GET<br>PUT<br>DELETE<br>GET | âœ…<br>âœ…<br>âœ…<br>âœ…<br>âœ… |
-| **Security** | `/api/mobile/security/pin`<br>`/api/mobile/security/biometry`<br>`/api/mobile/security/2fa`<br>`/api/mobile/security/devices`<br>`/api/mobile/security/device` | POST<br>POST<br>POST<br>GET<br>DELETE | âœ…<br>âœ…<br>âœ…<br>âœ…<br>âœ… |
-| **Smart Contracts** | `/api/mobile/contracts/payout`<br>`/api/mobile/contracts/vault`<br>`/api/mobile/contracts/delegate`<br>`/api/mobile/contracts/pause`<br>`/api/mobile/contracts/unpause` | POST<br>GET<br>GET<br>POST<br>POST | âœ…<br>âœ…<br>âœ…<br>âœ…<br>âœ… |
-| **Notifications** | `/api/mobile/notifications`<br>`/api/mobile/notifications/read`<br>`/api/mobile/notifications/{id}`<br>`/api/mobile/notifications/token` | GET<br>PUT<br>DELETE<br>POST | âœ…<br>âœ…<br>âœ…<br>âœ… |
-| **WebSocket** | `ws://api/mobile/ws/orders`<br>`ws://api/mobile/ws/price`<br>`ws://api/mobile/ws/notifications` | WS<br>WS<br>WS | âœ…<br>âœ…<br>âœ… |
-| **Settings** | `/api/mobile/settings`<br>`/api/mobile/settings`<br>`/api/mobile/settings/limits` | GET<br>PUT<br>GET | âœ…<br>âœ…<br>âœ… |
-| **Health** | `/api/mobile/health` | GET | âŒ |
+| **Auth** | `/api/mobile/auth/register`<br>`/api/mobile/auth/login`<br>`/api/mobile/auth/refresh`<br>`/api/mobile/auth/logout` | POST<br>POST<br>POST<br>POST | Não<br>Não<br>Não<br>Sim |
+| **User** | `/api/mobile/user/profile`<br>`/api/mobile/user/profile`<br>`/api/mobile/user/kyc`<br>`/api/mobile/user/kyc/status` | GET<br>PUT<br>POST<br>GET | Sim<br>Sim<br>Sim<br>Sim |
+| **Wallet** | `/api/mobile/wallet/balance`<br>`/api/mobile/wallet/tokens`<br>`/api/mobile/wallet/address`<br>`/api/mobile/wallet/generate`<br>`/api/mobile/wallet/history` | GET<br>GET<br>GET<br>POST<br>GET | Sim<br>Sim<br>Sim<br>Sim<br>Sim |
+| **Orders** | `/api/mobile/order/buy`<br>`/api/mobile/order/sell`<br>`/api/mobile/order/swap`<br>`/api/mobile/order/{id}`<br>`/api/mobile/orders`<br>`/api/mobile/order/cancel` | POST<br>POST<br>POST<br>GET<br>GET<br>POST | Sim<br>Sim<br>Sim<br>Sim<br>Sim<br>Sim |
+| **PIX** | `/api/mobile/pix/generate`<br>`/api/mobile/pix/confirm`<br>`/api/mobile/pix/status/{id}`<br>`/api/mobile/pix/copy` | POST<br>POST<br>GET<br>POST | Sim<br>Não<br>Sim<br>Sim |
+| **DCA** | `/api/mobile/dca/create`<br>`/api/mobile/dca/strategies`<br>`/api/mobile/dca/{id}`<br>`/api/mobile/dca/{id}`<br>`/api/mobile/dca/{id}/status` | POST<br>GET<br>PUT<br>DELETE<br>GET | Sim<br>Sim<br>Sim<br>Sim<br>Sim |
+| **Security** | `/api/mobile/security/pin`<br>`/api/mobile/security/biometry`<br>`/api/mobile/security/2fa`<br>`/api/mobile/security/devices`<br>`/api/mobile/security/device` | POST<br>POST<br>POST<br>GET<br>DELETE | Sim<br>Sim<br>Sim<br>Sim<br>Sim |
+| **Smart Contracts** | `/api/mobile/contracts/payout`<br>`/api/mobile/contracts/vault`<br>`/api/mobile/contracts/delegate`<br>`/api/mobile/contracts/pause`<br>`/api/mobile/contracts/unpause` | POST<br>GET<br>GET<br>POST<br>POST | Sim<br>Sim<br>Sim<br>Sim<br>Sim |
+| **Notifications** | `/api/mobile/notifications`<br>`/api/mobile/notifications/read`<br>`/api/mobile/notifications/{id}`<br>`/api/mobile/notifications/token` | GET<br>PUT<br>DELETE<br>POST | Sim<br>Sim<br>Sim<br>Sim |
+| **WebSocket** | `ws://api/mobile/ws/orders`<br>`ws://api/mobile/ws/price`<br>`ws://api/mobile/ws/notifications` | WS<br>WS<br>WS | Sim<br>Sim<br>Sim |
+| **Settings** | `/api/mobile/settings`<br>`/api/mobile/settings`<br>`/api/mobile/settings/limits` | GET<br>PUT<br>GET | Sim<br>Sim<br>Sim |
+| **Health** | `/api/mobile/health` | GET | Não |
 
 ---
 
@@ -1460,7 +1460,7 @@ Scaling:
     - Kubernetes HPA (CPU 70%)
 
   Workers:
-    - 2 â†’ 10 Replicas
+    - 2 -> 10 Replicas
 
   Database:
     - Read Replicas
@@ -1681,4 +1681,3 @@ Live payment tests nunca devem rodar em CI automatico. Exigem `RUN_LIVE_PAYMENT_
 ## Licenca
 
 Licenca ainda nao definida neste repositorio. Antes de distribuicao publica, adicionar um arquivo `LICENSE` com a licenca escolhida.
-
