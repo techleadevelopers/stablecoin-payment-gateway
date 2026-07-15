@@ -85,9 +85,18 @@ func redisObservability(s *Server) map[string]any {
 	if strings.TrimSpace(s.cfg.RedisURL) == "" {
 		return map[string]any{"status": "not_configured", "rateLimitBackend": s.cfg.RateLimitBackend}
 	}
+	global := map[string]any{"status": "unavailable"}
+	if s.globalLimiter != nil {
+		global = s.globalLimiter.Stats()
+	}
+	orders := map[string]any{"status": "unavailable"}
+	if s.limiter != nil {
+		orders = s.limiter.Stats()
+	}
 	return map[string]any{
-		"status":           "configured_not_linked",
+		"status":           "configured",
 		"rateLimitBackend": s.cfg.RateLimitBackend,
-		"note":             "Redis URL is present, but this build falls back to the in-memory limiter",
+		"globalLimiter":    global,
+		"orderLimiter":     orders,
 	}
 }
