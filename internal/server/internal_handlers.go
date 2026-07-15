@@ -109,7 +109,7 @@ func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Subject == "" {
-		req.Subject = "Swappy Financial - teste SMTP"
+		req.Subject = "ChainFx Payments - teste SMTP"
 	}
 	if req.Body == "" {
 		req.Body = "Serviço de email operacional ativo."
