@@ -145,14 +145,18 @@ type Config struct {
 	EIP712VerifyingContract string
 	EIPProbeEnabled         bool
 	EIPProbeRealRun         bool
+	EIPProbeAllowMainnet    bool
 	EIPProbeNetwork         string
 	EIPProbeRPCUrls         string
 	EIPProbeRelayerPrivKey  string
 	EIPProbeWalletPrivKeys  string
-	EIPProbeUSDCContract    string
 	EIPProbeUSDTContract    string
-	EIPProbeUSDCName        string
-	EIPProbeUSDCVersion     string
+	EIPProbeAsset           string
+	EIPProbeRail            string
+	EIPProbeTokenContract   string
+	EIPProbeTokenName       string
+	EIPProbeTokenSymbol     string
+	EIPProbeTokenVersion    string
 	EIPProbeAmountRaw       string
 	EIPProbeConfirmTimeout  int
 	EIPProbeExpectedGas3009 uint64
@@ -307,14 +311,18 @@ func LoadConfig() *Config {
 		EIP712VerifyingContract: getEnv("EIP712_VERIFYING_CONTRACT", firstNonEmptyConfig(getEnv("TREASURY_HOT", ""), getEnv("SELL_WALLET_ADDRESS", "0x7e3BF3FDfeF16040CE3ec60A663381766d3dB375"))),
 		EIPProbeEnabled:         getEnvAsBool("EIP_PROBE_ENABLED", true),
 		EIPProbeRealRun:         getEnvAsBool("EIP_PROBE_REAL_RUN", false),
+		EIPProbeAllowMainnet:    getEnvAsBool("EIP_PROBE_ALLOW_MAINNET", false),
 		EIPProbeNetwork:         strings.ToLower(getEnv("EIP_PROBE_NETWORK", getEnv("SIGNER_NETWORK", "bsc"))),
 		EIPProbeRPCUrls:         getEnv("EIP_PROBE_RPC_URLS", firstNonEmptyConfig(getEnv("POLYGON_AMOY_RPC_URLS", ""), getEnv("BNB_TESTNET_RPC_URLS", ""), getBscRpcUrls(), getPolygonRpcUrls())),
 		EIPProbeRelayerPrivKey:  getEnv("EIP_PROBE_RELAYER_PRIVATE_KEY", getEnv("PAYMASTER_PRIV_KEY", "")),
 		EIPProbeWalletPrivKeys:  getEnv("EIP_PROBE_WALLET_PRIVATE_KEYS", ""),
-		EIPProbeUSDCContract:    getEnv("EIP_PROBE_USDC_CONTRACT", getEnv("USDC_TESTNET_CONTRACT", "")),
 		EIPProbeUSDTContract:    getEnv("EIP_PROBE_USDT_CONTRACT", getEnv("USDT_TESTNET_CONTRACT", "")),
-		EIPProbeUSDCName:        getEnv("EIP_PROBE_USDC_NAME", "USD Coin"),
-		EIPProbeUSDCVersion:     getEnv("EIP_PROBE_USDC_VERSION", "2"),
+		EIPProbeAsset:           strings.ToUpper(getEnv("EIP_PROBE_ASSET", "USDT")),
+		EIPProbeRail:            strings.ToLower(getEnv("EIP_PROBE_RAIL", "")),
+		EIPProbeTokenContract:   getEnv("EIP_PROBE_TOKEN_CONTRACT", firstNonEmptyConfig(getEnv("EIP_PROBE_USDT_CONTRACT", ""), getEnv("USDT_TESTNET_CONTRACT", ""))),
+		EIPProbeTokenName:       getEnv("EIP_PROBE_TOKEN_NAME", "Tether USD"),
+		EIPProbeTokenSymbol:     strings.ToUpper(getEnv("EIP_PROBE_TOKEN_SYMBOL", getEnv("EIP_PROBE_ASSET", "USDT"))),
+		EIPProbeTokenVersion:    getEnv("EIP_PROBE_TOKEN_VERSION", "1"),
 		EIPProbeAmountRaw:       getEnv("EIP_PROBE_AMOUNT_RAW", "10000"),
 		EIPProbeConfirmTimeout:  getEnvAsInt("EIP_PROBE_CONFIRM_TIMEOUT_SEC", 45),
 		EIPProbeExpectedGas3009: uint64(getEnvAsInt("EIP_PROBE_EXPECTED_GAS_EIP3009", 90000)),
