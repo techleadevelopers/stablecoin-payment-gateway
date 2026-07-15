@@ -11,8 +11,8 @@
     "deploy:polygon-amoy": "hardhat run scripts/deploy.js --network polygonAmoy",
     "smoke:testnet": "hardhat run scripts/smoke-testnet.js --network bscTestnet",
     "wallets:eip-probes": "node scripts/create-eip-probe-wallets.js",
-    "deploy:eip-probe-usdc:amoy": "node scripts/deploy-eip-probe-usdc.js --network=polygon-amoy",
-    "deploy:eip-probe-usdc:bsc-testnet": "node scripts/deploy-eip-probe-usdc.js --network=bsc-testnet"
+    "deploy:eip-probe-usdt:amoy": "node scripts/deploy-eip-probe-usdt.js --network=polygon-amoy",
+    "deploy:eip-probe-usdt:bsc-testnet": "node scripts/deploy-eip-probe-usdt.js --network=bsc-testnet"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^6.1.0",
