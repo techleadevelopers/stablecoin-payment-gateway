@@ -1,4 +1,4 @@
-﻿# Swappy EVM Contracts
+﻿# ChainFX EVM Contracts
 
 ## Status atual no backend
 
@@ -16,7 +16,7 @@ Contratos editaveis para operar custodia/payout em redes EVM com foco em seguran
 
 ## Contratos
 
-### `SwappyTreasuryVault`
+### `ChainFXTreasuryVault`
 
 Vault de treasury/payout para ERC20, como USDT/USDC em BSC ou Polygon.
 
@@ -44,13 +44,13 @@ Core/signer solicita payout ao operator
 Vault envia USDT ao cliente respeitando limites
 ```
 
-### `SwappyDelegateRegistry`
+### `ChainFXDelegateRegistry`
 
 Registry de delegates EIP-7702 confiaveis.
 
 O signer Go ainda valida delegate e bytecode hash off-chain. O registry e uma fonte on-chain auditavel para governanca, incidentes e revogacao.
 
-### `Swappy7702PayoutDelegate`
+### `ChainFX7702PayoutDelegate`
 
 Delegate EIP-7702 minimo para payout controlado.
 
