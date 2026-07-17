@@ -2,6 +2,7 @@ package mobile
 
 import (
 	"net/http"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -49,6 +50,40 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sanitizeUser(user))
 }
 
+// handleDeleteAccount soft-deletes and anonymizes the authenticated mobile account.
+func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
+	uid := userIDFromCtx(r)
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "payload invalido"})
+		return
+	}
+	if strings.TrimSpace(req.Password) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "password obrigatorio para excluir a conta"})
+		return
+	}
+	user, err := mobileDB(s.db).GetUserByID(r.Context(), uid)
+	if err != nil || user == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "usuario nao encontrado"})
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "password incorreto"})
+		return
+	}
+	if err := mobileDB(s.db).DeleteUserAccount(r.Context(), uid); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"deleted": true,
+		"mode":    "soft_delete_anonymized",
+	})
+}
+
 func (s *Server) handleSubmitKYC(w http.ResponseWriter, r *http.Request) {
 	uid := userIDFromCtx(r)
 	var req struct {
@@ -63,8 +98,8 @@ func (s *Server) handleSubmitKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	docs, _ := marshalJSON(map[string]any{
-		"type":   req.DocumentType,
-		"number": req.DocumentNumber,
+		"type":       req.DocumentType,
+		"number":     req.DocumentNumber,
 		"has_front":  req.DocumentFront != "",
 		"has_back":   req.DocumentBack != "",
 		"has_selfie": req.Selfie != "",
