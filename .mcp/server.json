@@ -8,7 +8,7 @@
     "url": "https://github.com/chainfx/payment-gateway",
     "source": "github"
   },
-  "version": "1.3.5",
+  "version": "1.3.8",
   "remotes": [
     {
       "type": "streamable-http",
@@ -26,7 +26,7 @@
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
       "tool": "mcp-publisher",
-      "version": "1.3.5",
+      "version": "1.3.8",
       "build_info": {
         "service": "chainfx-mcp",
         "public_title": "ChainFX Capability Network MCP",
@@ -88,8 +88,30 @@
         "public_name": "ChainFX Agent Pay",
         "positioning": "A2A payment agent that lets autonomous agents pay PIX recipients and card bills by funding intents with USDT on BSC.",
         "agent_card": "https://api-production-bc748.up.railway.app/.well-known/agent-card.json",
+        "jwks": "https://api-production-bc748.up.railway.app/.well-known/jwks.json",
+        "signature": "https://api-production-bc748.up.railway.app/.well-known/agent-card.signature",
+        "reputation": "https://api-production-bc748.up.railway.app/.well-known/agent-reputation.json",
+        "sla": "https://api-production-bc748.up.railway.app/.well-known/agent-sla.json",
         "a2a": "https://api-production-bc748.up.railway.app/a2a",
+        "a2a_tasks": "https://api-production-bc748.up.railway.app/a2a/tasks",
+        "a2a_task_status": "https://api-production-bc748.up.railway.app/a2a/tasks/{id}",
+        "a2a_task_events": "https://api-production-bc748.up.railway.app/a2a/tasks/{id}/events",
+        "x402_execute": "https://api-production-bc748.up.railway.app/x402/capabilities/{capability}/execute",
+        "registries": "https://api-production-bc748.up.railway.app/agent/v1/registries",
+        "agntcy": "https://api-production-bc748.up.railway.app/.well-known/agntcy.json",
+        "oasf": "https://api-production-bc748.up.railway.app/.well-known/oasf.json",
+        "registry_record": "https://api-production-bc748.up.railway.app/agent/v1/registry-records/agntcy-oasf",
         "onboarding": "https://api-production-bc748.up.railway.app/agent-pay.json",
+        "trust_layer": {
+          "identity": "Ed25519-signed Agent Card with public JWKS discovery",
+          "reputation": "Machine-readable success and latency metrics for autonomous agents",
+          "sla": "Machine-readable service objectives, fees, settlement terms and rate-limit expectations",
+          "episodes": "Authenticated execution evidence for A2A Agent Pay calls",
+          "task_lifecycle": "Asynchronous A2A tasks with submitted, working, input_required, completed, failed, canceled and rejected states plus SSE events"
+          ,
+          "x402": "HTTP 402 payment challenge for pay-per-call digital capability execution with BSC stablecoin settlement",
+          "multi_registry": "Publishable records for MCP, A2A, OpenAPI, x402 and AGNTCY/OASF-style agent directories"
+        },
         "skills": [
           "pay_pix_with_usdt",
           "pay_card_bill_with_usdt",
@@ -155,6 +177,11 @@
       "docs": {
         "openapi": "https://api-production-bc748.up.railway.app/openapi.json",
         "agent_capabilities": "https://api-production-bc748.up.railway.app/agent/v1/capabilities",
+        "agent_reputation": "https://api-production-bc748.up.railway.app/agent/v1/reputation",
+        "agent_sla": "https://api-production-bc748.up.railway.app/agent/v1/sla",
+        "agent_registries": "https://api-production-bc748.up.railway.app/agent/v1/registries",
+        "agntcy": "https://api-production-bc748.up.railway.app/.well-known/agntcy.json",
+        "oasf": "https://api-production-bc748.up.railway.app/.well-known/oasf.json",
         "well_known": "https://api-production-bc748.up.railway.app/.well-known/ai-services.json"
       }
     }
