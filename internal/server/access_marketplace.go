@@ -41,6 +41,9 @@ func (s *Server) handleAIServicesWellKnown(w http.ResponseWriter, r *http.Reques
 				"api_access_purchase",
 				"marketplace_api_purchase",
 				"mcp_tools",
+				"agent_capability_graph",
+				"capability_compositions",
+				"agent_planner",
 			},
 			"networks": []map[string]any{{
 				"chain":        "BSC",
@@ -79,6 +82,11 @@ func (s *Server) handleAIServicesWellKnown(w http.ResponseWriter, r *http.Reques
 				"capabilities": base + "/marketplace/capabilities",
 				"products":     base + "/marketplace/products",
 				"agentProfile": base + "/agent/v1/capabilities",
+				"agentCard":    base + "/.well-known/agent-card.json",
+				"policy":       base + "/.well-known/agent-policy.json",
+				"graph":        base + "/.well-known/capability-graph.json",
+				"compositions": base + "/.well-known/capability-compositions.json",
+				"planner":      base + "/agent/v1/plans",
 				"llms":         base + "/llms.txt",
 			},
 			"agentLiquidityRail": map[string]any{
