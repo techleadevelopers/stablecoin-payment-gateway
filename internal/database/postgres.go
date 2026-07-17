@@ -2343,4 +2343,9 @@ CREATE TABLE IF NOT EXISTS paymaster_sig_locks (
 );
 CREATE INDEX IF NOT EXISTS idx_paymaster_sig_locks_expires_at ON paymaster_sig_locks(expires_at);
 
+-- M2M Agent Pay supports shared configured deposit addresses. Older hardening
+-- deployments created a unique pending-address index that blocks concurrent
+-- PIX/card intents when all deposits route to the same treasury address.
+DROP INDEX IF EXISTS uq_m2m_pending_payment_address;
+
 `

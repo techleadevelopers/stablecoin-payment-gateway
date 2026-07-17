@@ -135,7 +135,7 @@ Integracoes recentes refletidas no backend:
 - **MCP Capability Network**: `.mcp/server.json`, `/mcp/initialize`, `/mcp/capabilities.json`, `/agent/v1/capabilities` e Agent Pay com `createPaymentIntent`, `getPaymentIntent`, `listAgentPaymentIntents`.
 - **A2A Agent Pay**: `/.well-known/agent-card.json`, `/a2a`, `/a2a/tasks`, `/a2a/tasks/{id}` e `/a2a/tasks/{id}/events` expõem discovery, skills e task lifecycle para agentes externos.
 - **Trust, Reputation, SLA e Episodes**: JWKS, assinatura do Agent Card, reputacao, SLA e episodios de execucao permitem que agentes verifiquem identidade, qualidade e rastreabilidade antes de operar.
-- **Policy Discovery + Capability Graph**: `/.well-known/agent-policy.json` e `/.well-known/capability-graph.json` ensinam pre-requisitos como policy ativa, wallet, quote, deposito e status antes de criar intents.
+- **Policy Discovery + Agent Graph v2**: `/.well-known/agent-policy.json` e `/.well-known/capability-graph.json` ensinam pre-requisitos como policy ativa, wallet, quote, deposito e status antes de criar intents. O graph v2 adiciona contratos por skill com dependencias, produtos, falhas conhecidas, recovery actions, custo estimado, latencia esperada e requisitos de policy.
 - **x402 Capability Pay-per-call**: `/.well-known/x402.json` e `/x402/capabilities/{capability}/execute` permitem challenge HTTP 402 para compra e execucao de capabilities digitais.
 - **Multi Registry / AGNTCY-OASF**: `/.well-known/agntcy.json`, `/.well-known/oasf.json`, `/agent/v1/registries` e `/agent/v1/registry-records/agntcy-oasf` publicam registro assinavel para diretorios externos.
 - **Adversarial/Chaos Ops**: `schema_chaos.sql`, `internal/adversarial`, `/v1/admin/gas/chaos-run`, `/v1/admin/gas/chaos-history` e `/admin/chaos`.
@@ -215,7 +215,7 @@ schema_agent_pricing.sql
 - **A2A**: `/.well-known/agent-card.json`, `/a2a` e `/a2a/tasks` expõem skills, task lifecycle e streaming SSE para agentes independentes.
 - **Capabilities**: marketplace, contracts, route preview, purchase, grant, execution, usage metering e provider fallback.
 - **x402**: capabilities digitais podem responder `402 Payment Required`, receber `PAYMENT` e executar pay-per-call.
-- **Trust Layer**: JWKS, assinatura Ed25519 do Agent Card, reputation, SLA, episodes, policy discovery e capability graph.
+- **Trust Layer**: JWKS, assinatura Ed25519 do Agent Card, reputation, SLA, episodes, policy discovery e Agent Graph v2.
 - **Registries**: MCP Registry, A2A Agent Card, OpenAPI e AGNTCY/OASF-style record mantem discovery externo.
 - **Settlement**: USDT/USDC BSC, PIX/card via PSP, signer isolado, workers, idempotencia, receipts e ledger.
 
@@ -273,13 +273,13 @@ Endpoints de discovery:
 - `/.well-known/agent-reputation.json`: reputacao publica agregada para decisao de provider.
 - `/.well-known/agent-sla.json`: SLOs, timeout, uptime e garantias publicas para agentes.
 - `/.well-known/agent-policy.json`: discovery de policy exigida antes de criar intents financeiros.
-- `/.well-known/capability-graph.json`: grafo de dependencias entre wallet, policy, quote, intent, deposito, grant e execucao.
+- `/.well-known/capability-graph.json`: Agent Graph v2 com contratos por skill, dependencias, precondicoes, falhas, recovery actions, custo, latencia e policy requirements.
 - `/.well-known/agntcy.json`: manifesto AGNTCY/OASF-style para diretorios externos.
 - `/.well-known/oasf.json`: descriptor OASF-style para classificacao de skills e locators.
 - `/agent/v1/capabilities`: manifesto detalhado para agentes.
 - `/agent/v1/assets`: ativos habilitados, taxas, minimos e status.
 - `/agent/v1/policy-discovery`: versao API do policy discovery.
-- `/agent/v1/capability-graph`: versao API do capability graph.
+- `/agent/v1/capability-graph`: versao API do Agent Graph v2.
 - `/agent/v1/reputation`: reputacao consultavel por clientes autenticados ou internos.
 - `/agent/v1/sla`: SLA consultavel por clientes autenticados ou internos.
 - `/agent/v1/episodes`: episodios de execucao para observabilidade e QA.
@@ -290,6 +290,32 @@ Endpoints de discovery:
 - `/.well-known/x402.json`: discovery de pagamento.
 - `/x402/capabilities/{capability}/execute`: challenge 402 e replay com pagamento para capability pay-per-call.
 - `/llms.txt`, `/sitemap.xml`, `/robots.txt`: descoberta por crawlers e LLMs.
+
+### Fase 1: Agent Graph v2
+
+Objetivo de integracao: fazer um agente entender a sequencia correta antes de executar uma skill financeira ou digital.
+
+O graph v2 publica:
+
+- `skills` e `skill_contracts`: contratos por skill com `requires`, `produces`, `next`, `preconditions`, `failure_modes`, `recovery_actions`, `estimated_cost`, `expected_latency_ms` e `policy_requirements`.
+- `nodes` e `edges`: relacoes entre discovery, policy, quote, payment intent, deposito, status, x402, grants, usage e episodes.
+- `plans`: fluxos executaveis como `pix_with_usdt`, `card_bill_with_usdt`, `x402_capability_execution` e `policy_recovery`.
+- `phase_report`: `agent_graph_v2_report` com skills mapeadas, dependencias, inputs/outputs, falhas conhecidas, recovery actions, endpoints publicados e criterio de aceite.
+
+Relatorio esperado:
+
+```text
+Agent Graph v2 Report
+- skills mapeadas
+- dependencias por skill
+- inputs/outputs
+- falhas conhecidas
+- recovery actions
+- endpoints publicados
+- resultado do Agent QA
+```
+
+Critério de aceite: um agente consegue ler `/.well-known/capability-graph.json`, encontrar `pay_pix_with_usdt`, identificar que precisa de `agent_policy`, `quote_required_usdt` e `agent_wallet`, conhecer o proximo passo `get_payment_status` e recuperar de `AGENT_POLICY_REQUIRED` sem documentacao humana.
 
 ### A2A para agentes externos
 
@@ -334,11 +360,12 @@ O repositorio inclui um agente de QA externo em `tools/agent-qa/openai-agent-pay
 
 - descoberta do Agent Card;
 - verificacao JWKS, hash e assinatura;
-- reputacao, SLA, policy discovery e capability graph;
+- reputacao, SLA, policy discovery e Agent Graph v2;
 - discovery AGNTCY/OASF e registry record;
 - chamada A2A de methods, quote, intent e status;
 - task lifecycle A2A com SSE;
 - x402 discovery e challenge 402 de capability;
+- validacao do contrato `pay_pix_with_usdt` no graph v2;
 - resultado final: `completed`, `discovery_ok_auth_required`, `policy_required_before_payment_intent` ou erro tecnico.
 
 Execucao:

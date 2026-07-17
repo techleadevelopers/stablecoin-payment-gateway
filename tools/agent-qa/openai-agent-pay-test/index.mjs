@@ -67,6 +67,9 @@ const report = {
     registry_record_fetched: false,
     policy_discovery_fetched: false,
     capability_graph_fetched: false,
+    capability_graph_v2_validated: false,
+    pay_pix_graph_contract_validated: false,
+    graph_phase_report_detected: false,
     policy_required_detected: false,
   },
   selected_skills: {},
@@ -198,6 +201,39 @@ function verifyAgentCardSignature(cardText, signatureBody, jwksBody) {
     signatureOk = verify(null, Buffer.from(canonicalCard), key, Buffer.from(signatureBody.signature, 'base64url'));
   }
   return { hashOk, signatureOk, actualHash, expectedHash, publicKeyId: jwk?.kid || null };
+}
+
+function validateCapabilityGraphV2(graphBody) {
+  const contracts = Array.isArray(graphBody?.skill_contracts)
+    ? graphBody.skill_contracts
+    : Array.isArray(graphBody?.skills)
+      ? graphBody.skills
+      : [];
+  const payPix = contracts.find((contract) => contract?.skill === 'pay_pix_with_usdt');
+  const requiredArrays = ['requires', 'produces', 'next', 'preconditions', 'recovery_actions', 'policy_requirements'];
+  const missingArrays = requiredArrays.filter((key) => !Array.isArray(payPix?.[key]) || payPix[key].length === 0);
+  const validFailureModes = payPix?.failure_modes && typeof payPix.failure_modes === 'object' && Object.keys(payPix.failure_modes).length > 0;
+  const validCost = payPix?.estimated_cost && typeof payPix.estimated_cost === 'object';
+  const validLatency = payPix?.expected_latency_ms && typeof payPix.expected_latency_ms === 'object';
+  const phaseReport = graphBody?.phase_report || {};
+  return {
+    version: graphBody?.version || '',
+    skill_contract_count: contracts.length,
+    pay_pix_contract_found: Boolean(payPix),
+    missing_required_arrays: missingArrays,
+    has_failure_modes: Boolean(validFailureModes),
+    has_estimated_cost: Boolean(validCost),
+    has_expected_latency: Boolean(validLatency),
+    phase_report_id: phaseReport.id || '',
+    phase_report_detected: phaseReport.id === 'agent_graph_v2_report',
+    valid: graphBody?.version === '2.0.0'
+      && Boolean(payPix)
+      && missingArrays.length === 0
+      && Boolean(validFailureModes)
+      && Boolean(validCost)
+      && Boolean(validLatency)
+      && phaseReport.id === 'agent_graph_v2_report',
+  };
 }
 
 async function callA2A(a2aUrl, skill, payload, authMode = 'optional') {
@@ -361,6 +397,17 @@ async function main() {
     report.checks.registry_record_fetched = registryRecordResponse.ok;
     report.checks.policy_discovery_fetched = policyDiscoveryResponse.ok;
     report.checks.capability_graph_fetched = capabilityGraphResponse.ok;
+    if (capabilityGraphResponse.ok) {
+      const graphValidation = validateCapabilityGraphV2(capabilityGraphResponse.body);
+      report.capability_graph_v2 = graphValidation;
+      report.checks.capability_graph_v2_validated = graphValidation.valid;
+      report.checks.pay_pix_graph_contract_validated = graphValidation.pay_pix_contract_found
+        && graphValidation.missing_required_arrays.length === 0
+        && graphValidation.has_failure_modes
+        && graphValidation.has_estimated_cost
+        && graphValidation.has_expected_latency;
+      report.checks.graph_phase_report_detected = graphValidation.phase_report_detected;
+    }
     if (jwksResponse.ok && signatureResponse.ok) {
       const verification = verifyAgentCardSignature(cardResponse.text, signatureResponse.body, jwksResponse.body);
       report.agent_card_verification = verification;
@@ -519,6 +566,7 @@ async function main() {
     report.outcome = 'agent_card_to_a2a_payment_flow_completed';
   } catch (error) {
     report.completed = false;
+    report.outcome = report.outcome || 'technical_failure';
     report.error = {
       message: error instanceof Error ? error.message : String(error),
     };

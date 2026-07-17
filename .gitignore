@@ -19,6 +19,9 @@ __pycache__/
 .pytest_cache/
 # Logs do sistema
 *.log
+agent-qa-report.json
+chainfx-test-report-*.json
+chainfx-test-report-*.txt
 
 # Node/Hardhat
 node_modules/

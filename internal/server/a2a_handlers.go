@@ -191,8 +191,11 @@ func (s *Server) a2aAgentCard(base string) map[string]any {
 			"protocols":    []string{"mcp", "a2a", "openapi", "x402", "oasf"},
 		},
 		"planning": map[string]any{
-			"policy_discovery": base + "/.well-known/agent-policy.json",
-			"capability_graph": base + "/.well-known/capability-graph.json",
+			"name":                 "ChainFX Planning Layer for Agent Commerce",
+			"policy_discovery":     base + "/.well-known/agent-policy.json",
+			"capability_graph":     base + "/.well-known/capability-graph.json",
+			"capability_graph_api": base + "/agent/v1/capability-graph",
+			"graph_version":        "2.0.0",
 			"policy_required_for": []string{
 				"pay_pix_with_usdt",
 				"pay_card_bill_with_usdt",

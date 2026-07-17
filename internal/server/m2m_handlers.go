@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -201,7 +202,18 @@ func (s *Server) handleM2MCreateIntent(w http.ResponseWriter, r *http.Request) {
 
 	intent, isIdempotent, err := s.db.CreateAgentPaymentIntent(r.Context(), in)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to create intent"})
+		slog.Error("failed to create M2M agent payment intent",
+			"error", err,
+			"agent_wallet", req.AgentWallet,
+			"payment_type", req.Type,
+			"payment_address", paymentAddress,
+			"idempotency_key", req.IdempotencyKey,
+		)
+		if strings.Contains(err.Error(), "uq_m2m_pending_payment_address") {
+			writeAPIError(w, r, http.StatusConflict, "M2M_DEPOSIT_ADDRESS_BUSY", "A legacy unique pending-address index is blocking this shared deposit address. Apply migration 015_m2m_shared_deposit_addresses and retry.")
+			return
+		}
+		writeAPIError(w, r, http.StatusInternalServerError, "M2M_INTENT_CREATE_FAILED", "Failed to create payment intent.")
 		return
 	}
 

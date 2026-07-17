@@ -2,13 +2,13 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.techleadevelopers/chainfx-mcp",
   "title": "ChainFX Capability Network",
-  "description": "Agent Pay for PIX and card bills funded with USDT on BSC.",
+  "description": "Agent Pay and planning graph for stablecoin commerce.",
   "websiteUrl": "https://www.chainfx.store",
   "repository": {
     "url": "https://github.com/chainfx/payment-gateway",
     "source": "github"
   },
-  "version": "1.3.9",
+  "version": "1.4.0",
   "remotes": [
     {
       "type": "streamable-http",
@@ -26,7 +26,7 @@
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
       "tool": "mcp-publisher",
-      "version": "1.3.9",
+      "version": "1.4.0",
       "build_info": {
         "service": "chainfx-mcp",
         "public_title": "ChainFX Capability Network MCP",
@@ -36,9 +36,11 @@
     },
     "store.chainfx/product": {
       "category": "capability-marketplace",
-      "positioning": "A2A payment agent and capability network for autonomous agents to settle real-world payments with stablecoins",
-      "product_summary": "ChainFX Agent Pay lets agents pay PIX recipients and card bills using USDT on BSC, while the broader Capability Network lets agents discover, buy and execute metered digital capabilities.",
+      "positioning": "A2A payment agent, capability network and planning graph for autonomous agents to settle real-world payments with stablecoins",
+      "product_summary": "ChainFX Agent Pay lets agents pay PIX recipients and card bills using USDT on BSC, while the broader Capability Network lets agents discover, plan, buy and execute metered digital capabilities.",
       "primary_flow": [
+        "discover_agent_graph",
+        "plan_capability_sequence",
         "discover_capability",
         "purchase_capability",
         "pay_stablecoin",
@@ -114,7 +116,7 @@
           "x402": "HTTP 402 payment challenge for pay-per-call digital capability execution with BSC stablecoin settlement",
           "multi_registry": "Publishable records for MCP, A2A, OpenAPI, x402 and AGNTCY/OASF-style agent directories",
           "policy_discovery": "Machine-readable policy requirements so agents avoid AGENT_POLICY_REQUIRED failures before execution",
-          "capability_graph": "Machine-readable dependency graph for autonomous planning across policy, quote, payment, x402, status and observability"
+          "capability_graph": "Agent Graph v2 with per-skill dependencies, preconditions, outputs, failure modes, recovery actions, cost source, latency targets and policy requirements"
         },
         "skills": [
           "pay_pix_with_usdt",

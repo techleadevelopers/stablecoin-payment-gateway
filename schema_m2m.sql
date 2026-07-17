@@ -52,6 +52,11 @@ CREATE INDEX IF NOT EXISTS idx_m2m_intents_payment_address_status
     ON agent_payment_intents(payment_address, status)
     WHERE status = 'pending_deposit';
 
+-- Older hardening migrations briefly enforced one pending intent per deposit
+-- address. ChainFX now supports shared configured deposit addresses and
+-- reconciles payments by amount, tx hash and expiry window.
+DROP INDEX IF EXISTS uq_m2m_pending_payment_address;
+
 CREATE INDEX IF NOT EXISTS idx_m2m_intents_expires_at
     ON agent_payment_intents(expires_at)
     WHERE status = 'pending_deposit';
