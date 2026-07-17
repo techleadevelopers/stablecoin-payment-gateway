@@ -15,6 +15,7 @@ Trust checks covered:
 - A2A task lifecycle creation and status polling.
 - x402 discovery and HTTP 402 capability challenge.
 - Multi-registry discovery documents for AGNTCY/OASF-style publication.
+- Agent policy discovery and capability graph planning documents.
 
 ## Run discovery without credentials
 
@@ -36,4 +37,6 @@ $env:CHAINFX_AMOUNT_BRL="10.00"
 node tools\agent-qa\openai-agent-pay-test\index.mjs --card "https://api-production-bc748.up.railway.app/.well-known/agent-card.json" --out ".\agent-qa-report.json"
 ```
 
-The report answers whether the agent verified ChainFX identity, discovered registry manifests, discovered skills, created an asynchronous A2A task, received an x402 capability payment challenge, selected `pay_pix_with_usdt`, called `quote_required_usdt`, created an intent, checked status, and where it failed if the flow did not complete.
+The report answers whether the agent verified ChainFX identity, discovered registry manifests, discovered policy prerequisites, read the capability graph, created an asynchronous A2A task, received an x402 capability payment challenge, selected `pay_pix_with_usdt`, called `quote_required_usdt`, created an intent, checked status, and where it failed if the flow did not complete.
+
+If the payment intent returns `AGENT_POLICY_REQUIRED`, the script reports `outcome: policy_required_before_payment_intent` instead of treating it as a transport bug. That means discovery worked and the next required action is to create or activate the wallet policy.
