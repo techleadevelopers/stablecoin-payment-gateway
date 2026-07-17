@@ -153,6 +153,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// ── User / KYC ────────────────────────────────────────────────────────────
 	mux.HandleFunc("GET /api/mobile/user/profile", s.requireAuth(s.handleGetProfile))
 	mux.HandleFunc("PUT /api/mobile/user/profile", s.requireAuth(s.handleUpdateProfile))
+	mux.HandleFunc("DELETE /api/mobile/user/account", s.requireAuth(s.handleDeleteAccount))
 	mux.HandleFunc("POST /api/mobile/user/kyc", s.requireAuth(s.handleSubmitKYC))
 	mux.HandleFunc("GET /api/mobile/user/kyc/status", s.requireAuth(s.handleKYCStatus))
 
