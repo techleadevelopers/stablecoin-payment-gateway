@@ -957,6 +957,9 @@ func (db *DB) EnsureBootstrapAdmin(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := db.ensureBootstrapMobileUser(ctx, email, string(hash)); err != nil {
+		return err
+	}
 	var exists bool
 	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM admin_users WHERE lower(email) = lower($1))`, email).Scan(&exists); err != nil {
 		return err
@@ -984,6 +987,30 @@ func (db *DB) EnsureBootstrapAdmin(ctx context.Context) error {
                 INSERT INTO admin_users (id, email, password_hash, role, created_at, updated_at)
                 VALUES ($1, $2, $3, 'owner', now(), now())`,
 		NewID(), email, string(hash))
+	return err
+}
+
+func (db *DB) ensureBootstrapMobileUser(ctx context.Context, email, passwordHash string) error {
+	if email == "" || passwordHash == "" {
+		return nil
+	}
+	var exists bool
+	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'users')`).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	_, err := db.SQL.ExecContext(ctx, `
+                INSERT INTO users (email, password_hash, full_name, kyc_status, deleted_at, created_at, updated_at)
+                VALUES ($1, $2, 'Paulo ChainFX', 'approved', NULL, now(), now())
+                ON CONFLICT (email) DO UPDATE
+                SET password_hash = EXCLUDED.password_hash,
+                    full_name = COALESCE(NULLIF(users.full_name, ''), EXCLUDED.full_name),
+                    kyc_status = CASE WHEN users.kyc_status = '' THEN EXCLUDED.kyc_status ELSE users.kyc_status END,
+                    deleted_at = NULL,
+                    updated_at = now()`,
+		email, passwordHash)
 	return err
 }
 
