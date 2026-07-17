@@ -159,7 +159,7 @@ func shortSecretHash(value string) string {
 func smartRateLimitRouteClass(r *http.Request) string {
 	path := r.URL.Path
 	method := r.Method
-	if method == http.MethodGet && (path == "/mcp/capabilities.json" || path == "/agent/v1/capabilities" || path == "/agent/v1/eips" || path == "/agent/v1/assets" || strings.HasPrefix(path, "/agent/v1/pricing/") || path == "/marketplace/capabilities" || path == "/marketplace/products" || strings.HasPrefix(path, "/.well-known/")) {
+	if method == http.MethodGet && (path == "/mcp/capabilities.json" || path == "/agent/v1/capabilities" || path == "/agent/v1/reputation" || path == "/agent/v1/sla" || path == "/agent/v1/registries" || strings.HasPrefix(path, "/agent/v1/registry-records/") || path == "/agent/v1/eips" || path == "/agent/v1/assets" || strings.HasPrefix(path, "/agent/v1/pricing/") || path == "/marketplace/capabilities" || path == "/marketplace/products" || strings.HasPrefix(path, "/.well-known/")) {
 		return "public_discovery"
 	}
 	if method == http.MethodPost && path == "/agent/v1/eips/prepare" {
