@@ -74,6 +74,9 @@ const report = {
     capability_compositions_validated: false,
     planner_api_called: false,
     planner_api_validated: false,
+    episode_reputation_validated: false,
+    graph_registry_fetched: false,
+    graph_registry_validated: false,
     policy_required_detected: false,
   },
   selected_skills: {},
@@ -280,6 +283,43 @@ function validatePlannerResponse(body) {
   };
 }
 
+function validateEpisodeDerivedReputation(body) {
+  const reputation = body?.reputation || {};
+  const bySkill = reputation.by_skill || {};
+  return {
+    score: reputation.score || body?.reputation_score || '',
+    total_episodes: Number(reputation.total_episodes ?? body?.total_episodes ?? 0),
+    success_rate: reputation.success_rate || body?.success_rate || '',
+    has_latency_percentiles: Boolean(reputation.latency_ms?.p50 !== undefined && reputation.latency_ms?.p95 !== undefined && reputation.latency_ms?.p99 !== undefined),
+    by_skill_count: Object.keys(bySkill).length,
+    failures_by_type_count: Object.keys(reputation.failures_by_type || {}).length,
+    phase_report_id: body?.phase_report?.id || '',
+    valid: Boolean(reputation.score || body?.reputation_score)
+      && typeof reputation === 'object'
+      && Boolean(reputation.latency_ms)
+      && typeof bySkill === 'object'
+      && body?.phase_report?.id === 'reputation_graph_registry_report',
+  };
+}
+
+function validateGraphRegistry(body) {
+  const graph = body?.graph || {};
+  const requiredGroups = ['payment', 'marketplace', 'stablecoin', 'trust', 'planning', 'observability'];
+  const missingGroups = requiredGroups.filter((group) => !Array.isArray(graph[group]) || graph[group].length === 0);
+  return {
+    version: body?.version || '',
+    missing_groups: missingGroups,
+    relation_count: Array.isArray(body?.relations) ? body.relations.length : 0,
+    provider_comparison: Boolean(body?.provider_comparison),
+    phase_report_id: body?.phase_report?.id || '',
+    valid: missingGroups.length === 0
+      && Array.isArray(body?.relations)
+      && body.relations.length > 0
+      && Boolean(body?.provider_comparison)
+      && body?.phase_report?.id === 'reputation_graph_registry_report',
+  };
+}
+
 async function callA2A(a2aUrl, skill, payload, authMode = 'optional') {
   const headers = {};
   if (bearer) headers.Authorization = `Bearer ${bearer}`;
@@ -402,8 +442,9 @@ async function main() {
     const capabilityGraphUrl = absoluteFromCard(cardUrl, card.planning?.capability_graph || '/.well-known/capability-graph.json');
     const compositionsUrl = absoluteFromCard(cardUrl, card.planning?.compositions || '/.well-known/capability-compositions.json');
     const plannerUrl = absoluteFromCard(cardUrl, card.planning?.planner_api || '/agent/v1/plans');
+    const graphRegistryUrl = absoluteFromCard(cardUrl, card.planning?.graph_registry || card.registry?.graph || '/.well-known/capability-graph-registry.json');
 
-    const [jwksResponse, signatureResponse, reputationResponse, slaResponse, x402DiscoveryResponse, registriesResponse, agntcyResponse, oasfResponse, registryRecordResponse, policyDiscoveryResponse, capabilityGraphResponse, compositionsResponse] = await Promise.all([
+    const [jwksResponse, signatureResponse, reputationResponse, slaResponse, x402DiscoveryResponse, registriesResponse, agntcyResponse, oasfResponse, registryRecordResponse, policyDiscoveryResponse, capabilityGraphResponse, compositionsResponse, graphRegistryResponse] = await Promise.all([
       requestJSON(jwksUrl),
       requestJSON(signatureUrl),
       requestJSON(reputationUrl),
@@ -416,9 +457,10 @@ async function main() {
       requestJSON(policyDiscoveryUrl),
       requestJSON(capabilityGraphUrl),
       requestJSON(compositionsUrl),
+      requestJSON(graphRegistryUrl),
     ]);
     addStep('fetch_agent_trust_documents', {
-      requests: { jwks_url: jwksUrl, signature_url: signatureUrl, reputation_url: reputationUrl, sla_url: slaUrl },
+      requests: { jwks_url: jwksUrl, signature_url: signatureUrl, reputation_url: reputationUrl, sla_url: slaUrl, graph_registry_url: graphRegistryUrl },
       responses: {
         jwks: { status: jwksResponse.status, latency_ms: jwksResponse.latency_ms, body: compactBody(jwksResponse.body) },
         signature: { status: signatureResponse.status, latency_ms: signatureResponse.latency_ms, body: compactBody(signatureResponse.body) },
@@ -432,6 +474,7 @@ async function main() {
         policy_discovery: { status: policyDiscoveryResponse.status, latency_ms: policyDiscoveryResponse.latency_ms, body: compactBody(policyDiscoveryResponse.body) },
         capability_graph: { status: capabilityGraphResponse.status, latency_ms: capabilityGraphResponse.latency_ms, body: compactBody(capabilityGraphResponse.body) },
         capability_compositions: { status: compositionsResponse.status, latency_ms: compositionsResponse.latency_ms, body: compactBody(compositionsResponse.body) },
+        graph_registry: { status: graphRegistryResponse.status, latency_ms: graphRegistryResponse.latency_ms, body: compactBody(graphRegistryResponse.body) },
       },
     });
     report.checks.jwks_fetched = jwksResponse.ok;
@@ -446,6 +489,12 @@ async function main() {
     report.checks.policy_discovery_fetched = policyDiscoveryResponse.ok;
     report.checks.capability_graph_fetched = capabilityGraphResponse.ok;
     report.checks.capability_compositions_fetched = compositionsResponse.ok;
+    report.checks.graph_registry_fetched = graphRegistryResponse.ok;
+    if (reputationResponse.ok) {
+      const reputationValidation = validateEpisodeDerivedReputation(reputationResponse.body);
+      report.episode_derived_reputation = reputationValidation;
+      report.checks.episode_reputation_validated = reputationValidation.valid;
+    }
     if (capabilityGraphResponse.ok) {
       const graphValidation = validateCapabilityGraphV2(capabilityGraphResponse.body);
       report.capability_graph_v2 = graphValidation;
@@ -461,6 +510,11 @@ async function main() {
       const compositionsValidation = validateCapabilityCompositions(compositionsResponse.body);
       report.capability_compositions = compositionsValidation;
       report.checks.capability_compositions_validated = compositionsValidation.valid;
+    }
+    if (graphRegistryResponse.ok) {
+      const graphRegistryValidation = validateGraphRegistry(graphRegistryResponse.body);
+      report.graph_registry = graphRegistryValidation;
+      report.checks.graph_registry_validated = graphRegistryValidation.valid;
     }
     if (plannerUrl) {
       const plannerBody = {
