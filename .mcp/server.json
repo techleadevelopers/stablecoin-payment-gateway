@@ -8,7 +8,7 @@
     "url": "https://github.com/chainfx/payment-gateway",
     "source": "github"
   },
-  "version": "1.4.1",
+  "version": "1.4.2",
   "remotes": [
     {
       "type": "streamable-http",
@@ -26,7 +26,7 @@
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
       "tool": "mcp-publisher",
-      "version": "1.4.1",
+      "version": "1.4.2",
       "build_info": {
         "service": "chainfx-mcp",
         "public_title": "ChainFX Capability Network MCP",
@@ -106,6 +106,8 @@
         "policy_discovery": "https://api-production-bc748.up.railway.app/.well-known/agent-policy.json",
         "capability_graph": "https://api-production-bc748.up.railway.app/.well-known/capability-graph.json",
         "capability_compositions": "https://api-production-bc748.up.railway.app/.well-known/capability-compositions.json",
+        "capability_graph_registry": "https://api-production-bc748.up.railway.app/.well-known/capability-graph-registry.json",
+        "graph_registry_api": "https://api-production-bc748.up.railway.app/agent/v1/graph-registry",
         "planner_api": "https://api-production-bc748.up.railway.app/agent/v1/plans",
         "onboarding": "https://api-production-bc748.up.railway.app/agent-pay.json",
         "trust_layer": {
@@ -119,7 +121,9 @@
           "multi_registry": "Publishable records for MCP, A2A, OpenAPI, x402 and AGNTCY/OASF-style agent directories",
           "policy_discovery": "Machine-readable policy requirements so agents avoid AGENT_POLICY_REQUIRED failures before execution",
           "capability_graph": "Agent Graph v2 with per-skill dependencies, preconditions, outputs, failure modes, recovery actions, cost source, latency targets and policy requirements",
-          "planner_api": "Non-executing planning API that turns goals into steps, missing requirements, cost and latency estimates"
+          "planner_api": "Non-executing planning API that turns goals into steps, missing requirements, cost and latency estimates",
+          "episode_derived_reputation": "Reputation score, skill success rate, latency percentiles and failure types are calculated from recent execution episodes",
+          "capability_graph_registry": "Relational registry connecting payment, marketplace, stablecoin, trust, planning and observability capabilities"
         },
         "skills": [
           "pay_pix_with_usdt",
@@ -192,6 +196,8 @@
         "agent_policy": "https://api-production-bc748.up.railway.app/.well-known/agent-policy.json",
         "capability_graph": "https://api-production-bc748.up.railway.app/.well-known/capability-graph.json",
         "capability_compositions": "https://api-production-bc748.up.railway.app/.well-known/capability-compositions.json",
+        "capability_graph_registry": "https://api-production-bc748.up.railway.app/.well-known/capability-graph-registry.json",
+        "graph_registry_api": "https://api-production-bc748.up.railway.app/agent/v1/graph-registry",
         "planner_api": "https://api-production-bc748.up.railway.app/agent/v1/plans",
         "agntcy": "https://api-production-bc748.up.railway.app/.well-known/agntcy.json",
         "oasf": "https://api-production-bc748.up.railway.app/.well-known/oasf.json",
