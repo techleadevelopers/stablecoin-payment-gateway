@@ -152,7 +152,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"user":         sanitizeUser(user),
+		"user":         s.sanitizeUser(user),
 		"accessToken":  access,
 		"refreshToken": refresh,
 	})
@@ -183,7 +183,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user":         sanitizeUser(user),
+		"user":         s.sanitizeUser(user),
 		"accessToken":  access,
 		"refreshToken": refresh,
 	})
