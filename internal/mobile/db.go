@@ -41,7 +41,7 @@ func (q *mobileQueries) GetUserByEmail(ctx context.Context, email string) (*mode
                 SELECT id,email,phone,full_name,password_hash,wallet_address,pix_key,
                        kyc_status,kyc_documents,pin_hash,biometry_enabled,two_factor_enabled,
                        two_factor_secret,refresh_token_hash,created_at,updated_at
-                FROM users WHERE email=$1`, email))
+                FROM users WHERE email=$1 AND deleted_at IS NULL`, email))
 }
 
 func (q *mobileQueries) GetUserByID(ctx context.Context, id string) (*models.User, error) {
@@ -49,7 +49,7 @@ func (q *mobileQueries) GetUserByID(ctx context.Context, id string) (*models.Use
                 SELECT id,email,phone,full_name,password_hash,wallet_address,pix_key,
                        kyc_status,kyc_documents,pin_hash,biometry_enabled,two_factor_enabled,
                        two_factor_secret,refresh_token_hash,created_at,updated_at
-                FROM users WHERE id=$1`, id))
+                FROM users WHERE id=$1 AND deleted_at IS NULL`, id))
 }
 
 func (q *mobileQueries) scanUser(row *sql.Row) (*models.User, error) {
@@ -81,6 +81,73 @@ func (q *mobileQueries) UpdateUser(ctx context.Context, id string, fields map[st
 	}
 	args = append(args, id)
 	_, err := q.sql.ExecContext(ctx, "UPDATE users SET "+set+" WHERE id=$"+itoa(i), args...)
+	return err
+}
+
+func (q *mobileQueries) IsUserActive(ctx context.Context, userID string) (bool, error) {
+	var exists bool
+	err := q.sql.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND deleted_at IS NULL)", userID).Scan(&exists)
+	return exists, err
+}
+
+func (q *mobileQueries) DeleteUserAccount(ctx context.Context, userID string) error {
+	tx, err := q.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM devices WHERE user_id=$1", userID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM notifications WHERE user_id=$1", userID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM settings WHERE user_id=$1", userID); err != nil {
+		return err
+	}
+	if err := execIfTableExists(ctx, tx, "dca_strategies", "UPDATE dca_strategies SET active=false WHERE user_id=$1", userID); err != nil {
+		return err
+	}
+	if err := execIfTableExists(ctx, tx, "webhook_subscriptions", "UPDATE webhook_subscriptions SET active=false, updated_at=NOW() WHERE user_id=$1::uuid", userID); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `
+                UPDATE users
+                   SET email='deleted+' || id::text || '@deleted.chainfx.local',
+                       phone=NULL,
+                       full_name=NULL,
+                       password_hash='deleted',
+                       wallet_address=NULL,
+                       pix_key=NULL,
+                       kyc_documents=NULL,
+                       pin_hash=NULL,
+                       biometry_enabled=false,
+                       two_factor_enabled=false,
+                       two_factor_secret=NULL,
+                       refresh_token_hash=NULL,
+                       deleted_at=NOW(),
+                       updated_at=NOW()
+                 WHERE id=$1 AND deleted_at IS NULL`, userID)
+	if err != nil {
+		return err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
+}
+
+func execIfTableExists(ctx context.Context, tx *sql.Tx, tableName, query string, args ...any) error {
+	var exists bool
+	if err := tx.QueryRowContext(ctx, "SELECT to_regclass($1) IS NOT NULL", tableName).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, query, args...)
 	return err
 }
 
