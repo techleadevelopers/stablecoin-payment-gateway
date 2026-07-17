@@ -291,6 +291,12 @@ func (s *Server) handleX402WellKnown(w http.ResponseWriter, r *http.Request) {
 			"address": s.accessPaymentAddress(),
 		}},
 		"resources": []map[string]any{{
+			"path":         "/x402/capabilities/{capability}/execute",
+			"description":  "Execute digital capabilities with HTTP 402 payment challenge. First call returns payment_requirements; replay with PAYMENT header after BSC stablecoin transfer.",
+			"capabilities": base + "/marketplace/capabilities",
+			"pricing":      "exact",
+			"replayHeader": "PAYMENT",
+		}, {
 			"path":        "/v1/access/purchase",
 			"description": "Buy temporary API access with BSC USDT after receiving a quote.",
 			"quote":       base + "/v1/access/quote",
