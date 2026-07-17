@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -189,9 +190,24 @@ func (s *Server) agentReputationDocument(base string) map[string]any {
 	success := 0
 	failures := 0
 	latencies := make([]int64, 0, total)
-	bySkill := map[string]map[string]int{}
+	type skillStats struct {
+		total                int
+		success              int
+		failed               int
+		policyFailures       int
+		settlementSuccess    int
+		settlementObserved   int
+		x402Challenges       int
+		x402ChallengeSuccess int
+		latencies            []int64
+		costs                []float64
+		failuresByType       map[string]int
+	}
+	bySkillRaw := map[string]*skillStats{}
+	failuresByType := map[string]int{}
 	for _, episode := range episodes {
-		if episode.Status == "completed" && episode.StatusCode >= 200 && episode.StatusCode < 400 {
+		ok := episode.Status == "completed" && episode.StatusCode >= 200 && episode.StatusCode < 400
+		if ok {
 			success++
 		} else {
 			failures++
@@ -199,14 +215,43 @@ func (s *Server) agentReputationDocument(base string) map[string]any {
 		if episode.LatencyMS > 0 {
 			latencies = append(latencies, episode.LatencyMS)
 		}
-		if _, ok := bySkill[episode.Skill]; !ok {
-			bySkill[episode.Skill] = map[string]int{"total": 0, "success": 0, "failed": 0}
+		skill := strings.TrimSpace(episode.Skill)
+		if skill == "" {
+			skill = "unknown"
 		}
-		bySkill[episode.Skill]["total"]++
-		if episode.Status == "completed" && episode.StatusCode >= 200 && episode.StatusCode < 400 {
-			bySkill[episode.Skill]["success"]++
+		if _, exists := bySkillRaw[skill]; !exists {
+			bySkillRaw[skill] = &skillStats{failuresByType: map[string]int{}}
+		}
+		stats := bySkillRaw[skill]
+		stats.total++
+		if ok {
+			stats.success++
 		} else {
-			bySkill[episode.Skill]["failed"]++
+			stats.failed++
+			failureType := agentEpisodeFailureType(episode)
+			stats.failuresByType[failureType]++
+			failuresByType[failureType]++
+			if strings.Contains(failureType, "POLICY") || failureType == "AGENT_POLICY_REQUIRED" {
+				stats.policyFailures++
+			}
+		}
+		if episode.LatencyMS > 0 {
+			stats.latencies = append(stats.latencies, episode.LatencyMS)
+		}
+		if cost := agentEpisodeCostUSDT(episode); cost > 0 {
+			stats.costs = append(stats.costs, cost)
+		}
+		if episode.SettlementStatus != "" || strings.Contains(skill, "pay_") {
+			stats.settlementObserved++
+			if strings.EqualFold(episode.SettlementStatus, "settled") || strings.EqualFold(episode.SettlementStatus, "paid_crypto") || strings.EqualFold(episode.SettlementStatus, "completed") {
+				stats.settlementSuccess++
+			}
+		}
+		if episode.StatusCode == http.StatusPaymentRequired || strings.Contains(strings.ToLower(skill), "x402") {
+			stats.x402Challenges++
+			if episode.StatusCode == http.StatusPaymentRequired || ok {
+				stats.x402ChallengeSuccess++
+			}
 		}
 	}
 	successRate := 1.0
@@ -221,6 +266,34 @@ func (s *Server) agentReputationDocument(base string) map[string]any {
 	} else if successRate < 0.95 {
 		score = "B"
 	}
+	bySkill := map[string]any{}
+	successBySkill := map[string]map[string]int{}
+	for skill, stats := range bySkillRaw {
+		successBySkill[skill] = map[string]int{"total": stats.total, "success": stats.success, "failed": stats.failed}
+		bySkill[skill] = map[string]any{
+			"total_episodes":              stats.total,
+			"successful_episodes":         stats.success,
+			"failed_episodes":             stats.failed,
+			"success_rate":                percentString(stats.success, stats.total),
+			"policy_failure_rate":         percentString(stats.policyFailures, stats.total),
+			"settlement_success_rate":     percentString(stats.settlementSuccess, stats.settlementObserved),
+			"x402_challenge_success_rate": percentString(stats.x402ChallengeSuccess, stats.x402Challenges),
+			"latency_ms":                  percentileSummary(stats.latencies),
+			"avg_latency_ms":              avgInt64(stats.latencies),
+			"avg_cost_usdt":               decimalString(avgFloat64(stats.costs)),
+			"failures_by_type":            stats.failuresByType,
+		}
+	}
+	reputation := map[string]any{
+		"score":               score,
+		"total_episodes":      total,
+		"successful_episodes": success,
+		"failed_episodes":     failures,
+		"success_rate":        percentString(success, total),
+		"latency_ms":          percentileSummary(latencies),
+		"by_skill":            bySkill,
+		"failures_by_type":    failuresByType,
+	}
 	return map[string]any{
 		"agent":                   "ChainFX Agent Pay",
 		"agent_card":              base + "/.well-known/agent-card.json",
@@ -231,11 +304,85 @@ func (s *Server) agentReputationDocument(base string) map[string]any {
 		"failed_episodes":         failures,
 		"success_rate":            fmt.Sprintf("%.4f", successRate),
 		"latency_ms":              percentileSummary(latencies),
-		"success_by_skill":        bySkill,
-		"settlement_success_rate": "pending_live_settlement_sample",
+		"success_by_skill":        successBySkill,
+		"settlement_success_rate": "derived_by_skill_when_settlement_status_is_observed",
 		"fraud_reports":           0,
-		"updated_at":              time.Now().UTC().Format(time.RFC3339),
+		"reputation":              reputation,
+		"phase_report": map[string]any{
+			"id":                  "reputation_graph_registry_report",
+			"phase":               "3",
+			"metrics_by_skill":    bySkill,
+			"episodes_aggregated": total,
+			"failures_by_type":    failuresByType,
+			"latency_ms":          percentileSummary(latencies),
+			"score_calculated":    score,
+			"graph_registry":      base + "/.well-known/capability-graph-registry.json",
+			"qa_expected_check":   "episode_reputation_validated",
+		},
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	}
+}
+
+func agentEpisodeFailureType(episode agentEpisode) string {
+	for _, path := range []string{"code", "error.code", "error", "message"} {
+		if value := firstNestedString(episode.ErrorTree, path); value != "" {
+			return strings.ToUpper(strings.ReplaceAll(value, " ", "_"))
+		}
+	}
+	if episode.StatusCode > 0 {
+		return fmt.Sprintf("HTTP_%d", episode.StatusCode)
+	}
+	if episode.Status != "" {
+		return strings.ToUpper(episode.Status)
+	}
+	return "UNKNOWN_FAILURE"
+}
+
+func agentEpisodeCostUSDT(episode agentEpisode) float64 {
+	for _, key := range []string{"required_usdt", "cost_usdt", "amount_usdt", "amount", "estimated_cost_usdt"} {
+		if value, ok := episode.Cost[key]; ok {
+			if parsed, err := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(value)), 64); err == nil {
+				return parsed
+			}
+		}
+	}
+	return 0
+}
+
+func percentString(part, total int) string {
+	if total <= 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.2f%%", float64(part)*100/float64(total))
+}
+
+func avgInt64(values []int64) any {
+	if len(values) == 0 {
+		return nil
+	}
+	var total int64
+	for _, value := range values {
+		total += value
+	}
+	return total / int64(len(values))
+}
+
+func avgFloat64(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var total float64
+	for _, value := range values {
+		total += value
+	}
+	return total / float64(len(values))
+}
+
+func decimalString(value float64) string {
+	if value <= 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.6f", value)
 }
 
 func (s *Server) agentSLADocument(base string) map[string]any {
