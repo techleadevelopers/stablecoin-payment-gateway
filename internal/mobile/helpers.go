@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"payment-gateway/internal/models"
 )
@@ -31,15 +32,23 @@ func itoa(i int) string {
 // sanitizeUser removes sensitive fields before sending to client.
 func sanitizeUser(u *models.User) map[string]any {
 	return map[string]any{
-		"id":               u.ID,
-		"email":            u.Email,
-		"phone":            u.Phone,
-		"full_name":        u.FullName,
-		"wallet_address":   u.WalletAddress,
-		"pix_key":          u.PixKey,
-		"kyc_status":       u.KYCStatus,
-		"biometry_enabled": u.BiometryEnabled,
+		"id":                 u.ID,
+		"email":              u.Email,
+		"phone":              u.Phone,
+		"full_name":          u.FullName,
+		"wallet_address":     u.WalletAddress,
+		"pix_key":            u.PixKey,
+		"kyc_status":         u.KYCStatus,
+		"biometry_enabled":   u.BiometryEnabled,
 		"two_factor_enabled": u.TwoFactorEnabled,
-		"created_at":       u.CreatedAt,
+		"created_at":         u.CreatedAt,
 	}
+}
+
+func sanitizeUserForMobile(u *models.User, adminBootstrapEmail string) map[string]any {
+	out := sanitizeUser(u)
+	adminEmail := strings.ToLower(strings.TrimSpace(adminBootstrapEmail))
+	userEmail := strings.ToLower(strings.TrimSpace(u.Email))
+	out["is_developer"] = adminEmail != "" && userEmail == adminEmail
+	return out
 }
