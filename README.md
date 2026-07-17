@@ -127,11 +127,17 @@ Este README foca o produto e o fluxo principal. Detalhes profundos de mobile, cu
 
 Integracoes recentes refletidas no backend:
 
+- **Hybrid Human + Agent-to-Agent Rail**: o mesmo gateway atende usuarios humanos, web/mobile, consoles administrativos, agentes A2A, clientes MCP, x402 e marketplaces de capability.
 - **Efi PSP Layer**: `internal/psp` com `EfiAdapter`, `Router`, health probe, fallback/restore e parsing de webhooks PIX em lote. `cmd/api/main.go` monta o router quando credenciais/certificado Efi existem.
 - **Efi Credit Card BUY**: `/api/buy` aceita `paymentMethod=credit_card`, `paymentToken`, `customer` e `billingAddress`; `/api/efi/charges/webhook/buy` consulta notificacao Efi e liquida apenas status `paid`.
 - **Gas Station / Paymaster**: `internal/paymaster` entrega oracle, estimator, idempotency, retry, batcher, token relayer e service top-level. Rotas publicas/admin em `/v1/gas/*`.
 - **AutoSweeper + Paymaster Loop**: `NewWorkerManager(db, cfg, mailer, pool *rpc.Pool)` recebe `rpc.Pool`, inicializa 9 workers e inclui AutoSweeper/Paymaster relay loop.
 - **MCP Capability Network**: `.mcp/server.json`, `/mcp/initialize`, `/mcp/capabilities.json`, `/agent/v1/capabilities` e Agent Pay com `createPaymentIntent`, `getPaymentIntent`, `listAgentPaymentIntents`.
+- **A2A Agent Pay**: `/.well-known/agent-card.json`, `/a2a`, `/a2a/tasks`, `/a2a/tasks/{id}` e `/a2a/tasks/{id}/events` expõem discovery, skills e task lifecycle para agentes externos.
+- **Trust, Reputation, SLA e Episodes**: JWKS, assinatura do Agent Card, reputacao, SLA e episodios de execucao permitem que agentes verifiquem identidade, qualidade e rastreabilidade antes de operar.
+- **Policy Discovery + Capability Graph**: `/.well-known/agent-policy.json` e `/.well-known/capability-graph.json` ensinam pre-requisitos como policy ativa, wallet, quote, deposito e status antes de criar intents.
+- **x402 Capability Pay-per-call**: `/.well-known/x402.json` e `/x402/capabilities/{capability}/execute` permitem challenge HTTP 402 para compra e execucao de capabilities digitais.
+- **Multi Registry / AGNTCY-OASF**: `/.well-known/agntcy.json`, `/.well-known/oasf.json`, `/agent/v1/registries` e `/agent/v1/registry-records/agntcy-oasf` publicam registro assinavel para diretorios externos.
 - **Adversarial/Chaos Ops**: `schema_chaos.sql`, `internal/adversarial`, `/v1/admin/gas/chaos-run`, `/v1/admin/gas/chaos-history` e `/admin/chaos`.
 - **Stress tests k6**: `tests/paymaster_stress.js` cobre spike, colisao de idempotencia, rate limit por tier, quote load e status probe.
 
@@ -160,38 +166,69 @@ schema_agent_pricing.sql
 ## Arquitetura de Camadas
 
 ```text
-                    PAYMENT GATEWAY CORE
+                         CHAINFX HYBRID RAIL
 
-                           |
-        +------------------+------------------+
-        |                                     |
-        v                                     v
-
- HUMAN LAYER                         MACHINE LAYER
-
- Web App                             Agent API
- Mobile App                          MCP / OpenAPI
- Dashboard                           Machine-to-Machine
- Checkout                            Autonomous Payments
-
-        |                                     |
-        |                                     |
-        v                                     v
-
- Users                              AI Agents / Bots / Systems
-
-
-                Shared Infrastructure
-
-        - Ledger
-        - Wallets
-        - Balances
-        - Transactions
-        - Risk Engine
-        - Settlement
-        - Blockchain Workers
-        - Notifications
+     Humans / Merchants / Operators           AI Agents / Bots / Systems
+                  |                                      |
+                  v                                      v
+       Web Checkout + Admin Console           Agent Card + MCP + A2A + x402
+       Mobile Wallet + Developer UI           Capability Marketplace + QA Agent
+                  |                                      |
+                  +------------------+-------------------+
+                                     |
+                                     v
+                          Go API Gateway / Router
+                                     |
+        +----------------------------+----------------------------+
+        |             |              |              |             |
+        v             v              v              v             v
+    REST API      Mobile API      MCP Server      A2A Server    x402 Gateway
+    buy/sell      wallet/DCA      tools/resources tasks/SSE     HTTP 402
+        |             |              |              |             |
+        +-------------+--------------+--------------+-------------+
+                                     |
+                                     v
+        +----------------------------+----------------------------+
+        |        Trust / Policy / Capability Planning Layer       |
+        | JWKS, Agent Card signature, reputation, SLA, episodes   |
+        | policy discovery, capability graph, registry records    |
+        +----------------------------+----------------------------+
+                                     |
+                                     v
+        +----------------------------+----------------------------+
+        |           Payments, Capabilities and Settlement          |
+        | PIX/Card PSP, Agent Pay, marketplace grants, metering    |
+        | BSC USDT/USDC receipts, signer, workers, ledger, risk   |
+        +----------------------------+----------------------------+
+                                     |
+                                     v
+           PostgreSQL / Redis / RPC Pool / Efi / Signer / Workers
 ```
+
+### Camadas atuais
+
+- **Web/Admin**: `admin.html` opera testes, observabilidade, signer probes, Agent QA, developers, MCP, x402, registries e episodes.
+- **Web Developer**: `index.html#developers` e `/app/developer/` documentam API keys, MCP, Agent Pay, capability network e billing.
+- **Mobile**: endpoints `/api/mobile/*` atendem wallet, orders, PIX, DCA, security, notifications e WebSocket.
+- **REST Core**: buy/sell, rates, order status, PSP, webhooks, gas station, developer projects e API keys.
+- **MCP**: `/mcp/initialize`, `/mcp/tools/list`, `/mcp/tools/call`, `/mcp/resources/list` e `/mcp/resources/read` expõem tools e resources para hosts de agentes.
+- **A2A**: `/.well-known/agent-card.json`, `/a2a` e `/a2a/tasks` expõem skills, task lifecycle e streaming SSE para agentes independentes.
+- **Capabilities**: marketplace, contracts, route preview, purchase, grant, execution, usage metering e provider fallback.
+- **x402**: capabilities digitais podem responder `402 Payment Required`, receber `PAYMENT` e executar pay-per-call.
+- **Trust Layer**: JWKS, assinatura Ed25519 do Agent Card, reputation, SLA, episodes, policy discovery e capability graph.
+- **Registries**: MCP Registry, A2A Agent Card, OpenAPI e AGNTCY/OASF-style record mantem discovery externo.
+- **Settlement**: USDT/USDC BSC, PIX/card via PSP, signer isolado, workers, idempotencia, receipts e ledger.
+
+### Principio de produto
+
+ChainFX nao e apenas uma API de pagamento. O backend opera como uma interface hibrida para humanos e agentes:
+
+```text
+Human checkout -> PIX/card -> stablecoin settlement
+Agent discovery -> policy -> quote -> intent/task -> deposit/x402 -> execution -> episode
+```
+
+Esse desenho permite que um usuario humano use web/mobile e que um agente externo opere a ChainFX apenas com discovery publico, bearer key e politicas configuradas.
 
 ## Machine-to-Machine
 
@@ -230,12 +267,98 @@ recebe settlement
 Endpoints de discovery:
 
 - `/.well-known/ai-services.json`: porta de entrada pequena e previsivel.
+- `/.well-known/agent-card.json`: contrato A2A publico com identidade, endpoints, skills, schemas, examples, policy e registry.
+- `/.well-known/jwks.json`: chave publica usada para verificar documentos assinados.
+- `/.well-known/agent-card.signature`: hash e assinatura Ed25519 do Agent Card.
+- `/.well-known/agent-reputation.json`: reputacao publica agregada para decisao de provider.
+- `/.well-known/agent-sla.json`: SLOs, timeout, uptime e garantias publicas para agentes.
+- `/.well-known/agent-policy.json`: discovery de policy exigida antes de criar intents financeiros.
+- `/.well-known/capability-graph.json`: grafo de dependencias entre wallet, policy, quote, intent, deposito, grant e execucao.
+- `/.well-known/agntcy.json`: manifesto AGNTCY/OASF-style para diretorios externos.
+- `/.well-known/oasf.json`: descriptor OASF-style para classificacao de skills e locators.
 - `/agent/v1/capabilities`: manifesto detalhado para agentes.
 - `/agent/v1/assets`: ativos habilitados, taxas, minimos e status.
+- `/agent/v1/policy-discovery`: versao API do policy discovery.
+- `/agent/v1/capability-graph`: versao API do capability graph.
+- `/agent/v1/reputation`: reputacao consultavel por clientes autenticados ou internos.
+- `/agent/v1/sla`: SLA consultavel por clientes autenticados ou internos.
+- `/agent/v1/episodes`: episodios de execucao para observabilidade e QA.
+- `/agent/v1/registries`: indice de publicacao em registries.
+- `/agent/v1/registry-records/agntcy-oasf`: registro assinavel para publicacao federada.
 - `/openapi.json`: contrato HTTP.
 - `/mcp/initialize`: entrada MCP.
 - `/.well-known/x402.json`: discovery de pagamento.
+- `/x402/capabilities/{capability}/execute`: challenge 402 e replay com pagamento para capability pay-per-call.
 - `/llms.txt`, `/sitemap.xml`, `/robots.txt`: descoberta por crawlers e LLMs.
+
+### A2A para agentes externos
+
+O fluxo A2A canonico evita acoplamento com REST/MCP interno:
+
+```text
+Agent externo
+  -> GET /.well-known/agent-card.json
+  -> GET /.well-known/jwks.json
+  -> GET /.well-known/agent-card.signature
+  -> GET /.well-known/agent-policy.json
+  -> GET /.well-known/capability-graph.json
+  -> POST /a2a skill=list_supported_payment_methods
+  -> POST /a2a skill=quote_required_usdt
+  -> POST /a2a skill=pay_pix_with_usdt
+  -> POST /a2a skill=get_payment_status
+```
+
+Para tarefas longas, o mesmo agente pode usar:
+
+```text
+POST /a2a/tasks
+GET  /a2a/tasks/{id}
+GET  /a2a/tasks/{id}/events
+```
+
+Estados suportados:
+
+```text
+submitted -> working -> completed
+submitted -> working -> input_required
+submitted -> working -> failed
+submitted -> rejected
+submitted -> canceled
+```
+
+Se a resposta for `AGENT_POLICY_REQUIRED`, isso nao e falha de transporte. Significa que o agente descobriu a ChainFX corretamente, mas a wallet ainda precisa de policy ativa com limites, assets, networks, permissions e capabilities permitidas.
+
+### Agent QA
+
+O repositorio inclui um agente de QA externo em `tools/agent-qa/openai-agent-pay-test`. Ele recebe somente a URL publica do Agent Card e gera um relatorio JSON com:
+
+- descoberta do Agent Card;
+- verificacao JWKS, hash e assinatura;
+- reputacao, SLA, policy discovery e capability graph;
+- discovery AGNTCY/OASF e registry record;
+- chamada A2A de methods, quote, intent e status;
+- task lifecycle A2A com SSE;
+- x402 discovery e challenge 402 de capability;
+- resultado final: `completed`, `discovery_ok_auth_required`, `policy_required_before_payment_intent` ou erro tecnico.
+
+Execucao:
+
+```powershell
+cd C:\Users\Paulo\Desktop\payment-gateway
+node tools\agent-qa\openai-agent-pay-test\index.mjs --card "https://api-production-bc748.up.railway.app/.well-known/agent-card.json" --out ".\agent-qa-report.json"
+```
+
+Com bearer real:
+
+```powershell
+$env:CHAINFX_API_KEY="YOUR_CHAINFX_API_KEY"
+$env:CHAINFX_AGENT_WALLET="0x830000000000000000000000000000000000019a"
+$env:CHAINFX_PIX_KEY="+5511999999999"
+$env:CHAINFX_AMOUNT_BRL="10.00"
+node tools\agent-qa\openai-agent-pay-test\index.mjs --card "https://api-production-bc748.up.railway.app/.well-known/agent-card.json" --out ".\agent-qa-report.json"
+```
+
+O mesmo perfil esta disponivel no frontend admin em `Tests & Observability -> Agent QA / A2A Pay`.
 
 ### ChainFX Marketplace MCP
 
