@@ -21,9 +21,10 @@ import (
 
 // Node is one RPC endpoint with its health state and circuit breaker.
 type Node struct {
-	URL     string
-	cb      *resilience.CircuitBreaker
-	healthy atomic.Bool
+	URL      string
+	cb       *resilience.CircuitBreaker
+	healthy  atomic.Bool
+	disabled atomic.Bool
 }
 
 func newNode(url string) *Node {
@@ -99,6 +100,14 @@ func (p *Pool) Do(ctx context.Context, fn func(*ethclient.Client) error) error {
 			callErr = fn(c)
 
 			if callErr != nil {
+				if rpcCapacityExhausted(callErr) && node.disabled.CompareAndSwap(false, true) {
+					node.healthy.Store(false)
+					slog.Warn("RPC node disabled: provider capacity exhausted",
+						"url", truncate(node.URL, 60),
+						"err", callErr,
+					)
+				}
+
 				slog.Warn("RPC request failed",
 					"url", truncate(node.URL, 60),
 					"err", callErr,
@@ -195,6 +204,9 @@ func (p *Pool) probeAll(ctx context.Context) {
 
 	for _, n := range nodes {
 		go func(n *Node) {
+			if n.disabled.Load() {
+				return
+			}
 
 			pCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
@@ -214,6 +226,13 @@ func (p *Pool) probeAll(ctx context.Context) {
 
 			if err != nil {
 				n.healthy.Store(false)
+				if rpcCapacityExhausted(err) && n.disabled.CompareAndSwap(false, true) {
+					slog.Warn("RPC node disabled: provider capacity exhausted",
+						"url", truncate(n.URL, 40),
+						"err", err,
+					)
+					return
+				}
 				slog.Warn("RPC probe block failed",
 					"url", truncate(n.URL, 40),
 					"err", err,
@@ -260,7 +279,15 @@ func (p *Pool) pickExcluding(exclude *Node) *Node {
 		if n == exclude && len(nodes) > 1 {
 			continue
 		}
-		if n.healthy.Load() && n.cb.GetState() != resilience.StateOpen {
+		if !n.disabled.Load() && n.healthy.Load() && n.cb.GetState() != resilience.StateOpen {
+			return n
+		}
+	}
+	for _, n := range nodes {
+		if !n.disabled.Load() && n != exclude {
+			slog.Warn("RPC pool: all enabled nodes unhealthy, using fallback node",
+				"url", truncate(n.URL, 40),
+			)
 			return n
 		}
 	}
@@ -306,4 +333,19 @@ func rpcRetryable(err error) bool {
 	}
 
 	return true
+}
+
+func rpcCapacityExhausted(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "402") ||
+		strings.Contains(msg, "payment required") ||
+		strings.Contains(msg, "out of cu") ||
+		strings.Contains(msg, "out of compute") ||
+		strings.Contains(msg, "capacity limit exceeded") ||
+		strings.Contains(msg, "monthly capacity limit exceeded") ||
+		strings.Contains(msg, "quota exceeded") ||
+		strings.Contains(msg, "billing")
 }
