@@ -70,6 +70,10 @@ const report = {
     capability_graph_v2_validated: false,
     pay_pix_graph_contract_validated: false,
     graph_phase_report_detected: false,
+    capability_compositions_fetched: false,
+    capability_compositions_validated: false,
+    planner_api_called: false,
+    planner_api_validated: false,
     policy_required_detected: false,
   },
   selected_skills: {},
@@ -236,6 +240,46 @@ function validateCapabilityGraphV2(graphBody) {
   };
 }
 
+function validateCapabilityCompositions(body) {
+  const compositions = Array.isArray(body?.compositions) ? body.compositions : [];
+  const documentPayment = compositions.find((item) => item?.id === 'document_to_memory_payment');
+  const pixPayment = compositions.find((item) => item?.id === 'pix_payment_with_quote');
+  return {
+    version: body?.version || '',
+    composition_count: compositions.length,
+    document_to_memory_payment_found: Boolean(documentPayment),
+    pix_payment_with_quote_found: Boolean(pixPayment),
+    phase_report_id: body?.phase_report?.id || '',
+    valid: compositions.length >= 2
+      && Boolean(documentPayment)
+      && Boolean(pixPayment)
+      && body?.phase_report?.id === 'planning_layer_report',
+  };
+}
+
+function validatePlannerResponse(body) {
+  return {
+    plan_id: body?.plan_id || '',
+    status: body?.status || '',
+    composition_id: body?.composition_id || '',
+    step_count: Array.isArray(body?.steps) ? body.steps.length : 0,
+    executes_now: body?.executes_now,
+    has_missing_requirements: Array.isArray(body?.missing_requirements),
+    estimated_cost_usdt: body?.estimated_cost_usdt || '',
+    estimated_latency_ms: body?.estimated_latency_ms || 0,
+    phase_report_id: body?.phase_report?.id || '',
+    valid: Boolean(body?.plan_id)
+      && Array.isArray(body?.steps)
+      && body.steps.includes('quote_required_usdt')
+      && body.steps.includes('pay_pix_with_usdt')
+      && body.executes_now === false
+      && Array.isArray(body?.missing_requirements)
+      && Boolean(body?.estimated_cost_usdt)
+      && Number(body?.estimated_latency_ms || 0) > 0
+      && body?.phase_report?.id === 'planning_layer_report',
+  };
+}
+
 async function callA2A(a2aUrl, skill, payload, authMode = 'optional') {
   const headers = {};
   if (bearer) headers.Authorization = `Bearer ${bearer}`;
@@ -356,8 +400,10 @@ async function main() {
     const registryRecordUrl = absoluteFromCard(cardUrl, card.registry?.signedRecord || '/agent/v1/registry-records/agntcy-oasf');
     const policyDiscoveryUrl = absoluteFromCard(cardUrl, card.planning?.policy_discovery || '/.well-known/agent-policy.json');
     const capabilityGraphUrl = absoluteFromCard(cardUrl, card.planning?.capability_graph || '/.well-known/capability-graph.json');
+    const compositionsUrl = absoluteFromCard(cardUrl, card.planning?.compositions || '/.well-known/capability-compositions.json');
+    const plannerUrl = absoluteFromCard(cardUrl, card.planning?.planner_api || '/agent/v1/plans');
 
-    const [jwksResponse, signatureResponse, reputationResponse, slaResponse, x402DiscoveryResponse, registriesResponse, agntcyResponse, oasfResponse, registryRecordResponse, policyDiscoveryResponse, capabilityGraphResponse] = await Promise.all([
+    const [jwksResponse, signatureResponse, reputationResponse, slaResponse, x402DiscoveryResponse, registriesResponse, agntcyResponse, oasfResponse, registryRecordResponse, policyDiscoveryResponse, capabilityGraphResponse, compositionsResponse] = await Promise.all([
       requestJSON(jwksUrl),
       requestJSON(signatureUrl),
       requestJSON(reputationUrl),
@@ -369,6 +415,7 @@ async function main() {
       requestJSON(registryRecordUrl),
       requestJSON(policyDiscoveryUrl),
       requestJSON(capabilityGraphUrl),
+      requestJSON(compositionsUrl),
     ]);
     addStep('fetch_agent_trust_documents', {
       requests: { jwks_url: jwksUrl, signature_url: signatureUrl, reputation_url: reputationUrl, sla_url: slaUrl },
@@ -384,6 +431,7 @@ async function main() {
         registry_record: { status: registryRecordResponse.status, latency_ms: registryRecordResponse.latency_ms, body: compactBody(registryRecordResponse.body) },
         policy_discovery: { status: policyDiscoveryResponse.status, latency_ms: policyDiscoveryResponse.latency_ms, body: compactBody(policyDiscoveryResponse.body) },
         capability_graph: { status: capabilityGraphResponse.status, latency_ms: capabilityGraphResponse.latency_ms, body: compactBody(capabilityGraphResponse.body) },
+        capability_compositions: { status: compositionsResponse.status, latency_ms: compositionsResponse.latency_ms, body: compactBody(compositionsResponse.body) },
       },
     });
     report.checks.jwks_fetched = jwksResponse.ok;
@@ -397,6 +445,7 @@ async function main() {
     report.checks.registry_record_fetched = registryRecordResponse.ok;
     report.checks.policy_discovery_fetched = policyDiscoveryResponse.ok;
     report.checks.capability_graph_fetched = capabilityGraphResponse.ok;
+    report.checks.capability_compositions_fetched = compositionsResponse.ok;
     if (capabilityGraphResponse.ok) {
       const graphValidation = validateCapabilityGraphV2(capabilityGraphResponse.body);
       report.capability_graph_v2 = graphValidation;
@@ -407,6 +456,34 @@ async function main() {
         && graphValidation.has_estimated_cost
         && graphValidation.has_expected_latency;
       report.checks.graph_phase_report_detected = graphValidation.phase_report_detected;
+    }
+    if (compositionsResponse.ok) {
+      const compositionsValidation = validateCapabilityCompositions(compositionsResponse.body);
+      report.capability_compositions = compositionsValidation;
+      report.checks.capability_compositions_validated = compositionsValidation.valid;
+    }
+    if (plannerUrl) {
+      const plannerBody = {
+        goal: 'Pay a PIX recipient using USDT after quoting the amount',
+        agent_wallet: agentWallet,
+        amount_brl: amountBRL,
+        pix_key: pixKey,
+        constraints: { max_cost_usdt: '10', network: 'BSC', asset: 'USDT' },
+      };
+      const plannerResponse = await requestJSON(plannerUrl, {
+        method: 'POST',
+        body: JSON.stringify(plannerBody),
+      });
+      addStep('planner:create_plan', {
+        request: { url: plannerUrl, method: 'POST', body: plannerBody },
+        response: { status: plannerResponse.status, latency_ms: plannerResponse.latency_ms, body: compactBody(plannerResponse.body) },
+      });
+      report.checks.planner_api_called = plannerResponse.ok;
+      if (plannerResponse.ok) {
+        const plannerValidation = validatePlannerResponse(plannerResponse.body);
+        report.planner_api = plannerValidation;
+        report.checks.planner_api_validated = plannerValidation.valid;
+      }
     }
     if (jwksResponse.ok && signatureResponse.ok) {
       const verification = verifyAgentCardSignature(cardResponse.text, signatureResponse.body, jwksResponse.body);
