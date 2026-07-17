@@ -50,7 +50,14 @@ This SDK is intentionally minimal today: quote, buy and sell primitives. The bac
 | --- | --- |
 | Efi credit-card buy | `POST /api/buy` with `paymentMethod=credit_card`, `paymentToken`, `customer`, `billingAddress` |
 | MCP Capability Network | `POST /mcp/initialize`, `POST /mcp/tools/list`, `POST /mcp/tools/call` |
+| A2A Agent Pay | `GET /.well-known/agent-card.json`, `POST /a2a`, `POST /a2a/tasks`, `GET /a2a/tasks/{id}`, `GET /a2a/tasks/{id}/events` |
+| Agent trust and planning | `GET /.well-known/jwks.json`, `GET /.well-known/agent-card.signature`, `GET /.well-known/agent-policy.json`, `GET /.well-known/capability-graph.json` |
+| Reputation, SLA and episodes | `GET /agent/v1/reputation`, `GET /agent/v1/sla`, `GET /agent/v1/episodes` |
+| x402 capability execution | `GET /.well-known/x402.json`, `POST /x402/capabilities/{capability}/execute` |
+| Multi-registry discovery | `GET /agent/v1/registries`, `GET /.well-known/agntcy.json`, `GET /.well-known/oasf.json`, `GET /agent/v1/registry-records/agntcy-oasf` |
 | Agent Pay | `POST /agent/v1/pay`, `GET /agent/v1/pay/{id}` |
 | Gas Station | `GET /v1/gas/status`, `GET /v1/gas/quote`, `POST /v1/gas/relay`, `GET /v1/gas/relay/{id}` |
 
 Agents and developer backends should use Bearer API keys issued by the Developer Console.
+
+For true agent interoperability tests, use `tools/agent-qa/openai-agent-pay-test`. It starts from the public Agent Card only and validates discovery, trust, policy, A2A task lifecycle, x402 challenge, registry records and payment intent creation.
