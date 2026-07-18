@@ -27,6 +27,56 @@ func normalizeSellNetwork(network string) string {
 	}
 }
 
+func normalizeStablecoinNetwork(network string) string {
+	return normalizeSellNetwork(network)
+}
+
+func stablecoinNetworkChainID(network string) int64 {
+	switch normalizeStablecoinNetwork(network) {
+	case "POLYGON":
+		return 137
+	default:
+		return 56
+	}
+}
+
+func stablecoinNetworkRPCEnvName(network string) string {
+	switch normalizeStablecoinNetwork(network) {
+	case "POLYGON":
+		return "POLYGON_RPC_URLS"
+	default:
+		return "BSC_RPC_URLS"
+	}
+}
+
+func (s *Server) stablecoinRPCURLs(network string) string {
+	if s.cfg == nil {
+		return ""
+	}
+	switch normalizeStablecoinNetwork(network) {
+	case "POLYGON":
+		return strings.TrimSpace(s.cfg.PolygonRpcUrls)
+	default:
+		return strings.TrimSpace(s.cfg.BscRpcUrls)
+	}
+}
+
+func (s *Server) stablecoinPaymentNetworks() []map[string]any {
+	networks := []map[string]any{{
+		"chain":   "BSC",
+		"chainId": 56,
+		"assets":  []string{"USDT", "USDC"},
+	}}
+	if s.cfg != nil && strings.TrimSpace(s.cfg.PolygonRpcUrls) != "" && strings.TrimSpace(s.cfg.PolygonUsdtContract) != "" {
+		networks = append(networks, map[string]any{
+			"chain":   "POLYGON",
+			"chainId": 137,
+			"assets":  []string{"USDT", "USDC"},
+		})
+	}
+	return networks
+}
+
 func (s *Server) supportedSellNetworks() []string {
 	networks := []string{}
 	if strings.TrimSpace(s.cfg.BscRpcUrls) != "" && strings.TrimSpace(s.cfg.BscUsdtContract) != "" {
