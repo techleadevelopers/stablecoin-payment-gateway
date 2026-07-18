@@ -42,6 +42,7 @@ func (s *Server) handleAgentTradeQuote(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PayAsset          string  `json:"payAsset"`
 		ReceiveAsset      string  `json:"receiveAsset"`
+		Network           string  `json:"network"`
 		Amount            float64 `json:"amount"`
 		AmountType        string  `json:"amountType"`
 		AgentWallet       string  `json:"agentWallet"`
@@ -53,6 +54,7 @@ func (s *Server) handleAgentTradeQuote(w http.ResponseWriter, r *http.Request) {
 	}
 	req.PayAsset = strings.ToUpper(strings.TrimSpace(req.PayAsset))
 	req.ReceiveAsset = strings.ToUpper(strings.TrimSpace(req.ReceiveAsset))
+	req.Network = normalizeStablecoinNetwork(req.Network)
 	req.AmountType = strings.ToLower(strings.TrimSpace(firstNonEmpty(req.AmountType, "receive")))
 	req.AgentWallet = strings.ToLower(strings.TrimSpace(req.AgentWallet))
 	req.DestinationWallet = strings.ToLower(strings.TrimSpace(firstNonEmpty(req.DestinationWallet, req.AgentWallet)))
@@ -60,12 +62,16 @@ func (s *Server) handleAgentTradeQuote(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "agentWallet, destinationWallet e amount validos sao obrigatorios"})
 		return
 	}
-	payAsset, err := s.agentTradeAsset(r.Context(), req.PayAsset)
+	if req.Network != "BSC" && req.Network != "POLYGON" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "network deve ser BSC ou POLYGON"})
+		return
+	}
+	payAsset, err := s.agentTradeAsset(r.Context(), req.PayAsset, req.Network)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	receiveAsset, err := s.agentTradeAsset(r.Context(), req.ReceiveAsset)
+	receiveAsset, err := s.agentTradeAsset(r.Context(), req.ReceiveAsset, req.Network)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -91,7 +97,7 @@ func (s *Server) handleAgentTradeQuote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expiresAt := time.Now().UTC().Add(agentTradeIntentTTL)
-	requestHash := agentTradeRequestHash(req.AgentWallet, req.DestinationWallet, req.PayAsset, req.ReceiveAsset, payAsset.ContractAddress, receiveAsset.ContractAddress, amounts.PayAmount, amounts.ReceiveAmount, paymentAddress, nonce, expiresAt)
+	requestHash := agentTradeRequestHash(req.AgentWallet, req.DestinationWallet, req.PayAsset, req.ReceiveAsset, req.Network, payAsset.ContractAddress, receiveAsset.ContractAddress, amounts.PayAmount, amounts.ReceiveAmount, paymentAddress, nonce, expiresAt)
 	intent, err := s.db.CreateAgentTradeIntent(r.Context(), database.AgentTradeIntentInput{
 		AgentWallet:          req.AgentWallet,
 		PayAsset:             req.PayAsset,
@@ -100,7 +106,7 @@ func (s *Server) handleAgentTradeQuote(w http.ResponseWriter, r *http.Request) {
 		ReceiveAmount:        amounts.ReceiveAmount,
 		ChainFXFeeAmount:     amounts.ChainFXFeeAmount,
 		FeeBps:               feeBps,
-		Network:              "BSC",
+		Network:              req.Network,
 		PaymentAddress:       paymentAddress,
 		DestinationWallet:    req.DestinationWallet,
 		PayTokenContract:     payAsset.ContractAddress,
@@ -124,7 +130,8 @@ func (s *Server) handleAgentAssets(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		return map[string]any{
-			"network":              "BSC",
+			"defaultNetwork":       "BSC",
+			"supportedNetworks":    s.stablecoinPaymentNetworks(),
 			"pricingModel":         "stablecoin pairs are quoted 1:1 before ChainFX fee",
 			"treasuryInventory":    "receiveAsset settlement requires ChainFX treasury inventory for that token",
 			"supportedPairs":       "any enabled stablecoin pair with different symbols",
@@ -165,7 +172,8 @@ func (s *Server) handleAgentTradeExecute(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "requestHash nao confere com trade intent"})
 		return
 	}
-	payAsset, err := s.agentTradeAsset(r.Context(), intent.PayAsset)
+	network := normalizeStablecoinNetwork(intent.Network)
+	payAsset, err := s.agentTradeAsset(r.Context(), intent.PayAsset, network)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -174,7 +182,7 @@ func (s *Server) handleAgentTradeExecute(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "contrato do payAsset diverge do intent"})
 		return
 	}
-	receipt, err := s.verifyERC20TransferTx(r.Context(), req.TxHash, intent.PayTokenContract, intent.AgentWallet, intent.PaymentAddress, intent.PayAmount, intent.PayAsset, payAsset.Decimals, nil)
+	receipt, err := s.verifyERC20TransferTx(r.Context(), network, req.TxHash, intent.PayTokenContract, intent.AgentWallet, intent.PaymentAddress, intent.PayAmount, intent.PayAsset, payAsset.Decimals, nil)
 	if err != nil {
 		writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": err.Error(), "status": "payment_not_verified"})
 		return
@@ -247,10 +255,11 @@ func (s *Server) agentTradeAssets(ctx context.Context) ([]*database.AgentSupport
 	return active, nil
 }
 
-func (s *Server) agentTradeAsset(ctx context.Context, symbol string) (*database.AgentSupportedAsset, error) {
+func (s *Server) agentTradeAsset(ctx context.Context, symbol string, network string) (*database.AgentSupportedAsset, error) {
 	normalized := strings.ToUpper(strings.TrimSpace(symbol))
+	network = normalizeStablecoinNetwork(network)
 	if s.db != nil {
-		asset, err := s.db.GetAgentSupportedAsset(ctx, normalized, "BSC")
+		asset, err := s.db.GetAgentSupportedAsset(ctx, normalized, network)
 		if err != nil {
 			return nil, err
 		}
@@ -266,7 +275,7 @@ func (s *Server) agentTradeAsset(ctx context.Context, symbol string) (*database.
 	}
 	// Fallback (DB unreachable): reject legacy/disabled assets explicitly.
 	for _, asset := range s.fallbackAgentTradeAssets() {
-		if asset.Symbol != normalized {
+		if asset.Symbol != normalized || !strings.EqualFold(asset.Network, network) {
 			continue
 		}
 		if !asset.Enabled || strings.EqualFold(asset.Status, "legacy") {
@@ -297,8 +306,17 @@ func (s *Server) normalizeAgentTradeAsset(asset *database.AgentSupportedAsset) {
 	asset.Symbol = strings.ToUpper(strings.TrimSpace(asset.Symbol))
 	asset.Network = strings.ToUpper(strings.TrimSpace(asset.Network))
 	asset.ContractAddress = strings.ToLower(strings.TrimSpace(asset.ContractAddress))
-	if s.cfg != nil && asset.Symbol == "USDT" && strings.TrimSpace(s.cfg.BscUsdtContract) != "" {
-		asset.ContractAddress = strings.ToLower(strings.TrimSpace(s.cfg.BscUsdtContract))
+	if s.cfg != nil && asset.Symbol == "USDT" {
+		switch normalizeStablecoinNetwork(asset.Network) {
+		case "POLYGON":
+			if strings.TrimSpace(s.cfg.PolygonUsdtContract) != "" {
+				asset.ContractAddress = strings.ToLower(strings.TrimSpace(s.cfg.PolygonUsdtContract))
+			}
+		default:
+			if strings.TrimSpace(s.cfg.BscUsdtContract) != "" {
+				asset.ContractAddress = strings.ToLower(strings.TrimSpace(s.cfg.BscUsdtContract))
+			}
+		}
 	}
 	if asset.FeeBps < agentGatewayFeeBps {
 		asset.FeeBps = agentGatewayFeeBps
@@ -360,7 +378,7 @@ func agentTradeQuoteResponse(intent *database.AgentTradeIntent, base string) map
 		"expiresAt":            intent.ExpiresAt,
 		"executeUrl":           base + "/agent/v1/trade/execute",
 		"security": []string{
-			"transfer must be ERC20 on BSC from agentWallet to paymentAddress",
+			"transfer must be ERC20 on the quoted network from agentWallet to paymentAddress",
 			"requestHash binds wallets, assets, token contracts, amounts, nonce and expiry",
 			"txHash and idempotencyKey cannot be reused",
 			"ChainFX settles receiveAsset only after on-chain payment verification",
@@ -414,14 +432,16 @@ func (s *Server) sendAgentTradeSettlement(ctx context.Context, intent *database.
 	return strings.ToLower(strings.TrimSpace(out.TxHash)), nil
 }
 
-func (s *Server) verifyERC20TransferTx(ctx context.Context, txHash, tokenContract, fromAddress, toAddress string, amount float64, asset string, decimals int, expectedLogIndex *int) (database.AgentTradeReceipt, error) {
-	return s.verifyERC20TransferTxRaw(ctx, txHash, tokenContract, fromAddress, toAddress, amountToBaseUnits(amount, decimals), asset, decimals, expectedLogIndex)
+func (s *Server) verifyERC20TransferTx(ctx context.Context, network, txHash, tokenContract, fromAddress, toAddress string, amount float64, asset string, decimals int, expectedLogIndex *int) (database.AgentTradeReceipt, error) {
+	return s.verifyERC20TransferTxRaw(ctx, network, txHash, tokenContract, fromAddress, toAddress, amountToBaseUnits(amount, decimals), asset, decimals, expectedLogIndex)
 }
 
-func (s *Server) verifyERC20TransferTxRaw(ctx context.Context, txHash, tokenContract, fromAddress, toAddress string, expected *big.Int, asset string, decimals int, expectedLogIndex *int) (database.AgentTradeReceipt, error) {
-	rpcURL := firstCSV(s.cfg.BscRpcUrls)
+func (s *Server) verifyERC20TransferTxRaw(ctx context.Context, network, txHash, tokenContract, fromAddress, toAddress string, expected *big.Int, asset string, decimals int, expectedLogIndex *int) (database.AgentTradeReceipt, error) {
+	network = normalizeStablecoinNetwork(network)
+	expectedChainID := stablecoinNetworkChainID(network)
+	rpcURL := firstCSV(s.stablecoinRPCURLs(network))
 	if rpcURL == "" {
-		return database.AgentTradeReceipt{}, fmt.Errorf("BSC_RPC_URLS nao configurado para verificar pagamento")
+		return database.AgentTradeReceipt{}, fmt.Errorf("%s nao configurado para verificar pagamento", stablecoinNetworkRPCEnvName(network))
 	}
 	if expected == nil || expected.Sign() <= 0 {
 		return database.AgentTradeReceipt{}, fmt.Errorf("amount interno invalido")
@@ -431,25 +451,25 @@ func (s *Server) verifyERC20TransferTxRaw(ctx context.Context, txHash, tokenCont
 	}
 	client, err := ethclient.DialContext(ctx, rpcURL)
 	if err != nil {
-		return database.AgentTradeReceipt{}, fmt.Errorf("falha ao conectar RPC BSC: %w", err)
+		return database.AgentTradeReceipt{}, fmt.Errorf("falha ao conectar RPC %s: %w", network, err)
 	}
 	defer client.Close()
 	chainID, err := client.ChainID(ctx)
 	if err != nil {
 		return database.AgentTradeReceipt{}, fmt.Errorf("falha ao validar chainId: %w", err)
 	}
-	if chainID.Int64() != 56 {
-		return database.AgentTradeReceipt{}, fmt.Errorf("chainId invalido: esperado 56 BSC, recebido %d", chainID.Int64())
+	if chainID.Int64() != expectedChainID {
+		return database.AgentTradeReceipt{}, fmt.Errorf("chainId invalido: esperado %d %s, recebido %d", expectedChainID, network, chainID.Int64())
 	}
 	receipt, err := client.TransactionReceipt(ctx, common.HexToHash(txHash))
 	if err != nil {
 		if err == ethereum.NotFound {
-			return database.AgentTradeReceipt{}, fmt.Errorf("tx nao encontrada na BSC")
+			return database.AgentTradeReceipt{}, fmt.Errorf("tx nao encontrada na %s", network)
 		}
 		return database.AgentTradeReceipt{}, fmt.Errorf("falha ao buscar receipt: %w", err)
 	}
 	if receipt.Status != types.ReceiptStatusSuccessful {
-		return database.AgentTradeReceipt{}, fmt.Errorf("tx BSC sem sucesso")
+		return database.AgentTradeReceipt{}, fmt.Errorf("tx %s sem sucesso", network)
 	}
 	latest, err := client.HeaderByNumber(ctx, nil)
 	if err != nil {
@@ -567,12 +587,13 @@ func baseUnitsToAmount(amount *big.Int, decimals int) float64 {
 	return math.Round(value*1_000_000) / 1_000_000
 }
 
-func agentTradeRequestHash(agentWallet, destinationWallet, payAsset, receiveAsset, payToken, receiveToken string, payAmount, receiveAmount float64, paymentAddress, nonce string, expiresAt time.Time) string {
+func agentTradeRequestHash(agentWallet, destinationWallet, payAsset, receiveAsset, network, payToken, receiveToken string, payAmount, receiveAmount float64, paymentAddress, nonce string, expiresAt time.Time) string {
 	raw := strings.Join([]string{
 		strings.ToLower(strings.TrimSpace(agentWallet)),
 		strings.ToLower(strings.TrimSpace(destinationWallet)),
 		strings.ToUpper(strings.TrimSpace(payAsset)),
 		strings.ToUpper(strings.TrimSpace(receiveAsset)),
+		normalizeStablecoinNetwork(network),
 		strings.ToLower(strings.TrimSpace(payToken)),
 		strings.ToLower(strings.TrimSpace(receiveToken)),
 		fmt.Sprintf("%.6f", payAmount),
