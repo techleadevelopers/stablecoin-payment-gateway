@@ -118,10 +118,14 @@ func (s *Server) toolDryRunCapability(ctx context.Context, args map[string]any) 
 	cap := fallbackMarketplaceCapability(capability)
 	candidates := []*database.MarketplaceRouteCandidate{fallbackRouteCandidate(capability)}
 	if s.db != nil {
-		if liveCap, err := s.db.GetMarketplaceCapability(ctx, capability); err == nil && liveCap != nil {
-			cap = liveCap
+		if value, err := s.cachedValue("tool:dryRunCapability:capability:"+strings.ToLower(capability), mcpCatalogCacheTTL, func() (any, error) {
+			return s.db.GetMarketplaceCapability(ctx, capability)
+		}); err == nil {
+			if liveCap, _ := value.(*database.MarketplaceCapability); liveCap != nil {
+				cap = liveCap
+			}
 		}
-		if liveCandidates, err := s.db.ListMarketplaceRouteCandidates(ctx, database.MarketplaceCapabilityExecuteInput{
+		routeInput := database.MarketplaceCapabilityExecuteInput{
 			CapabilityID:      capability,
 			RequestedProvider: stringArg(args, "provider"),
 			RoutingMode:       firstNonEmptyMCP(stringArg(args, "routingMode"), "best_available"),
@@ -130,8 +134,13 @@ func (s *Server) toolDryRunCapability(ctx context.Context, args map[string]any) 
 			MaxCostScore:      intArg(args, "maxCostScore"),
 			RequireReal:       boolArg(args, "requireReal"),
 			Units:             maxIntMCP(intArg(args, "units"), 1),
+		}
+		if value, err := s.cachedValue("tool:dryRunCapability:routes:"+mcpRouteCandidatesCacheKey(routeInput), mcpRouteCacheTTL, func() (any, error) {
+			return s.db.ListMarketplaceRouteCandidates(ctx, routeInput)
 		}); err == nil {
-			candidates = liveCandidates
+			if liveCandidates, _ := value.([]*database.MarketplaceRouteCandidate); len(liveCandidates) > 0 {
+				candidates = liveCandidates
+			}
 		}
 	}
 	if len(candidates) == 0 {
