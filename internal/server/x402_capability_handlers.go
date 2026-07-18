@@ -78,6 +78,13 @@ func (s *Server) handleX402CapabilityExecute(w http.ResponseWriter, r *http.Requ
 	if !paymentOK {
 		purchase, product, plan, err := s.createX402CapabilityPurchase(r, capabilityID, req)
 		if err != nil {
+			if paymentErr, ok := err.(*database.AgentCreditPaymentRequiredError); ok {
+				writeJSON(w, http.StatusPaymentRequired, map[string]any{
+					"error":                paymentErr.Challenge(),
+					"payment_requirements": paymentErr.Challenge(),
+				})
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
