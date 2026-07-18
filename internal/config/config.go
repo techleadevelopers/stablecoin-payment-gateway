@@ -138,6 +138,13 @@ type Config struct {
 	M2MMaxDailyOutflowBRL  float64 // max BRL settled per 24 h (0 = unlimited)
 	M2MDepositAddresses    string  // comma-separated unique deposit addresses for pending M2M intents
 
+	// Closed-loop NFC wallet-to-terminal rail.
+	NFCEnabled         bool
+	NFCTokenSecret     string
+	NFCTokenTTLSeconds int
+	NFCHoldTTLSeconds  int
+	NFCMaxAmountBRL    float64
+
 	// EIP-712 typed intents for MCP/mobile/stablecoin rails.
 	EIP712DomainName        string
 	EIP712DomainVersion     string
@@ -305,6 +312,11 @@ func LoadConfig() *Config {
 		M2MDepositTolerancePct:  getEnvAsFloat("M2M_DEPOSIT_TOLERANCE_PCT", 0.005),
 		M2MMaxDailyOutflowBRL:   getEnvAsFloat("M2M_MAX_DAILY_OUTFLOW_BRL", 50000),
 		M2MDepositAddresses:     getEnv("M2M_DEPOSIT_ADDRESSES", ""),
+		NFCEnabled:              getEnvAsBool("NFC_ENABLED", true),
+		NFCTokenSecret:          getEnv("NFC_TOKEN_SECRET", getEnv("LGPD_SECRET", getEnv("WEBHOOK_SECRET", ""))),
+		NFCTokenTTLSeconds:      getEnvAsInt("NFC_TOKEN_TTL_SEC", 120),
+		NFCHoldTTLSeconds:       getEnvAsInt("NFC_HOLD_TTL_SEC", 900),
+		NFCMaxAmountBRL:         getEnvAsFloat("NFC_MAX_AMOUNT_BRL", 500),
 		EIP712DomainName:        getEnv("EIP712_DOMAIN_NAME", "ChainFX"),
 		EIP712DomainVersion:     getEnv("EIP712_DOMAIN_VERSION", "1"),
 		EIP712ChainID:           int64(getEnvAsInt("EIP712_CHAIN_ID", 56)),
@@ -374,6 +386,9 @@ func (c *Config) ValidateProduction() error {
 		"EFI_PIX_KEY":              c.EfiPixKey,
 		"TREASURY_HOT":             c.TreasuryHot,
 		"CHAINFX_LIVE_SECRET_KEYS": c.ChainFXLiveSecretKeys,
+	}
+	if c.NFCEnabled {
+		required["NFC_TOKEN_SECRET"] = c.NFCTokenSecret
 	}
 	if strings.TrimSpace(c.EfiCertificatePath) == "" && strings.TrimSpace(c.EfiCertificateP12) == "" {
 		required["EFI_CERTIFICATE_PATH or EFI_CERTIFICATE_P12_BASE64"] = ""
