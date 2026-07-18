@@ -130,7 +130,7 @@ func tierLimit(apiKey, toolClass string) int {
 		"anonymous": {
 			"mcp_tool_read":    300,
 			"mcp_tool_write":   30,
-			"mcp_ai_expensive": 30,
+			"mcp_ai_expensive": 120,
 			"mcp_financial":    30,
 			"mcp_abuse":        10,
 		},
