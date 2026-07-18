@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS agent_payment_intents (
     required_usdt       NUMERIC(18,6) NOT NULL,           -- gross_usdt + fee_usdt (what agent must deposit)
     usdt_rate           NUMERIC(18,6) NOT NULL,           -- USDT/BRL spot at intent creation
     payment_address     TEXT         NOT NULL,            -- TREASURY_HOT (on-chain deposit target)
+    payment_network     TEXT         NOT NULL DEFAULT 'BSC',
     status              TEXT         NOT NULL DEFAULT 'pending_deposit',
     deposit_tx          TEXT,                             -- on-chain tx hash that funded this intent
     deposit_amount_usdt NUMERIC(18,6),                   -- actual deposited amount
@@ -50,6 +51,12 @@ CREATE INDEX IF NOT EXISTS idx_m2m_intents_agent_wallet
 
 CREATE INDEX IF NOT EXISTS idx_m2m_intents_payment_address_status
     ON agent_payment_intents(payment_address, status)
+    WHERE status = 'pending_deposit';
+
+ALTER TABLE agent_payment_intents ADD COLUMN IF NOT EXISTS payment_network TEXT NOT NULL DEFAULT 'BSC';
+
+CREATE INDEX IF NOT EXISTS idx_m2m_intents_payment_network_address_status
+    ON agent_payment_intents(payment_network, payment_address, status)
     WHERE status = 'pending_deposit';
 
 -- Older hardening migrations briefly enforced one pending intent per deposit
