@@ -1506,11 +1506,16 @@ CREATE TABLE IF NOT EXISTS api_request_logs (
   auth_mode VARCHAR(32),
   client_ip TEXT,
   user_agent TEXT,
+  agent_id TEXT,
+  agent_signature_hash TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE api_request_logs ADD COLUMN IF NOT EXISTS agent_id TEXT;
+ALTER TABLE api_request_logs ADD COLUMN IF NOT EXISTS agent_signature_hash TEXT;
 CREATE INDEX IF NOT EXISTS idx_api_request_logs_created ON api_request_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_api_request_logs_route ON api_request_logs(route_class, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_api_request_logs_key ON api_request_logs(api_key_hash, created_at DESC) WHERE api_key_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_api_request_logs_agent ON api_request_logs(agent_id, created_at DESC) WHERE agent_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS mcp_tool_logs (
   id UUID PRIMARY KEY,
@@ -1521,11 +1526,16 @@ CREATE TABLE IF NOT EXISTS mcp_tool_logs (
   duration_ms BIGINT NOT NULL DEFAULT 0,
   api_key_hash TEXT,
   auth_mode VARCHAR(32),
+  agent_id TEXT,
+  agent_signature_hash TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE mcp_tool_logs ADD COLUMN IF NOT EXISTS agent_id TEXT;
+ALTER TABLE mcp_tool_logs ADD COLUMN IF NOT EXISTS agent_signature_hash TEXT;
 CREATE INDEX IF NOT EXISTS idx_mcp_tool_logs_created ON mcp_tool_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_mcp_tool_logs_tool ON mcp_tool_logs(tool_name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_mcp_tool_logs_key ON mcp_tool_logs(api_key_hash, created_at DESC) WHERE api_key_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_mcp_tool_logs_agent ON mcp_tool_logs(agent_id, created_at DESC) WHERE agent_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS developer_projects (
   id TEXT PRIMARY KEY,
