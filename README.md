@@ -236,6 +236,7 @@ Android HCE -> APDU response 70 + DF01(token nfc1...)
 ChainFX Terminal -> POST /api/nfc/authorize
 Go API -> verifica token, idempotencia, saldo NFC e trava USDT
 Terminal <- response_code 00 / 51 / 05
+ChainFX Terminal -> POST /api/nfc/authorizations/{id}/capture ou /reverse
 ```
 
 Endpoints:
@@ -243,6 +244,8 @@ Endpoints:
 - `GET /api/mobile/nfc/card`: retorna metadados do cartao digital, AID `F222222222`, rede e saldo NFC.
 - `POST /api/mobile/nfc/provision`: emite token opaco `nfc1...` usando JWT mobile. O app nao carrega API key `sk_live`.
 - `POST /api/nfc/authorize`: usado pelo leitor/terminal ChainFX para autorizar valor BRL.
+- `POST /api/nfc/authorizations/{id}/capture`: conclui a venda e consome o saldo travado.
+- `POST /api/nfc/authorizations/{id}/reverse`: cancela a venda e devolve o saldo travado.
 - `GET /api/nfc/authorizations/{id}`: consulta da autorizacao.
 - `GET /api/nfc/balance/{wallet}?network=BSC`: saldo NFC disponivel/travado.
 - `POST /api/nfc/sandbox/fund`: credito de teste, apenas com `ALLOW_SIMULATIONS=true`.

@@ -12,6 +12,8 @@ const (
 	NFCStatusApproved        = "approved"
 	NFCStatusDeclined        = "declined"
 	NFCStatusRequiresFunding = "requires_funding"
+	NFCStatusCaptured        = "captured"
+	NFCStatusReversed        = "reversed"
 )
 
 type NFCTokenInput struct {
@@ -216,6 +218,89 @@ WHERE id = $1`
 	return auth, err
 }
 
+func (db *DB) CaptureNFCAuthorization(ctx context.Context, id string) (*NFCAuthorization, error) {
+	return db.finishNFCAuthorization(ctx, id, NFCStatusCaptured)
+}
+
+func (db *DB) ReverseNFCAuthorization(ctx context.Context, id string) (*NFCAuthorization, error) {
+	return db.finishNFCAuthorization(ctx, id, NFCStatusReversed)
+}
+
+func (db *DB) finishNFCAuthorization(ctx context.Context, id, finalStatus string) (*NFCAuthorization, error) {
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("nfc: begin finish tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	auth, err := txGetNFCAuthorizationByID(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if auth == nil {
+		return nil, nil
+	}
+	if auth.Status == finalStatus {
+		return auth, tx.Commit()
+	}
+	if auth.Status != NFCStatusApproved {
+		return nil, fmt.Errorf("nfc: authorization %s is %s, not approved", id, auth.Status)
+	}
+
+	var balanceResult sql.Result
+	switch finalStatus {
+	case NFCStatusCaptured:
+		balanceResult, err = tx.ExecContext(ctx, `
+UPDATE nfc_wallet_balances
+SET locked_usdt_micro = locked_usdt_micro - $3,
+    updated_at = NOW()
+WHERE wallet_address = $1 AND network = $2 AND asset = 'USDT'
+  AND locked_usdt_micro >= $3`,
+			strings.ToLower(auth.Wallet), normalizeNFCNetwork(auth.Network), auth.RequiredUSDTMic)
+	case NFCStatusReversed:
+		balanceResult, err = tx.ExecContext(ctx, `
+UPDATE nfc_wallet_balances
+SET available_usdt_micro = available_usdt_micro + $3,
+    locked_usdt_micro = locked_usdt_micro - $3,
+    updated_at = NOW()
+WHERE wallet_address = $1 AND network = $2 AND asset = 'USDT'
+  AND locked_usdt_micro >= $3`,
+			strings.ToLower(auth.Wallet), normalizeNFCNetwork(auth.Network), auth.RequiredUSDTMic)
+	default:
+		return nil, fmt.Errorf("nfc: unsupported final status %s", finalStatus)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("nfc: update balance for %s: %w", finalStatus, err)
+	}
+	if rows, err := balanceResult.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("nfc: verify balance update for %s: %w", finalStatus, err)
+	} else if rows != 1 {
+		return nil, fmt.Errorf("nfc: authorization %s has no matching locked balance", id)
+	}
+
+	timestampColumn := "captured_at"
+	if finalStatus == NFCStatusReversed {
+		timestampColumn = "reversed_at"
+	}
+	q := fmt.Sprintf(`
+UPDATE nfc_authorizations
+SET status=$2, %s=NOW(), updated_at=NOW()
+WHERE id=$1 AND status='approved'`, timestampColumn)
+	authResult, err := tx.ExecContext(ctx, q, auth.ID, finalStatus)
+	if err != nil {
+		return nil, fmt.Errorf("nfc: mark %s: %w", finalStatus, err)
+	}
+	if rows, err := authResult.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("nfc: verify authorization update for %s: %w", finalStatus, err)
+	} else if rows != 1 {
+		return nil, fmt.Errorf("nfc: authorization %s changed before %s", id, finalStatus)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("nfc: commit %s: %w", finalStatus, err)
+	}
+	return db.GetNFCAuthorization(ctx, id)
+}
+
 func txInsertNFCAuthorization(ctx context.Context, tx *sql.Tx, in NFCAuthorizeInput, status, responseCode, reason string, holdExpires any) (*NFCAuthorization, bool, error) {
 	if in.ID == "" {
 		in.ID = NewID()
@@ -248,6 +333,21 @@ SELECT id, idempotency_key, token_id, wallet_address, network, merchant_id, term
 FROM nfc_authorizations
 WHERE idempotency_key = $1`
 	auth, err := scanNFCAuthorization(tx.QueryRowContext(ctx, q, strings.TrimSpace(key)))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return auth, err
+}
+
+func txGetNFCAuthorizationByID(ctx context.Context, tx *sql.Tx, id string) (*NFCAuthorization, error) {
+	const q = `
+SELECT id, idempotency_key, token_id, wallet_address, network, merchant_id, terminal_id, COALESCE(external_ref,''),
+       amount_brl_minor, usdt_rate::float8, required_usdt_micro, status, response_code, COALESCE(reason,''),
+       hold_expires_at, created_at, updated_at
+FROM nfc_authorizations
+WHERE id = $1
+FOR UPDATE`
+	auth, err := scanNFCAuthorization(tx.QueryRowContext(ctx, q, strings.TrimSpace(id)))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

@@ -160,6 +160,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/nfc/provision", s.handleNFCProvision)
 	mux.HandleFunc("POST /api/nfc/authorize", s.handleNFCAuthorize)
 	mux.HandleFunc("GET /api/nfc/authorizations/{id}", s.handleNFCGetAuthorization)
+	mux.HandleFunc("POST /api/nfc/authorizations/{id}/capture", s.handleNFCCaptureAuthorization)
+	mux.HandleFunc("POST /api/nfc/authorizations/{id}/reverse", s.handleNFCReverseAuthorization)
 	mux.HandleFunc("GET /api/nfc/balance/{wallet}", s.handleNFCBalance)
 	mux.HandleFunc("POST /api/nfc/sandbox/fund", s.handleNFCSandboxFund)
 	mux.HandleFunc("POST /internal/sweep", s.handleInternalSweep)

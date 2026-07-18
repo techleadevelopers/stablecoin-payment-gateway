@@ -1,74 +1,127 @@
-# ChainFX NFC Closed-Loop Rail
+# ChainFX NFC Rail
 
-Este pacote implementa a parte Go de producao do pagamento NFC fechado da ChainFX: token, protocolo APDU/TLV do cartao digital, client de terminal, endpoints, autorizador, ledger e persistencia. A leitura fisica NFC/HCE acontece no sistema operacional do dispositivo ou no hardware do terminal; o Go define e valida o protocolo financeiro que esses clientes usam.
+`internal/nfc` e o nucleo Go do cartao NFC fechado da ChainFX. Ele implementa o protocolo financeiro real usado por app mobile, leitor/terminal ChainFX e backend:
 
-## O que foi implementado
+- emissao de token dinamico `nfc1...`;
+- contrato APDU/TLV do cartao digital;
+- parser do token lido no terminal;
+- autorizacao online;
+- hold de USDT;
+- captura;
+- reversao;
+- auditoria e idempotencia.
 
-- Token dinamico `nfc1.<payload>.<signature>` assinado por HMAC-SHA256.
-- Claims minimas: `token_id`, `wallet`, `device_id`, `network`, `iat`, `exp`, `nonce`.
-- Hash do token persistido, nunca dependencia de PAN/Track2.
-- Autorizacao transacional com idempotencia.
-- Ledger NFC simples com `available_usdt_micro` e `locked_usdt_micro`.
-- Hold de USDT ao aprovar uma transacao.
-- Protocolo APDU/TLV proprietario para leitor ChainFX.
-- Applet de cartao digital em Go (`CardApplet`) com o contrato APDU usado pelo app nativo e pelo terminal ChainFX.
-- Client tipado para terminal chamar `/api/nfc/authorize`.
-- Endpoints mobile para cartao digital HCE:
-  - `GET /api/mobile/nfc/card`.
-  - `POST /api/mobile/nfc/provision`.
-- Respostas no estilo autorizador:
-  - `00`: aprovado.
-  - `51`: saldo insuficiente.
-  - `05`: recusado.
+O NFC fisico do celular continua sendo responsabilidade do app mobile nativo, porque Android/iOS controlam a antena e o registro de AID. O Go e a fonte de verdade do protocolo, do token, do autorizador e do dinheiro.
 
-## Limites fisicos fora do backend Go
+## Escopo de Producao
 
-- O `HostApduService` Android real roda no app mobile nativo. O backend Go nao consegue ligar a antena NFC do telefone nem registrar AID no Android.
-- HCE iOS roda no app iOS nativo e depende de suporte/entitlements da Apple.
-- Integracao com POS Visa/Mastercard/adquirente.
-- Certificacao EMVCo, PCI DSS, BIN sponsor ou issuer processor.
+Este trilho e real e closed-loop:
 
-Este trilho e real, mas closed-loop: funciona com app ChainFX + leitor/terminal ChainFX. Um POS comum de adquirente nao vai rotear automaticamente para `/api/nfc/authorize` sem contrato de bandeira/adquirente/issuer processor.
+```text
+ChainFX mobile wallet -> NFC tap -> ChainFX terminal -> ChainFX Go API -> USDT hold/capture
+```
 
-## Fluxo tecnico
+Ele nao usa PAN, CVV ou Track2 real. Tambem nao tenta se passar por Visa/Mastercard. Maquininha comum de adquirente so roteia para a ChainFX se existir contrato tecnico/comercial de adquirente, bandeira, BIN sponsor ou issuer processor. Sem isso, o caminho correto e terminal/leitor ChainFX.
 
-1. O app autenticado chama `POST /api/mobile/nfc/provision` usando JWT mobile.
-2. O backend emite token HMAC com TTL curto, por padrao 120 segundos.
-3. O app mobile nativo responde ao APDU do terminal com esse token opaco.
-4. O terminal ChainFX envia o token para `POST /api/nfc/authorize`.
-5. O backend verifica assinatura, expiracao, token persistido e idempotencia.
-6. O backend calcula o USDT necessario usando a cotacao `USDT/BRL`.
-7. O banco trava a linha de saldo com `SELECT ... FOR UPDATE`.
-8. Se `available_usdt_micro >= required_usdt_micro`, move saldo para `locked_usdt_micro` e aprova.
-9. Se nao houver saldo, grava a autorizacao como `requires_funding`.
+## Fluxo Financeiro
 
-## Endpoints
+1. Usuario tem wallet mobile registrada.
+2. App chama `POST /api/mobile/nfc/provision` com JWT mobile.
+3. Go emite token `nfc1...` com TTL curto e persiste `token_hash`.
+4. App nativo entrega o token via NFC usando o contrato APDU ChainFX.
+5. Terminal extrai `DF01=<token>` da resposta APDU.
+6. Terminal chama `POST /api/nfc/authorize`.
+7. Go valida assinatura, expiracao, idempotencia, token persistido e saldo.
+8. Go trava saldo em `nfc_wallet_balances.locked_usdt_micro`.
+9. Terminal recebe:
+   - `response_code=00`, `status=approved`;
+   - `response_code=51`, `status=requires_funding`;
+   - `response_code=05`, `status=declined`.
+10. Na conclusao da venda, terminal chama `POST /api/nfc/authorizations/{id}/capture`.
+11. Se houver cancelamento/falha, terminal chama `POST /api/nfc/authorizations/{id}/reverse`.
 
-### Cartao digital mobile
+## Contrato APDU
+
+AID ChainFX:
+
+```text
+F222222222
+```
+
+SELECT esperado pelo cartao digital:
+
+```text
+00 A4 04 00 05 F2 22 22 22 22
+```
+
+Resposta SELECT:
+
+```text
+6F ... 84 05 F222222222 A5 ... 50 0B "ChainFX NFC" 87 01 01 9000
+```
+
+Resposta com token:
+
+```text
+70 <len>
+  DF02 01 01
+  DF01 <len> <token nfc1... em UTF-8>
+9000
+```
+
+Sem token valido:
+
+```text
+6985
+```
+
+Funcoes Go:
+
+- `BuildTokenResponse(token string) ([]byte, error)`: monta a resposta APDU com `DF01`.
+- `ParseTokenResponse(apdu []byte) (string, error)`: extrai o token no terminal.
+- `NewCardApplet(token string)`: representa o contrato de cartao digital ChainFX no Go.
+- `CardApplet.ProcessCommandAPDU(apdu []byte)`: processa SELECT/GPO/READ RECORD/GET DATA conforme o contrato.
+
+## Token
+
+Formato:
+
+```text
+nfc1.<payload-base64url>.<hmac-base64url>
+```
+
+Claims:
+
+```json
+{
+  "tid": "token id",
+  "wallet": "0x...",
+  "device_id": "device-id",
+  "network": "BSC",
+  "iat": 1784380000,
+  "exp": 1784380120,
+  "nonce": "random"
+}
+```
+
+Funcoes:
+
+- `IssueToken(...)`: emite token assinado por HMAC-SHA256.
+- `VerifyToken(...)`: valida assinatura, expiracao e estrutura.
+- `TokenHash(...)`: gera hash persistido no banco.
+
+## Endpoints Mobile
+
+### Cartao Digital
 
 ```http
 GET /api/mobile/nfc/card
 Authorization: Bearer <mobile-access-token>
 ```
 
-Resposta:
+Retorna wallet, asset, rede, AID e saldo NFC.
 
-```json
-{
-  "card": {
-    "type": "chainfx_closed_loop_nfc",
-    "display_name": "ChainFX NFC",
-    "wallet_address": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
-    "network": "BSC",
-    "asset": "USDT",
-    "aid": "F222222222",
-    "hce": true,
-    "scheme": "closed_loop"
-  }
-}
-```
-
-### Provisionamento mobile
+### Provisionamento
 
 ```http
 POST /api/mobile/nfc/provision
@@ -101,39 +154,14 @@ Resposta:
 }
 ```
 
-### Provisionamento terminal/admin
+## Endpoints Terminal
 
-```http
-POST /api/nfc/provision
-Authorization: Bearer sk_test_...
-Content-Type: application/json
-```
+Todos exigem `Authorization: Bearer <terminal-api-key>`.
 
-```json
-{
-  "wallet_address": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
-  "device_id": "android-device-id",
-  "network": "BSC",
-  "ttl_seconds": 120
-}
-```
-
-Resposta:
-
-```json
-{
-  "token": "nfc1...",
-  "token_id": "...",
-  "expires_at": "2026-07-18T13:53:00Z",
-  "network": "BSC"
-}
-```
-
-### Autorizacao
+### Autorizar
 
 ```http
 POST /api/nfc/authorize
-Authorization: Bearer sk_test_...
 Idempotency-Key: terminal-tx-001
 Content-Type: application/json
 ```
@@ -150,49 +178,32 @@ Content-Type: application/json
 }
 ```
 
-Resposta aprovada:
-
-```json
-{
-  "authorization_id": "nfc_auth_...",
-  "status": "approved",
-  "response_code": "00",
-  "required_usdt": "4.712345",
-  "hold_expires_at": "2026-07-18T14:08:00Z"
-}
-```
-
-Resposta sem saldo:
-
-```json
-{
-  "status": "requires_funding",
-  "response_code": "51",
-  "reason": "insufficient_usdt"
-}
-```
-
-### Funding sandbox
-
-Disponivel apenas com `ALLOW_SIMULATIONS=true`.
+### Capturar
 
 ```http
-POST /api/nfc/sandbox/fund
+POST /api/nfc/authorizations/{id}/capture
 ```
 
-```json
-{
-  "wallet_address": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
-  "network": "BSC",
-  "amount_usdt": "100.000000"
-}
+Finaliza a venda e consome o saldo travado.
+
+### Reverter
+
+```http
+POST /api/nfc/authorizations/{id}/reverse
 ```
 
-Em producao, esse saldo deve vir de deposito/escrow on-chain reconciliado pelo backend.
+Cancela a autorizacao e devolve o valor travado para `available_usdt_micro`.
 
-## Schema
+### Consultar
 
-Migration principal:
+```http
+GET /api/nfc/authorizations/{id}
+GET /api/nfc/balance/{wallet}?network=BSC
+```
+
+## Banco
+
+Migration:
 
 ```text
 migrations/020_nfc_closed_loop.sql
@@ -200,9 +211,18 @@ migrations/020_nfc_closed_loop.sql
 
 Tabelas:
 
-- `nfc_tokens`: token opaco, hash, wallet, device, rede, expiracao e status.
-- `nfc_wallet_balances`: saldo disponivel/travado por wallet, rede e asset.
-- `nfc_authorizations`: autorizacoes idempotentes, merchant, terminal, valor, taxa, status e hold.
+- `nfc_tokens`: token id, hash, wallet, device, rede, status e expiracao.
+- `nfc_wallet_balances`: saldo disponivel e travado por wallet/rede/asset.
+- `nfc_authorizations`: autorizacao, valor BRL, taxa, USDT requerido, status, hold, capture e reverse.
+
+Estados:
+
+```text
+approved -> captured
+approved -> reversed
+declined
+requires_funding
+```
 
 ## Variaveis
 
@@ -216,91 +236,9 @@ NFC_MAX_AMOUNT_BRL=500
 
 Em producao, `NFC_TOKEN_SECRET` e obrigatorio quando `NFC_ENABLED=true`.
 
-## Protocolo de Cartao Digital em Go
+## Performance
 
-O Go implementa o contrato APDU/TLV de producao. O app nativo deve responder os mesmos bytes pelo HCE; o terminal ChainFX deve extrair o token usando os mesmos helpers de parsing antes de chamar o autorizador.
-
-Funcoes principais:
-
-- `NewCardApplet(token string)`: cria a representacao Go do cartao digital fechado.
-- `CardApplet.SelectCommand()`: gera o SELECT AID esperado pelo leitor.
-- `CardApplet.ProcessCommandAPDU(apdu []byte)`: processa SELECT, GPO, READ RECORD e GET DATA conforme o contrato ChainFX.
-- `BuildTokenResponse(token string)`: gera resposta APDU `70 + DF01 + 9000`.
-- `ParseTokenResponse(apdu []byte)`: extrai token `nfc1...` no leitor/terminal.
-- `TerminalClient.Authorize(ctx, req)`: chama `/api/nfc/authorize` com timeout padrao de 1500 ms.
-
-Fluxo real entre app e terminal:
-
-1. Provisionar token por `/api/mobile/nfc/provision` ou `/api/nfc/provision`.
-2. App nativo registra AID `F222222222` e responde APDUs conforme `CardApplet`.
-3. Terminal envia SELECT AID e depois `GET DATA` ou `READ RECORD`.
-4. Terminal extrai token com `ParseTokenResponse`.
-5. Terminal autoriza com `TerminalClient.Authorize`.
-
-Nao usar PAN real, CVV, Track2 real ou dados de bandeira nesse fluxo.
-
-### Contrato APDU
-
-O AID fechado da ChainFX e:
-
-```text
-F222222222
-```
-
-O app mobile nativo deve registrar esse AID como closed-loop/non-card-network. No Android isso fica no HCE nativo; no backend Go isso fica representado por `ChainFXAIDHex`.
-
-SELECT esperado:
-
-```text
-00 A4 04 00 05 F2 22 22 22 22
-```
-
-Resposta SELECT:
-
-```text
-6F ... 84 05 F222222222 A5 ... 50 0B "ChainFX NFC" 87 01 01 9000
-```
-
-Resposta de token para `GPO`, `READ RECORD` ou `GET DATA`:
-
-```text
-70 <len>
-  DF02 01 01
-  DF01 <len> <token nfc1... em UTF-8>
-9000
-```
-
-Sem token provisionado ou token expirado:
-
-```text
-6985
-```
-
-Funcoes Go do token:
-
-- `IssueToken(secret, wallet, deviceID, network, ttl, now)`: emite token opaco assinado.
-- `VerifyToken(secret, token, now)`: valida assinatura, estrutura e expiracao.
-- `TokenHash(token)`: hash SHA-256 persistido no banco.
-
-## Latencia medida
-
-Ambiente:
-
-- Windows, PowerShell.
-- Pacote: `payment-gateway/internal/nfc`.
-- Teste: `TestTokenLatencyPercentiles`.
-- Operacao medida: `IssueToken + VerifyToken`.
-- Amostras: 1000 lotes.
-- Tamanho do lote: 100 operacoes.
-- Total: 100000 operacoes.
-
-Comando:
-
-```powershell
-go test ./internal/nfc -run TestTokenLatencyPercentiles -count=1 -v
-```
-
-Resultado desta maquina:
+Metrica local do token `IssueToken + VerifyToken`:
 
 ```text
 p50 = 9.973us
@@ -310,29 +248,11 @@ p99 = 101.557us
 max = 116.765us
 ```
 
-Leitura:
+Essa medida cobre criptografia local. A latencia real do pagamento inclui app NFC, terminal, HTTP, Postgres, price worker e lock transacional.
 
-- O custo criptografico local do token nao e gargalo.
-- A latencia real de autorizacao NFC sera dominada por HTTP, Postgres, cotacao `USDT/BRL` e rede do terminal.
-- Para producao, medir tambem `/api/nfc/authorize` end-to-end com Postgres real e carga concorrente.
-
-## Testes
+## Validacao
 
 ```powershell
-go test ./internal/nfc
-go test ./internal/nfc ./internal/database ./internal/server
-go build -o api-nfc.exe ./cmd/api
-```
-
-Ultima validacao local:
-
-```text
-go test ./internal/nfc ./internal/database ./internal/server
-ok
-
-go build -o api-nfc.exe ./cmd/api
-ok
-
-GET http://127.0.0.1:18080/healthz
-200 {"ok":true}
+go test ./internal/nfc ./internal/mobile ./internal/database ./internal/server
+CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o api-linux-check ./cmd/api
 ```

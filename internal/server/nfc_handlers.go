@@ -200,6 +200,44 @@ func (s *Server) handleNFCGetAuthorization(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, nfcAuthorizationView(auth))
 }
 
+func (s *Server) handleNFCCaptureAuthorization(w http.ResponseWriter, r *http.Request) {
+	if !s.nfcReady(w) {
+		return
+	}
+	if _, ok := s.authorizeChainFX(w, r); !ok {
+		return
+	}
+	auth, err := s.db.CaptureNFCAuthorization(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "NFC_CAPTURE_FAILED"})
+		return
+	}
+	if auth == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "authorization not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, nfcAuthorizationView(auth))
+}
+
+func (s *Server) handleNFCReverseAuthorization(w http.ResponseWriter, r *http.Request) {
+	if !s.nfcReady(w) {
+		return
+	}
+	if _, ok := s.authorizeChainFX(w, r); !ok {
+		return
+	}
+	auth, err := s.db.ReverseNFCAuthorization(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "NFC_REVERSAL_FAILED"})
+		return
+	}
+	if auth == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "authorization not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, nfcAuthorizationView(auth))
+}
+
 func (s *Server) handleNFCBalance(w http.ResponseWriter, r *http.Request) {
 	if !s.nfcReady(w) {
 		return

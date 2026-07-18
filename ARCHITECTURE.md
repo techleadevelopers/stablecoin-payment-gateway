@@ -152,20 +152,24 @@ Arquivos principais:
 
 ### NFC Closed-Loop
 
-O trilho NFC e fechado: ele atende app HCE Android + leitor/terminal ChainFX. Ele nao se apresenta como emissor Visa/Mastercard nem roteia POS comum de adquirente.
+O trilho NFC e real e fechado: ele atende app mobile ChainFX + leitor/terminal ChainFX. O backend Go e a fonte de verdade do token, protocolo APDU/TLV, autorizacao, hold, capture e reverse.
 
-1. O app chama `POST /api/nfc/provision` e recebe um token opaco `nfc1...` com TTL curto.
-2. O modulo HCE do Android envia esse token ao leitor via APDU, sem PAN real e sem Track2 estatico.
+1. O app chama `POST /api/mobile/nfc/provision` e recebe um token opaco `nfc1...` com TTL curto.
+2. O app mobile entrega esse token ao leitor via NFC usando AID `F222222222` e tag `DF01`, sem PAN real e sem Track2 estatico.
 3. O leitor chama `POST /api/nfc/authorize` com token, valor BRL, merchant, terminal e idempotency key.
 4. O backend valida HMAC/expiracao do token, busca o saldo NFC da wallet e trava o valor USDT necessario.
 5. Se houver saldo, responde `response_code=00` e status `approved`; se faltar saldo, responde `response_code=51` e status `requires_funding`.
+6. Venda concluida chama `POST /api/nfc/authorizations/{id}/capture`.
+7. Venda cancelada/falha chama `POST /api/nfc/authorizations/{id}/reverse`.
 
 Arquivos principais:
 
 | Arquivo | Responsabilidade |
 | --- | --- |
-| `internal/nfc/token.go` | Emissao e verificacao HMAC do token HCE opaco |
-| `internal/server/nfc_handlers.go` | Endpoints de provisionamento, autorizacao, consulta e funding sandbox |
+| `internal/nfc/token.go` | Emissao e verificacao HMAC do token NFC opaco |
+| `internal/nfc/protocol.go` | Contrato APDU/TLV do cartao digital fechado |
+| `internal/nfc/hce.go` | Applet Go do contrato de cartao digital ChainFX |
+| `internal/server/nfc_handlers.go` | Endpoints de provisionamento, autorizacao, capture, reverse e consulta |
 | `internal/database/nfc.go` | Persistencia transacional de tokens, saldos e autorizacoes |
 | `migrations/020_nfc_closed_loop.sql` | Schema do trilho NFC fechado |
 
@@ -247,14 +251,18 @@ GET  /v1/gas/sweeper/runs
 ### NFC Closed-Loop
 
 ```http
+GET  /api/mobile/nfc/card
+POST /api/mobile/nfc/provision
 POST /api/nfc/provision
 POST /api/nfc/authorize
 GET  /api/nfc/authorizations/{id}
+POST /api/nfc/authorizations/{id}/capture
+POST /api/nfc/authorizations/{id}/reverse
 GET  /api/nfc/balance/{wallet}?network=BSC
 POST /api/nfc/sandbox/fund
 ```
 
-`/api/nfc/sandbox/fund` so funciona com `ALLOW_SIMULATIONS=true`. Em producao, o saldo NFC deve vir de deposito/escrow on-chain reconciliado pelo backend.
+`/api/mobile/nfc/provision` e o caminho normal do app. `/api/nfc/authorize`, `capture` e `reverse` sao chamadas de terminal/leitor ChainFX. `/api/nfc/sandbox/fund` so funciona com `ALLOW_SIMULATIONS=true`; em producao, o saldo NFC deve vir de deposito/escrow on-chain reconciliado pelo backend.
 
 ### Quote
 
