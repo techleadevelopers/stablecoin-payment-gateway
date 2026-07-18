@@ -306,7 +306,7 @@ func (ow *OnchainWorker) matchM2MDeposit(ctx context.Context, network onchainNet
 	)
 	depositUSDT, _ := new(big.Float).Quo(new(big.Float).SetInt(rawAmount), divisor).Float64()
 
-	candidates, err := ow.db.FindPendingIntentsByDepositAddress(matchCtx, depositAddress)
+	candidates, err := ow.db.FindPendingIntentsByDepositAddress(matchCtx, depositAddress, network.Name)
 	if err != nil {
 		slog.Warn("OnchainWorker: erro ao buscar M2M intents", "tx", txHash, "err", err)
 		return
