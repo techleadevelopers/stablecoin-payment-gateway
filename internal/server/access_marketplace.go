@@ -32,7 +32,7 @@ func (s *Server) handleAIServicesWellKnown(w http.ResponseWriter, r *http.Reques
 		return map[string]any{
 			"name":        "ChainFX Agent Liquidity Rail",
 			"version":     "1.0",
-			"description": "AI agents can acquire API access, execute BSC stablecoin liquidity trades, and create M2M PIX or credit-card payment intents funded with USDT.",
+			"description": "AI agents can acquire API access, execute BSC/Polygon stablecoin liquidity trades, and create M2M PIX or credit-card payment intents funded with USDT.",
 			"capabilities": []string{
 				"crypto_purchase",
 				"crypto_sale",
@@ -45,12 +45,7 @@ func (s *Server) handleAIServicesWellKnown(w http.ResponseWriter, r *http.Reques
 				"capability_compositions",
 				"agent_planner",
 			},
-			"networks": []map[string]any{{
-				"chain":        "BSC",
-				"chainId":      56,
-				"assets":       []string{"USDT", "USDC"},
-				"legacyAssets": []string{"BUSD"},
-			}},
+			"networks": s.stablecoinPaymentNetworks(),
 			"api": map[string]string{
 				"baseUrl":      base + "/agent/v1",
 				"capabilities": base + "/agent/v1/capabilities",
@@ -69,8 +64,8 @@ func (s *Server) handleAIServicesWellKnown(w http.ResponseWriter, r *http.Reques
 			},
 			"payment": map[string]any{
 				"asset":          "USDT",
-				"network":        "BSC",
-				"chainId":        56,
+				"defaultNetwork": "BSC",
+				"networks":       s.stablecoinPaymentNetworks(),
 				"gatewayFeeBps":  agentGatewayFeeBps,
 				"gatewayFeeNote": "ChainFX keeps 6%; providers receive 94%. Example: 10 USDT -> ChainFX 0.60, provider 9.40.",
 			},
@@ -94,17 +89,18 @@ func (s *Server) handleAIServicesWellKnown(w http.ResponseWriter, r *http.Reques
 				"quote":         base + "/agent/v1/trade/quote",
 				"execute":       base + "/agent/v1/trade/execute",
 				"assets":        base + "/agent/v1/assets",
-				"supportedFlow": "enabled BSC stablecoin pairs with different symbols",
+				"supportedFlow": "enabled BSC/Polygon stablecoin pairs with different symbols",
 				"feeBps":        agentGatewayFeeBps,
 			},
 			"agentPayments": map[string]any{
-				"create":         base + "/agent/v1/pay",
-				"status":         base + "/agent/v1/pay/{id}",
-				"types":          []string{"pix", "credit_card"},
-				"fundingAsset":   "USDT",
-				"fundingNetwork": "BSC",
-				"feesBps":        map[string]int{"pix": s.cfg.M2MPixFeeBps, "credit_card": s.cfg.M2MCreditFeeBps},
-				"flow":           "agent creates intent -> deposits required_usdt to payment_address -> ChainFX settles PIX/card recipient",
+				"create":                base + "/agent/v1/pay",
+				"status":                base + "/agent/v1/pay/{id}",
+				"types":                 []string{"pix", "credit_card"},
+				"fundingAsset":          "USDT",
+				"defaultFundingNetwork": "BSC",
+				"fundingNetworks":       s.stablecoinPaymentNetworks(),
+				"feesBps":               map[string]int{"pix": s.cfg.M2MPixFeeBps, "credit_card": s.cfg.M2MCreditFeeBps},
+				"flow":                  "agent creates intent -> deposits required_usdt to payment_address -> ChainFX settles PIX/card recipient",
 			},
 		}, nil
 	})
@@ -123,7 +119,7 @@ func (s *Server) handleAgentCapabilities(w http.ResponseWriter, r *http.Request)
 		"version":     "1.0",
 		"capabilities": []map[string]any{{
 			"id":          "stablecoin_exchange",
-			"description": "Swap enabled BSC stablecoin symbols using ChainFX liquidity and treasury settlement.",
+			"description": "Swap enabled BSC/Polygon stablecoin symbols using ChainFX liquidity and treasury settlement.",
 			"quote":       base + "/agent/v1/trade/quote",
 			"execute":     base + "/agent/v1/trade/execute",
 			"status":      base + "/agent/v1/trade/{id}",
@@ -133,7 +129,7 @@ func (s *Server) handleAgentCapabilities(w http.ResponseWriter, r *http.Request)
 			"name":        "agent_payments",
 			"status":      "available",
 			"version":     "v1",
-			"description": "Create M2M payment intents for PIX or credit-card bills. The agent funds the intent with BSC USDT and ChainFX settles the fiat recipient.",
+			"description": "Create M2M payment intents for PIX or credit-card bills. The agent funds the intent with BSC or Polygon USDT and ChainFX settles the fiat recipient.",
 			"create":      base + "/agent/v1/pay",
 			"statusUrl":   base + "/agent/v1/pay/{id}",
 			"types":       []string{"pix", "credit_card"},
@@ -143,7 +139,7 @@ func (s *Server) handleAgentCapabilities(w http.ResponseWriter, r *http.Request)
 			"name":        "marketplace_api_purchase",
 			"status":      "available",
 			"version":     "v1",
-			"description": "Buy premium API products and digital capabilities with BSC USDT/USDC payment intents.",
+			"description": "Buy premium API products and digital capabilities with BSC or Polygon USDT/USDC payment intents.",
 			"products":    base + "/marketplace/products",
 			"purchase":    base + "/marketplace/purchase",
 			"execute":     base + "/marketplace/purchase/{id}/execute",
@@ -290,18 +286,28 @@ func (s *Server) handleAgentCapabilities(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleX402WellKnown(w http.ResponseWriter, r *http.Request) {
 	base := publicBaseURL(r)
+	accepts := []map[string]any{{
+		"asset":   "USDT",
+		"network": "BSC",
+		"chainId": 56,
+		"address": s.accessPaymentAddress(),
+	}}
+	if s.cfg != nil && strings.TrimSpace(s.cfg.PolygonRpcUrls) != "" && common.IsHexAddress(s.cfg.PolygonUsdtContract) {
+		accepts = append(accepts, map[string]any{
+			"asset":    "USDT",
+			"network":  "POLYGON",
+			"chainId":  137,
+			"address":  s.accessPaymentAddress(),
+			"contract": strings.ToLower(s.cfg.PolygonUsdtContract),
+		})
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"x402Version": "chainfx-m2m-0.1",
 		"seller":      "ChainFX",
-		"accepts": []map[string]any{{
-			"asset":   "USDT",
-			"network": "BSC",
-			"chainId": 56,
-			"address": s.accessPaymentAddress(),
-		}},
+		"accepts":     accepts,
 		"resources": []map[string]any{{
 			"path":         "/x402/capabilities/{capability}/execute",
-			"description":  "Execute digital capabilities with HTTP 402 payment challenge. First call returns payment_requirements; replay with PAYMENT header after BSC stablecoin transfer.",
+			"description":  "Execute digital capabilities with HTTP 402 payment challenge. First call returns payment_requirements; replay with PAYMENT header after BSC or Polygon stablecoin transfer.",
 			"capabilities": base + "/marketplace/capabilities",
 			"pricing":      "exact",
 			"replayHeader": "PAYMENT",
@@ -311,7 +317,7 @@ func (s *Server) handleX402WellKnown(w http.ResponseWriter, r *http.Request) {
 			"quote":       base + "/v1/access/quote",
 		}, {
 			"path":        "/agent/v1/trade/execute",
-			"description": "Machine-to-machine liquidity rail: agent pays one enabled BSC stablecoin and receives another enabled BSC stablecoin.",
+			"description": "Machine-to-machine liquidity rail: agent pays one enabled BSC/Polygon stablecoin and receives another enabled stablecoin on the same network.",
 			"quote":       base + "/agent/v1/trade/quote",
 			"assets":      base + "/agent/v1/assets",
 		}},
