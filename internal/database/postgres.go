@@ -2312,7 +2312,11 @@ VALUES
   ('plan_fx_400', 'prod_fx_enterprise', 'enterprise-400', 'Enterprise Pack', 400.000000, 'USDT', 'BSC', 2000, 100000, 2592000, 'active'),
   ('plan_ocr_80', 'prod_ocr_enterprise', 'enterprise-80', 'Enterprise Pack', 80.000000, 'USDT', 'BSC', 2000, 1000, 2592000, 'active'),
   ('plan_aml_600', 'prod_aml_screening', 'enterprise-600', 'Enterprise Pack', 600.000000, 'USDT', 'BSC', 2000, 10000, 2592000, 'active'),
-  ('plan_gpt_300', 'prod_gpt_business', 'business-300', 'Business Credits', 300.000000, 'USDT', 'BSC', 2000, 100000, 2592000, 'active')
+  ('plan_gpt_300', 'prod_gpt_business', 'business-300', 'Business Credits', 300.000000, 'USDT', 'BSC', 2000, 100000, 2592000, 'active'),
+  ('plan_fx_400_polygon', 'prod_fx_enterprise', 'enterprise-400-polygon', 'Enterprise Pack Polygon', 400.000000, 'USDT', 'POLYGON', 2000, 100000, 2592000, 'active'),
+  ('plan_ocr_80_polygon', 'prod_ocr_enterprise', 'enterprise-80-polygon', 'Enterprise Pack Polygon', 80.000000, 'USDT', 'POLYGON', 2000, 1000, 2592000, 'active'),
+  ('plan_aml_600_polygon', 'prod_aml_screening', 'enterprise-600-polygon', 'Enterprise Pack Polygon', 600.000000, 'USDT', 'POLYGON', 2000, 10000, 2592000, 'active'),
+  ('plan_gpt_300_polygon', 'prod_gpt_business', 'business-300-polygon', 'Business Credits Polygon', 300.000000, 'USDT', 'POLYGON', 2000, 100000, 2592000, 'active')
 ON CONFLICT (id) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS worker_dlq (
