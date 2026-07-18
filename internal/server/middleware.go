@@ -233,7 +233,7 @@ func cors(cfg *config.Config, next http.Handler) http.Handler {
 	}
 	allowed := strings.Split(allowedOrigins, ",")
 	allowed = append(allowed, "http://localhost:5173", "http://127.0.0.1:5173", "https://swapped-cryptocurrensy.vercel.app", "https://www.chainfx.store", "https://chainfx.store", "https://chatgpt.com", "https://chat.openai.com", "https://codex.openai.com")
-	allowedHeaders := "Content-Type, Authorization, PAYMENT, Payment, PAYMENT-SIGNATURE, X-Payment, X-Api-Key, X-Admin-Console-Key, X-Request-Id, X-Correlation-Id, X-Trace-Id, x-internal-hmac, x-idempotency-key, x-efi-signature, x-chainfx-signature"
+	allowedHeaders := "Content-Type, Authorization, PAYMENT, Payment, PAYMENT-SIGNATURE, X-Payment, X-Api-Key, X-Admin-Console-Key, X-Request-Id, X-Correlation-Id, X-Trace-Id, X-Agent-ID, X-Agent-Id, X-Client-Agent, X-Agent-Signature, X-Agent-Card-Signature, MCP-Agent-ID, MCP-Agent-Signature, x-internal-hmac, x-idempotency-key, x-efi-signature, x-chainfx-signature"
 	allowedMethods := "GET, POST, PATCH, DELETE, OPTIONS"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -430,18 +430,18 @@ func (s *Server) withDeveloperRequestLog(next http.Handler) http.Handler {
 			apiKeyHash = auth.APIKeyLogHash
 		}
 		s.enqueueAPIRequestLog(database.APIRequestLogInput{
-			RequestID:   requestID(r),
-			Method:      r.Method,
-			Path:        r.URL.Path,
-			RouteClass:  smartRateLimitRouteClass(r),
-			StatusCode:  status,
-			DurationMS:  duration.Milliseconds(),
-			APIKeyHash:  apiKeyHash,
-			APIKeyScope: scope,
-			AuthMode:    authMode,
-			ClientIP:    clientIP(r),
-			UserAgent:   r.UserAgent(),
-			AgentID:     requestAgentID(r),
+			RequestID:    requestID(r),
+			Method:       r.Method,
+			Path:         r.URL.Path,
+			RouteClass:   smartRateLimitRouteClass(r),
+			StatusCode:   status,
+			DurationMS:   duration.Milliseconds(),
+			APIKeyHash:   apiKeyHash,
+			APIKeyScope:  scope,
+			AuthMode:     authMode,
+			ClientIP:     clientIP(r),
+			UserAgent:    r.UserAgent(),
+			AgentID:      requestAgentID(r),
 			AgentSigHash: requestAgentSignatureHash(r),
 		})
 	})
