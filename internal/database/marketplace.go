@@ -244,6 +244,9 @@ type AgentCapabilityCreditAccount struct {
 	ExpiresAt             time.Time `json:"expiresAt"`
 	Status                string    `json:"status"`
 	LastPaymentRequiredAt time.Time `json:"lastPaymentRequiredAt,omitempty"`
+	creditLimitMicro      int64
+	creditUsedMicro       int64
+	minTopUpMicro         int64
 }
 
 type AgentCreditPaymentRequiredError struct {
@@ -283,6 +286,23 @@ func (e *AgentCreditPaymentRequiredError) Challenge() map[string]any {
 		"minTopUpUsdt":        e.MinTopUpUSDT,
 		"nextStep":            "create a capability purchase/top-up of at least 20 USDT, pay on-chain, then retry with accessToken",
 	}
+}
+
+func EnforceCapabilityTopUpMinimum(priceAmount, asset, network string) error {
+	priceMicro, err := ParseMicroAmount(priceAmount)
+	if err != nil {
+		return err
+	}
+	const minTopUpMicro int64 = 20_000_000
+	if priceMicro < minTopUpMicro {
+		return &AgentCreditPaymentRequiredError{
+			Asset:        firstNonEmptyDB(strings.TrimSpace(asset), "USDT"),
+			Network:      firstNonEmptyDB(strings.TrimSpace(network), "BSC"),
+			RequiredUSDT: FormatMicroAmount(priceMicro),
+			MinTopUpUSDT: FormatMicroAmount(minTopUpMicro),
+		}
+	}
+	return nil
 }
 
 type MarketplaceRouteCandidate struct {
@@ -669,8 +689,240 @@ func (db *DB) ExecuteMarketplaceCapabilityMock(ctx context.Context, in Marketpla
 	return &MarketplaceCapabilityExecuteResult{Event: event, Grant: grant}, nil
 }
 
+func (db *DB) ExecuteMarketplaceCapabilityWithRiskCredit(ctx context.Context, in MarketplaceCapabilityExecuteInput) (*MarketplaceCapabilityExecuteResult, error) {
+	in.AgentWallet = strings.ToLower(strings.TrimSpace(in.AgentWallet))
+	if in.AgentWallet == "" {
+		return nil, fmt.Errorf("agentWallet obrigatorio para credito de risco")
+	}
+	if strings.TrimSpace(in.IdempotencyKey) == "" || strings.TrimSpace(in.RequestID) == "" {
+		return nil, fmt.Errorf("requestId e idempotencyKey obrigatorios")
+	}
+	if in.Units <= 0 {
+		in.Units = 1
+	}
+	in.CapabilityID = strings.TrimSpace(in.CapabilityID)
+	in.Operation = firstNonEmptyDB(strings.TrimSpace(in.Operation), "execute")
+
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	if existing, err := db.getMarketplaceExecutionByIdempotencyTx(ctx, tx, in.IdempotencyKey); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return &MarketplaceCapabilityExecuteResult{Event: existing, Duplicate: true}, tx.Commit()
+	}
+
+	route, err := db.selectMarketplaceRouteTx(ctx, tx, in)
+	if err != nil {
+		return nil, err
+	}
+	product, plan, err := db.cheapestMarketplaceCapabilityPlanTx(ctx, tx, route.CapabilityID)
+	if err != nil {
+		return nil, err
+	}
+	priceMicro, err := ParseMicroAmount(plan.PriceAmount)
+	if err != nil {
+		return nil, err
+	}
+	unitCostMicro := int64(1)
+	if plan.Quota > 0 {
+		unitCostMicro = priceMicro / int64(plan.Quota)
+		if unitCostMicro <= 0 {
+			unitCostMicro = 1
+		}
+	}
+	chargeMicro := unitCostMicro * int64(in.Units)
+	const creditLimitMicro int64 = 5_000_000
+	const minTopUpMicro int64 = 20_000_000
+
+	_, _ = tx.ExecContext(ctx, `
+		INSERT INTO agent_wallets (address, first_seen_at, last_seen_at)
+		VALUES ($1, now(), now())
+		ON CONFLICT (address) DO UPDATE SET last_seen_at = now()`, in.AgentWallet)
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO agent_capability_credit_accounts (
+		  id, agent_wallet, capability_id, asset, network, credit_limit_micro,
+		  credit_used_micro, min_top_up_micro, expires_at, status
+		) VALUES ($1,$2,$3,$4,$5,$6,0,$7,now() + interval '7 days','active')
+		ON CONFLICT (agent_wallet, capability_id, asset, network) DO NOTHING`,
+		"acc_"+strings.ReplaceAll(NewID(), "-", ""), in.AgentWallet, route.CapabilityID, plan.PaymentAsset, plan.Network, creditLimitMicro, minTopUpMicro)
+	if err != nil {
+		return nil, err
+	}
+
+	account, err := scanAgentCapabilityCreditAccount(tx.QueryRowContext(ctx, `
+		SELECT id, agent_wallet, capability_id, asset, network, credit_limit_micro,
+		       credit_used_micro, min_top_up_micro, expires_at, status,
+		       COALESCE(last_payment_required_at, '0001-01-01T00:00:00Z'::timestamptz)
+		FROM agent_capability_credit_accounts
+		WHERE agent_wallet = $1 AND capability_id = $2 AND asset = $3 AND network = $4
+		FOR UPDATE`, in.AgentWallet, route.CapabilityID, plan.PaymentAsset, plan.Network))
+	if err != nil {
+		return nil, err
+	}
+	remainingMicro := account.creditLimitMicro - account.creditUsedMicro
+	if account.Status != "active" || time.Now().UTC().After(account.ExpiresAt) || remainingMicro < chargeMicro {
+		_, _ = tx.ExecContext(ctx, `
+			UPDATE agent_capability_credit_accounts
+			SET last_payment_required_at = now(), updated_at = now()
+			WHERE id = $1`, account.ID)
+		return nil, &AgentCreditPaymentRequiredError{
+			AgentWallet:         in.AgentWallet,
+			CapabilityID:        route.CapabilityID,
+			Asset:               plan.PaymentAsset,
+			Network:             plan.Network,
+			CreditLimitUSDT:     FormatMicroAmount(account.creditLimitMicro),
+			CreditUsedUSDT:      FormatMicroAmount(account.creditUsedMicro),
+			CreditRemainingUSDT: FormatMicroAmount(maxInt64(0, remainingMicro)),
+			RequiredUSDT:        FormatMicroAmount(chargeMicro),
+			MinTopUpUSDT:        FormatMicroAmount(minTopUpMicro),
+		}
+	}
+
+	grant, err := db.ensureRiskCreditGrantTx(ctx, tx, in.AgentWallet, route.CapabilityID, product.ID, plan.ID, int(creditLimitMicro/unitCostMicro))
+	if err != nil {
+		return nil, err
+	}
+	_, err = tx.ExecContext(ctx, `
+		UPDATE agent_capability_credit_accounts
+		SET credit_used_micro = credit_used_micro + $2, updated_at = now()
+		WHERE id = $1`, account.ID, chargeMicro)
+	if err != nil {
+		return nil, err
+	}
+	remainingMicro -= chargeMicro
+	quotaRemaining := int(remainingMicro / unitCostMicro)
+	metadata, _ := json.Marshal(map[string]any{
+		"source":           "mcp_risk_credit",
+		"chargeUsdt":       FormatMicroAmount(chargeMicro),
+		"unitCostUsdt":     FormatMicroAmount(unitCostMicro),
+		"creditLimitUsdt":  FormatMicroAmount(creditLimitMicro),
+		"minTopUpUsdt":     FormatMicroAmount(minTopUpMicro),
+		"creditTtlSeconds": 604800,
+	})
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO api_usage_events (id, grant_id, product_id, units, request_hash, idempotency_key, metadata)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		NewID(), grant.ID, product.ID, in.Units, in.RequestID, in.IdempotencyKey, json.RawMessage(metadata))
+	if err != nil {
+		return nil, err
+	}
+	output := marketplaceMockOutput(route.CapabilityID, in.Operation, route.ProviderSlug)
+	event := &MarketplaceCapabilityExecution{
+		ID:             "mpe_" + strings.ReplaceAll(NewID(), "-", ""),
+		CapabilityID:   route.CapabilityID,
+		Operation:      in.Operation,
+		ProviderSlug:   route.ProviderSlug,
+		ProviderName:   route.ProviderName,
+		RouteName:      route.RouteName,
+		RoutingMode:    route.RoutingMode,
+		Status:         "credit_completed",
+		UnitsConsumed:  in.Units,
+		QuotaRemaining: quotaRemaining,
+		RequestID:      in.RequestID,
+		IdempotencyKey: in.IdempotencyKey,
+		Input:          normalizeJSONRaw(in.Input, `{}`),
+		Output:         output,
+		CreatedAt:      time.Now().UTC(),
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO marketplace_execution_events (
+		  id, capability_id, grant_id, product_id, provider_slug, provider_name, route_name,
+		  routing_mode, operation, request_id, idempotency_key, units_consumed,
+		  quota_remaining, status, input_json, output_json
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		event.ID, event.CapabilityID, grant.ID, product.ID, event.ProviderSlug, event.ProviderName,
+		event.RouteName, event.RoutingMode, event.Operation, event.RequestID, event.IdempotencyKey,
+		event.UnitsConsumed, event.QuotaRemaining, event.Status, event.Input, event.Output)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	account.creditUsedMicro += chargeMicro
+	return &MarketplaceCapabilityExecuteResult{Event: event, Grant: grant, Credit: account}, nil
+}
+
 func (db *DB) CompleteMarketplaceExecution(ctx context.Context, eventID, status string, output json.RawMessage) error {
 	return db.CompleteMarketplaceExecutionMetrics(ctx, eventID, status, output, 0, "", "")
+}
+
+func (db *DB) cheapestMarketplaceCapabilityPlanTx(ctx context.Context, tx *sql.Tx, capabilityID string) (*MarketplaceProduct, *MarketplacePlan, error) {
+	row := tx.QueryRowContext(ctx, marketplacePlanBundleSelect()+`
+		WHERE (p.capability_id = $1 OR p.capability = $1)
+		  AND pl.status = 'active' AND p.status = 'active' AND pr.status = 'active'
+		ORDER BY pl.price_amount ASC, pl.id ASC
+		LIMIT 1`, strings.TrimSpace(capabilityID))
+	product, _, plan, err := db.getMarketplacePlanBundleScanner(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil, fmt.Errorf("capability sem plano ativo")
+		}
+		return nil, nil, err
+	}
+	return product, plan, nil
+}
+
+func (db *DB) ensureRiskCreditGrantTx(ctx context.Context, tx *sql.Tx, wallet, capabilityID, productID, planID string, quota int) (*APIAccessGrant, error) {
+	if quota <= 0 {
+		quota = 1
+	}
+	wallet = strings.ToLower(strings.TrimSpace(wallet))
+	tokenHash := db.accessTokenHash("risk_credit:" + wallet + ":" + strings.TrimSpace(capabilityID))
+	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO api_access_grants (
+		  id, payment_id, purchase_id, plan_id, product_id, buyer_wallet, access_token_hash,
+		  quota_total, quota_remaining, quota_used, valid_from, expires_at, status
+		) VALUES ($1,NULL,NULL,$2,$3,$4,$5,$6,$6,0,now(),$7,$8)
+		ON CONFLICT (access_token_hash) DO UPDATE SET
+		  plan_id = EXCLUDED.plan_id,
+		  product_id = EXCLUDED.product_id,
+		  quota_total = GREATEST(api_access_grants.quota_total, EXCLUDED.quota_total),
+		  expires_at = GREATEST(api_access_grants.expires_at, EXCLUDED.expires_at),
+		  status = 'active',
+		  updated_at = now()`,
+		NewID(), planID, productID, wallet, tokenHash, quota, expiresAt, GrantStatusActive)
+	if err != nil {
+		return nil, err
+	}
+	grant, err := scanAccessGrant(tx.QueryRowContext(ctx, `
+		SELECT id, COALESCE(payment_id, '00000000-0000-0000-0000-000000000000'::uuid), product_id, buyer_wallet,
+		       quota_total, quota_remaining, expires_at, status, created_at
+		FROM api_access_grants
+		WHERE access_token_hash = $1
+		FOR UPDATE`, tokenHash))
+	if err != nil {
+		return nil, err
+	}
+	return grant, nil
+}
+
+func scanAgentCapabilityCreditAccount(row rowScanner) (*AgentCapabilityCreditAccount, error) {
+	var a AgentCapabilityCreditAccount
+	var lastPaymentRequiredAt time.Time
+	if err := row.Scan(&a.ID, &a.AgentWallet, &a.CapabilityID, &a.Asset, &a.Network, &a.creditLimitMicro, &a.creditUsedMicro, &a.minTopUpMicro, &a.ExpiresAt, &a.Status, &lastPaymentRequiredAt); err != nil {
+		return nil, err
+	}
+	a.CreditLimitUSDT = FormatMicroAmount(a.creditLimitMicro)
+	a.CreditUsedUSDT = FormatMicroAmount(a.creditUsedMicro)
+	a.CreditRemainingUSDT = FormatMicroAmount(maxInt64(0, a.creditLimitMicro-a.creditUsedMicro))
+	a.MinTopUpUSDT = FormatMicroAmount(a.minTopUpMicro)
+	if !lastPaymentRequiredAt.IsZero() && lastPaymentRequiredAt.Year() > 1 {
+		a.LastPaymentRequiredAt = lastPaymentRequiredAt
+	}
+	return &a, nil
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (db *DB) CompleteMarketplaceExecutionMetrics(ctx context.Context, eventID, status string, output json.RawMessage, latencyMS int, errorCode, errorMessage string) error {
@@ -852,6 +1104,9 @@ func (db *DB) CreateMarketplacePurchase(ctx context.Context, in MarketplacePurch
 	}
 	if plan == nil || product == nil || provider == nil {
 		return nil, nil, nil, fmt.Errorf("plano nao encontrado")
+	}
+	if err := EnforceCapabilityTopUpMinimum(plan.PriceAmount, plan.PaymentAsset, plan.Network); err != nil {
+		return nil, nil, nil, err
 	}
 	gross, err := ParseMicroAmount(plan.PriceAmount)
 	if err != nil {
