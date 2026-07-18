@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -93,6 +94,35 @@ func TestMCPInitializeRouteUsesAPIKeyAuth(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"chainfx-mcp"`) {
 		t.Fatalf("expected MCP server info in response, got %s", rec.Body.String())
+	}
+}
+
+func TestAuthorizeChainFXAllowsAnonymousMCPAIOnly(t *testing.T) {
+	s := &Server{cfg: &config.Config{Environment: "production", ChainFXRequireAPIKey: true}}
+	req := httptest.NewRequest(http.MethodPost, "/mcp/tools/call", strings.NewReader(`{"name":"market_analysis","arguments":{}}`))
+	rec := httptest.NewRecorder()
+	auth, ok := s.authorizeChainFX(rec, req)
+	if !ok {
+		t.Fatalf("expected anonymous MCP AI probe to pass, got status %d body %s", rec.Code, rec.Body.String())
+	}
+	if auth.Mode != "anonymous-mcp-ai" {
+		t.Fatalf("expected anonymous-mcp-ai mode, got %q", auth.Mode)
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"market_analysis"`) {
+		t.Fatalf("expected authorize to restore request body, got %s", string(body))
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/mcp/tools/call", strings.NewReader(`{"name":"purchaseCapability","arguments":{}}`))
+	rec = httptest.NewRecorder()
+	if _, ok := s.authorizeChainFX(rec, req); ok {
+		t.Fatal("expected anonymous MCP financial/write tool to remain unauthorized")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body %s", rec.Code, rec.Body.String())
 	}
 }
 
