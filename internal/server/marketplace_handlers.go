@@ -535,6 +535,7 @@ func (s *Server) handleAgentCapabilityExecute(w http.ResponseWriter, r *http.Req
 	var req struct {
 		Operation      string          `json:"operation"`
 		Input          json.RawMessage `json:"input"`
+		AgentWallet    string          `json:"agentWallet"`
 		RequestID      string          `json:"requestId"`
 		Units          int             `json:"units"`
 		IdempotencyKey string          `json:"idempotencyKey"`
@@ -550,9 +551,53 @@ func (s *Server) handleAgentCapabilityExecute(w http.ResponseWriter, r *http.Req
 		return
 	}
 	token := accessBearerToken(r)
+	req.AgentWallet = strings.ToLower(strings.TrimSpace(req.AgentWallet))
 	req.IdempotencyKey = firstNonEmpty(req.IdempotencyKey, r.Header.Get("X-Idempotency-Key"))
-	if token == "" || strings.TrimSpace(req.RequestID) == "" || strings.TrimSpace(req.IdempotencyKey) == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "Bearer access token, requestId e idempotencyKey sao obrigatorios"})
+	if strings.TrimSpace(req.RequestID) == "" || strings.TrimSpace(req.IdempotencyKey) == "" || (token == "" && req.AgentWallet == "") {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "Bearer access token ou agentWallet, requestId e idempotencyKey sao obrigatorios"})
+		return
+	}
+	if token == "" {
+		result, err := s.db.ExecuteMarketplaceCapabilityWithRiskCredit(r.Context(), database.MarketplaceCapabilityExecuteInput{
+			AgentWallet:       req.AgentWallet,
+			CapabilityID:      capabilityID,
+			Operation:         req.Operation,
+			RequestID:         req.RequestID,
+			IdempotencyKey:    req.IdempotencyKey,
+			RequestedProvider: req.Provider,
+			RoutingMode:       req.RoutingMode,
+			Region:            req.Region,
+			MaxLatencyMS:      req.MaxLatencyMS,
+			MaxCostScore:      req.MaxCostScore,
+			RequireReal:       req.RequireReal,
+			Units:             req.Units,
+			Input:             req.Input,
+		})
+		if err != nil {
+			if paymentErr, ok := err.(*database.AgentCreditPaymentRequiredError); ok {
+				writeJSON(w, http.StatusPaymentRequired, paymentErr.Challenge())
+				return
+			}
+			writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": err.Error()})
+			return
+		}
+		if !result.Duplicate {
+			s.promoteRealCapabilityExecution(r.Context(), result.Event)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":             true,
+			"duplicate":      result.Duplicate,
+			"capability":     result.Event.CapabilityID,
+			"operation":      result.Event.Operation,
+			"provider":       result.Event.ProviderSlug,
+			"providerName":   result.Event.ProviderName,
+			"routingMode":    result.Event.RoutingMode,
+			"status":         result.Event.Status,
+			"output":         json.RawMessage(result.Event.Output),
+			"quotaRemaining": result.Event.QuotaRemaining,
+			"credit":         result.Credit,
+			"execution":      result.Event,
+		})
 		return
 	}
 	policy, decision, policyErr := s.db.ValidateAgentExecutionPolicy(r.Context(), token, capabilityID, req.Provider, req.RequireReal)
