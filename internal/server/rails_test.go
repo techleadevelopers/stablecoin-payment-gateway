@@ -308,6 +308,7 @@ func TestSmartRateLimitRouteClasses(t *testing.T) {
 		{http.MethodPost, "/mcp/resources/read", "mcp_resource_read"},
 		{http.MethodGet, "/mcp/capabilities.json", "public_discovery"},
 		{http.MethodGet, "/marketplace/capabilities", "public_discovery"},
+		{http.MethodPost, "/x402/capabilities/document_ocr/execute", "x402_challenge"},
 		{http.MethodPost, "/marketplace/purchase/mp_1/execute", "execution"},
 		{http.MethodPost, "/api/order", "write"},
 		{http.MethodPost, "/api/quote", "read"},
@@ -327,6 +328,9 @@ func TestSmartRateLimitRouteClasses(t *testing.T) {
 	}
 	if got := smartRateLimitMax("anonymous", "read", 100); got != 600 {
 		t.Fatalf("expected anonymous read limit 600 for availability probes, got %d", got)
+	}
+	if got := smartRateLimitMax("anonymous", "x402_challenge", 100); got != 120 {
+		t.Fatalf("expected anonymous x402 challenge limit 120, got %d", got)
 	}
 }
 
@@ -531,7 +535,7 @@ func TestAgentDiscoveryAdvertisesLiquidityRail(t *testing.T) {
 	if !strings.Contains(body, "/agent/v1/trade/quote") {
 		t.Fatalf("expected agent trade quote discovery, got %s", body)
 	}
-	if !strings.Contains(body, "/agent/v1/assets") || !strings.Contains(body, "enabled BSC stablecoin pairs") {
+	if !strings.Contains(body, "/agent/v1/assets") || !strings.Contains(body, "enabled BSC/Polygon stablecoin pairs") {
 		t.Fatalf("expected supported liquidity rail, got %s", body)
 	}
 }
