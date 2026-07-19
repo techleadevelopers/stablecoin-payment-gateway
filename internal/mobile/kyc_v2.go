@@ -22,15 +22,16 @@ import (
 func (s *Server) handleKYCSubmit(w http.ResponseWriter, r *http.Request) {
 	uid := userIDFromCtx(r)
 	var req struct {
-		Level            int    `json:"level"`         // 1, 2 or 3
-		DocumentType     string `json:"document_type"` // rg, cnh, passport
-		DocumentURL      string `json:"document_url"`
-		DocumentFrontURL string `json:"document_front_url"`
-		DocumentBackURL  string `json:"document_back_url"`
-		SelfieURL        string `json:"selfie_url"`
-		FacialVideoURL   string `json:"facial_video_url"`
-		ProofAddrURL     string `json:"proof_of_address_url"`
-		ProofIncURL      string `json:"proof_of_income_url"`
+		Level             int    `json:"level"`         // 1, 2 or 3
+		DocumentType      string `json:"document_type"` // rg, cnh, passport
+		DocumentURL       string `json:"document_url"`
+		DocumentFrontURL  string `json:"document_front_url"`
+		DocumentBackURL   string `json:"document_back_url"`
+		SelfieURL         string `json:"selfie_url"`
+		FacialVideoURL    string `json:"facial_video_url"`
+		ProofAddrURL      string `json:"proof_of_address_url"`
+		ProofIncURL       string `json:"proof_of_income_url"`
+		DeviceFingerprint string `json:"device_fingerprint"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "payload inválido"})
@@ -43,11 +44,14 @@ func (s *Server) handleKYCSubmit(w http.ResponseWriter, r *http.Request) {
 	if req.DocumentURL == "" {
 		req.DocumentURL = req.DocumentFrontURL
 	}
+	if req.SelfieURL == "" {
+		req.SelfieURL = req.FacialVideoURL
+	}
 
 	// Validate required fields per level
-	if req.Level >= 1 && (req.DocumentURL == "" || req.SelfieURL == "") {
+	if req.Level >= 1 && (req.DocumentURL == "" || req.DocumentBackURL == "" || req.FacialVideoURL == "") {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "Level 1 requer document_url e selfie_url",
+			"error": "Level 1 requer frente, verso e video facial",
 		})
 		return
 	}
@@ -90,9 +94,12 @@ func (s *Server) handleKYCSubmit(w http.ResponseWriter, r *http.Request) {
 	// Publish event so KYCWorker can pick it up immediately (async, non-blocking)
 	if s.workers != nil {
 		s.workers.Bus.Publish(workerEvent("kyc.submitted", map[string]any{
-			"kyc_request_id": kyc.ID,
-			"user_id":        uid,
-			"level":          req.Level,
+			"kyc_request_id":     kyc.ID,
+			"user_id":            uid,
+			"level":              req.Level,
+			"ip":                 clientIP(r),
+			"user_agent":         r.UserAgent(),
+			"device_fingerprint": req.DeviceFingerprint,
 		}))
 	}
 
