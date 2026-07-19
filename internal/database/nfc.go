@@ -2,11 +2,16 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
+
+var ErrNFCIdempotencyPayloadMismatch = errors.New("nfc: idempotency payload mismatch")
 
 const (
 	NFCStatusApproved        = "approved"
@@ -78,6 +83,121 @@ type NFCBalance struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+type NFCTerminalPolicy struct {
+	MerchantID         string `json:"merchant_id"`
+	TerminalID         string `json:"terminal_id"`
+	MerchantStatus     string `json:"merchant_status"`
+	TerminalStatus     string `json:"terminal_status"`
+	MaxAmountBRLMinor  int64  `json:"max_amount_brl_minor"`
+	DailyLimitBRLMinor int64  `json:"daily_limit_brl_minor"`
+	RiskPolicyVersion  string `json:"risk_policy_version"`
+	SettlementPixKey   string `json:"settlement_pix_key,omitempty"`
+	SettlementDocument string `json:"settlement_document,omitempty"`
+}
+
+type NFCTerminalSeed struct {
+	MerchantID         string
+	TerminalID         string
+	APIKey             string
+	MerchantName       string
+	MaxAmountBRLMinor  int64
+	DailyLimitBRLMinor int64
+}
+
+func (db *DB) SeedNFCTerminals(ctx context.Context, spec string) error {
+	for _, item := range strings.Split(spec, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		parts := strings.Split(item, ":")
+		if len(parts) < 3 {
+			return fmt.Errorf("nfc: invalid NFC_TERMINALS entry")
+		}
+		in := NFCTerminalSeed{
+			MerchantID:   strings.TrimSpace(parts[0]),
+			TerminalID:   strings.TrimSpace(parts[1]),
+			APIKey:       strings.TrimSpace(parts[2]),
+			MerchantName: strings.TrimSpace(parts[0]),
+		}
+		if len(parts) >= 4 {
+			in.MerchantName = strings.TrimSpace(parts[3])
+		}
+		if err := db.UpsertNFCTerminal(ctx, in); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *DB) UpsertNFCTerminal(ctx context.Context, in NFCTerminalSeed) error {
+	merchantID := strings.TrimSpace(in.MerchantID)
+	terminalID := strings.TrimSpace(in.TerminalID)
+	apiKey := strings.TrimSpace(in.APIKey)
+	if merchantID == "" || terminalID == "" || apiKey == "" {
+		return fmt.Errorf("nfc: merchant_id, terminal_id and api key are required")
+	}
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO nfc_merchants (id, display_name, status)
+VALUES ($1,$2,'active')
+ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name, updated_at=NOW()`,
+		merchantID, firstNonEmptyDB(in.MerchantName, merchantID)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO nfc_terminals
+  (id, merchant_id, api_key_hash, status, max_amount_brl_minor, daily_limit_brl_minor)
+VALUES ($1,$2,$3,'active',$4,$5)
+ON CONFLICT (merchant_id, id) DO UPDATE SET
+  api_key_hash=EXCLUDED.api_key_hash,
+  status='active',
+  max_amount_brl_minor=EXCLUDED.max_amount_brl_minor,
+  daily_limit_brl_minor=EXCLUDED.daily_limit_brl_minor,
+  updated_at=NOW()`,
+		terminalID, merchantID, nfcAPIKeyHash(apiKey), in.MaxAmountBRLMinor, in.DailyLimitBRLMinor); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (db *DB) ValidateNFCTerminal(ctx context.Context, merchantID, terminalID, apiKey string) (*NFCTerminalPolicy, error) {
+	merchantID = strings.TrimSpace(merchantID)
+	terminalID = strings.TrimSpace(terminalID)
+	apiKey = strings.TrimSpace(apiKey)
+	if merchantID == "" || terminalID == "" || apiKey == "" {
+		return nil, nil
+	}
+	const q = `
+SELECT m.id, t.id, m.status, t.status, t.max_amount_brl_minor, t.daily_limit_brl_minor,
+       t.risk_policy_version, COALESCE(m.settlement_pix_key,''), COALESCE(m.settlement_document,'')
+FROM nfc_terminals t
+JOIN nfc_merchants m ON m.id = t.merchant_id
+WHERE t.merchant_id = $1 AND t.id = $2 AND t.api_key_hash = $3`
+	var p NFCTerminalPolicy
+	err := db.SQL.QueryRowContext(ctx, q, merchantID, terminalID, nfcAPIKeyHash(apiKey)).Scan(
+		&p.MerchantID, &p.TerminalID, &p.MerchantStatus, &p.TerminalStatus,
+		&p.MaxAmountBRLMinor, &p.DailyLimitBRLMinor, &p.RiskPolicyVersion,
+		&p.SettlementPixKey, &p.SettlementDocument,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+func nfcAPIKeyHash(key string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(key)))
+	return hex.EncodeToString(sum[:])
+}
+
 func (db *DB) StoreNFCToken(ctx context.Context, in NFCTokenInput) error {
 	_, err := db.SQL.ExecContext(ctx, `
 INSERT INTO nfc_tokens (token_id, token_hash, wallet_address, device_id, network, status, expires_at)
@@ -135,9 +255,12 @@ func (db *DB) AuthorizeNFCPayment(ctx context.Context, in NFCAuthorizeInput) (*N
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	if existing, err := txGetNFCAuthorizationByIdempotency(ctx, tx, in.IdempotencyKey); err != nil {
+	if existing, err := txGetNFCAuthorizationByIdempotency(ctx, tx, in.TerminalID, in.IdempotencyKey); err != nil {
 		return nil, false, err
 	} else if existing != nil {
+		if !sameNFCAuthorizationPayload(existing, in) {
+			return nil, false, ErrNFCIdempotencyPayloadMismatch
+		}
 		existing.Idempotent = true
 		return existing, true, tx.Commit()
 	}
@@ -330,18 +453,32 @@ RETURNING id, idempotency_key, token_id, wallet_address, network, merchant_id, t
 	return auth, false, tx.Commit()
 }
 
-func txGetNFCAuthorizationByIdempotency(ctx context.Context, tx *sql.Tx, key string) (*NFCAuthorization, error) {
+func txGetNFCAuthorizationByIdempotency(ctx context.Context, tx *sql.Tx, terminalID, key string) (*NFCAuthorization, error) {
 	const q = `
 SELECT id, idempotency_key, token_id, wallet_address, network, merchant_id, terminal_id, COALESCE(external_ref,''),
        amount_brl_minor, usdt_rate::float8, required_usdt_micro, status, response_code, COALESCE(reason,''),
        hold_expires_at, created_at, updated_at
 FROM nfc_authorizations
-WHERE idempotency_key = $1`
-	auth, err := scanNFCAuthorization(tx.QueryRowContext(ctx, q, strings.TrimSpace(key)))
+WHERE terminal_id = $1 AND idempotency_key = $2
+FOR UPDATE`
+	auth, err := scanNFCAuthorization(tx.QueryRowContext(ctx, q, strings.TrimSpace(terminalID), strings.TrimSpace(key)))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	return auth, err
+}
+
+func sameNFCAuthorizationPayload(a *NFCAuthorization, in NFCAuthorizeInput) bool {
+	if a == nil {
+		return false
+	}
+	return strings.EqualFold(a.Wallet, in.Wallet) &&
+		normalizeNFCNetwork(a.Network) == normalizeNFCNetwork(in.Network) &&
+		strings.TrimSpace(a.MerchantID) == strings.TrimSpace(in.MerchantID) &&
+		strings.TrimSpace(a.TerminalID) == strings.TrimSpace(in.TerminalID) &&
+		strings.TrimSpace(a.ExternalRef) == strings.TrimSpace(in.ExternalRef) &&
+		a.AmountBRLMinor == in.AmountBRLMinor &&
+		a.RequiredUSDTMic == in.RequiredUSDTMic
 }
 
 func txGetNFCAuthorizationByID(ctx context.Context, tx *sql.Tx, id string) (*NFCAuthorization, error) {
