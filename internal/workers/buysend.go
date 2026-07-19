@@ -26,6 +26,7 @@ type BuySendWorker struct {
 	db     *database.DB
 	cfg    *config.Config
 	client *http.Client
+	sem    chan struct{}
 }
 
 func NewBuySendWorker(bus *EventBus, db *database.DB, cfg *config.Config) *BuySendWorker {
@@ -34,6 +35,7 @@ func NewBuySendWorker(bus *EventBus, db *database.DB, cfg *config.Config) *BuySe
 		db:     db,
 		cfg:    cfg,
 		client: httpclient.Default(),
+		sem:    make(chan struct{}, 8),
 	}
 }
 
@@ -54,13 +56,24 @@ func (bw *BuySendWorker) Start(ctx context.Context) {
 			if !ok {
 				return
 			}
-			bw.dispatch(event)
+			bw.dispatch(ctx, event)
 		}
 	}
 }
 
-func (bw *BuySendWorker) dispatch(event Event) {
+func (bw *BuySendWorker) dispatch(ctx context.Context, event Event) {
+	select {
+	case bw.sem <- struct{}{}:
+	case <-ctx.Done():
+		return
+	}
 	go func() {
+		defer func() {
+			<-bw.sem
+			if r := recover(); r != nil {
+				slog.Error("BuySendWorker: panic em processBuyOnchainSend", "recover", r, "order_id", event.OrderID)
+			}
+		}()
 		bw.processBuyOnchainSend(event)
 	}()
 }
@@ -74,7 +87,7 @@ func (bw *BuySendWorker) recoverPendingBuys(ctx context.Context) {
 		return
 	}
 	for _, buy := range buys {
-		bw.dispatch(Event{Type: "buy.recovery", OrderID: buy.ID})
+		bw.dispatch(ctx, Event{Type: "buy.recovery", OrderID: buy.ID})
 	}
 	if len(buys) > 0 {
 		slog.Info("Recovery BUY varreu ordens pagas pendentes", "count", len(buys))
