@@ -35,6 +35,7 @@ type M2MSettlementWorker struct {
 	cfg    *config.Config
 	client *http.Client
 	dlq    *DeadLetterQueue
+	sem    chan struct{}
 }
 
 func NewM2MSettlementWorker(bus *EventBus, db *database.DB, cfg *config.Config) *M2MSettlementWorker {
@@ -44,6 +45,7 @@ func NewM2MSettlementWorker(bus *EventBus, db *database.DB, cfg *config.Config) 
 		cfg:    cfg,
 		client: httpclient.Default(),
 		dlq:    NewPersistentDLQ(db, 1000),
+		sem:    make(chan struct{}, 8),
 	}
 }
 
@@ -67,12 +69,29 @@ func (w *M2MSettlementWorker) Start(ctx context.Context) {
 			if !ok {
 				return
 			}
-			go w.settleOne(ctx, ev.OrderID) // OrderID field reused as intentID
+			w.dispatchSettle(ctx, ev.OrderID) // OrderID field reused as intentID
 
 		case <-ticker.C:
 			w.sweepPaidCrypto(ctx)
 		}
 	}
+}
+
+func (w *M2MSettlementWorker) dispatchSettle(ctx context.Context, intentID string) {
+	select {
+	case w.sem <- struct{}{}:
+	case <-ctx.Done():
+		return
+	}
+	go func() {
+		defer func() {
+			<-w.sem
+			if r := recover(); r != nil {
+				slog.Error("M2MSettlement: panic em settleOne", "recover", r, "intent_id", intentID)
+			}
+		}()
+		w.settleOne(ctx, intentID)
+	}()
 }
 
 // sweepPaidCrypto fetches all paid_crypto intents and settles each one.
@@ -83,7 +102,7 @@ func (w *M2MSettlementWorker) sweepPaidCrypto(ctx context.Context) {
 		return
 	}
 	for _, intent := range intents {
-		go w.settleOne(ctx, intent.ID)
+		w.dispatchSettle(ctx, intent.ID)
 	}
 }
 
