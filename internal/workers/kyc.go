@@ -289,4 +289,18 @@ CREATE TABLE IF NOT EXISTS kyc_analysis_results (
 
 CREATE INDEX IF NOT EXISTS idx_kyc_analysis_results_user_created
   ON kyc_analysis_results(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS kyc_risk_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  event_type TEXT NOT NULL,
+  risk_score INT NOT NULL,
+  request_ip TEXT,
+  device_fingerprint TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_kyc_risk_events_user_created
+  ON kyc_risk_events(user_id, created_at DESC);
 `
