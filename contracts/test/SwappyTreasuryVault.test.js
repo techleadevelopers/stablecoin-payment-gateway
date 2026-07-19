@@ -83,6 +83,52 @@ describe("SwappyTreasuryVault", function () {
     expect(await token.balanceOf(tokenAddress)).to.equal(ethers.parseUnits("1", 18));
   });
 
+  it("reverts when an allowed token returns false", async function () {
+    const { owner, operator, customer, vault } = await deployFixture();
+    const FalseToken = await ethers.getContractFactory("MockFalseReturnERC20");
+    const falseToken = await FalseToken.deploy();
+    await falseToken.waitForDeployment();
+    const falseTokenAddress = await falseToken.getAddress();
+    await falseToken.mint(await vault.getAddress(), ethers.parseUnits("10", 18));
+    await vault.connect(owner).setTokenPolicy(falseTokenAddress, true, ethers.parseUnits("10", 18), ethers.parseUnits("100", 18));
+
+    await expect(
+      vault.connect(operator).payout(ethers.id("false-token"), falseTokenAddress, customer.address, ethers.parseUnits("1", 18))
+    ).to.be.revertedWithCustomError(vault, "TokenTransferFailed");
+  });
+
+  it("supports allowed tokens that do not return a boolean", async function () {
+    const { owner, operator, customer, vault } = await deployFixture();
+    const NoReturnToken = await ethers.getContractFactory("MockNoReturnERC20");
+    const noReturnToken = await NoReturnToken.deploy();
+    await noReturnToken.waitForDeployment();
+    const noReturnTokenAddress = await noReturnToken.getAddress();
+    await noReturnToken.mint(await vault.getAddress(), ethers.parseUnits("10", 18));
+    await vault.connect(owner).setTokenPolicy(noReturnTokenAddress, true, ethers.parseUnits("10", 18), ethers.parseUnits("100", 18));
+
+    await vault.connect(operator).payout(ethers.id("no-return-token"), noReturnTokenAddress, customer.address, ethers.parseUnits("1", 18));
+
+    expect(await noReturnToken.balanceOf(customer.address)).to.equal(ethers.parseUnits("1", 18));
+  });
+
+  it("blocks token-driven reentrancy during payout", async function () {
+    const { owner, operator, customer, vault } = await deployFixture();
+    const ReentrantToken = await ethers.getContractFactory("MockReentrantERC20");
+    const reentrantToken = await ReentrantToken.deploy();
+    await reentrantToken.waitForDeployment();
+    const reentrantTokenAddress = await reentrantToken.getAddress();
+    const vaultAddress = await vault.getAddress();
+    await reentrantToken.mint(vaultAddress, ethers.parseUnits("10", 18));
+    await vault.connect(owner).setTokenPolicy(reentrantTokenAddress, true, ethers.parseUnits("10", 18), ethers.parseUnits("100", 18));
+    await vault.connect(owner).setOperator(reentrantTokenAddress, true);
+    await reentrantToken.configureReentry(vaultAddress, ethers.id("reentrant-inner"), customer.address, true);
+
+    await vault.connect(operator).payout(ethers.id("reentrant-outer"), reentrantTokenAddress, customer.address, ethers.parseUnits("1", 18));
+
+    expect(await reentrantToken.reenterBlocked()).to.equal(true);
+    expect(await reentrantToken.balanceOf(customer.address)).to.equal(ethers.parseUnits("1", 18));
+  });
+
   it("rejects adding an EOA to the contract-recipient allowlist", async function () {
     const { owner, customer, vault } = await deployFixture();
 
