@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"payment-gateway/internal/database"
+	"payment-gateway/internal/transactions"
 )
 
 // handleMobileBuy — POST /api/mobile/order/buy
@@ -148,6 +149,30 @@ func (s *Server) writeDegradedMobileBuy(w http.ResponseWriter, r *http.Request, 
 			"reason":        reason,
 		}))
 	}
+	contract := transactions.Build(transactions.BuildInput{
+		Side:               transactions.SideBuy,
+		OrderID:            buy.ID,
+		SourceAsset:        "BRL",
+		DestinationAsset:   asset,
+		SourceNetwork:      "FIAT",
+		DestinationNetwork: "BSC",
+		DestinationChainID: transactions.ChainID("BSC"),
+		SourceAmount:       totalFiat,
+		DestinationAmount:  cryptoAmount,
+		ExchangeRate:       rate,
+		FeeAmount:          fee,
+		FeeAsset:           "BRL",
+		WalletAddress:      destAddress,
+		TreasuryAddress:    s.cfg.TreasuryHot,
+		PaymentMethod:      "pix",
+		PSPProvider:        "degraded",
+		Status:             transactions.CanonicalBuyStatus(buy.Status),
+		Request:            r,
+		Metadata: map[string]any{
+			"surface": "mobile",
+			"reason":  reason,
+		},
+	})
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"buyId":                buy.ID,
 		"id":                   buy.ID,
@@ -175,8 +200,11 @@ func (s *Server) writeDegradedMobileBuy(w http.ResponseWriter, r *http.Request, 
 			"requiresPaymentRetry": true,
 			"reason":               reason,
 		},
-		"orderUrl":  fmt.Sprintf("/order/%s?accessToken=%s", buy.ID, buy.AccessToken),
-		"statusUrl": fmt.Sprintf("/api/buy/%s?accessToken=%s", buy.ID, buy.AccessToken),
+		"tradeIntent":        contract.Trade,
+		"settlementContract": contract.Settlement,
+		"ledgerContract":     contract.Ledger,
+		"orderUrl":           fmt.Sprintf("/order/%s?accessToken=%s", buy.ID, buy.AccessToken),
+		"statusUrl":          fmt.Sprintf("/api/buy/%s?accessToken=%s", buy.ID, buy.AccessToken),
 	})
 	return true
 }
@@ -340,6 +368,11 @@ func forwardToInternal(r *http.Request, method, url string, payload any, apiKey 
 	if apiKey != "" {
 		first := strings.Split(apiKey, ",")[0]
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(first))
+	}
+	for _, header := range []string{"X-Request-Id", "X-Correlation-Id", "X-Trace-Id", "Traceparent", "Idempotency-Key", "X-Idempotency-Key"} {
+		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
+			req.Header.Set(header, value)
+		}
 	}
 	return http.DefaultClient.Do(req)
 }
