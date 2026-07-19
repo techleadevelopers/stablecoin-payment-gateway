@@ -82,3 +82,23 @@ func TestMobileCORSRejectsUnknownOriginWhenRestricted(t *testing.T) {
 		t.Fatalf("expected no CORS origin for unknown host, got %q", got)
 	}
 }
+
+func TestMobileCORSRejectsWildcardUnknownOriginInProduction(t *testing.T) {
+	t.Setenv("ALLOWED_ORIGINS", "*")
+	s := New(&config.Config{Environment: "production"}, nil, nil)
+	handler := s.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("mobile preflight should not delegate to existing handler")
+	}))
+	req := httptest.NewRequest(http.MethodOptions, "/api/mobile/assets", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("expected no CORS origin for unknown host in production, got %q", got)
+	}
+}
