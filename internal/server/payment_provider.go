@@ -281,17 +281,33 @@ func (s *Server) efiQRCode(ctx context.Context, client *http.Client, token strin
 func (s *Server) efiHTTPClient() (*http.Client, error) {
 	certPath := strings.TrimSpace(s.cfg.EfiCertificatePath)
 	keyPath := strings.TrimSpace(s.cfg.EfiCertificateKey)
+	p12 := strings.Trim(strings.TrimSpace(s.cfg.EfiCertificateP12), `"'`)
+	source := certPath + "\x00" + keyPath + "\x00" + p12 + "\x00" + s.cfg.EfiCertificatePass
+
+	s.efiMu.Lock()
+	if s.efiClient != nil && s.efiClientSource == source {
+		client := s.efiClient
+		s.efiMu.Unlock()
+		return client, nil
+	}
+	s.efiMu.Unlock()
+
 	cert, err := s.loadEfiCertificate(certPath, keyPath)
 	if err != nil {
 		return nil, err
 	}
-	return &http.Client{
+	client := &http.Client{
 		Timeout: 20 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{
 			MinVersion:   tls.VersionTLS12,
 			Certificates: []tls.Certificate{cert},
-		}},
-	}, nil
+		}, MaxIdleConns: 100, MaxIdleConnsPerHost: 20, IdleConnTimeout: 90 * time.Second},
+	}
+	s.efiMu.Lock()
+	s.efiClient = client
+	s.efiClientSource = source
+	s.efiMu.Unlock()
+	return client, nil
 }
 
 // loadEfiCertificate delegates to the shared certutil loader (used by both
@@ -302,6 +318,9 @@ func (s *Server) loadEfiCertificate(certPath, keyPath string) (tls.Certificate, 
 }
 
 func (s *Server) efiAccessToken(ctx context.Context, client *http.Client) (string, error) {
+	if token := s.cachedEfiToken(false); token != "" {
+		return token, nil
+	}
 	raw := []byte(`{"grant_type":"client_credentials"}`)
 	endpoint := strings.TrimRight(s.cfg.EfiApiBaseURL, "/") + "/oauth/token"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
@@ -325,10 +344,14 @@ func (s *Server) efiAccessToken(ctx context.Context, client *http.Client) (strin
 	if err := json.Unmarshal(body, &data); err != nil || strings.TrimSpace(data.AccessToken) == "" {
 		return "", fmt.Errorf("EfÃ­ OAuth respondeu token inválido")
 	}
+	s.storeEfiToken(false, data.AccessToken)
 	return data.AccessToken, nil
 }
 
 func (s *Server) efiBillingAccessToken(ctx context.Context, client *http.Client) (string, error) {
+	if token := s.cachedEfiToken(true); token != "" {
+		return token, nil
+	}
 	raw := []byte(`{"grant_type":"client_credentials"}`)
 	endpoint := strings.TrimRight(s.cfg.EfiChargesBaseURL, "/") + "/v1/authorize"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
@@ -352,7 +375,41 @@ func (s *Server) efiBillingAccessToken(ctx context.Context, client *http.Client)
 	if err := json.Unmarshal(body, &data); err != nil || strings.TrimSpace(data.AccessToken) == "" {
 		return "", fmt.Errorf("Efí Cobranças OAuth respondeu token invalido")
 	}
+	s.storeEfiToken(true, data.AccessToken)
 	return data.AccessToken, nil
+}
+
+func (s *Server) cachedEfiToken(billing bool) string {
+	s.efiMu.Lock()
+	defer s.efiMu.Unlock()
+	now := time.Now().UTC()
+	if billing {
+		if s.efiBillAccessToken != "" && now.Before(s.efiBillAccessTokenExp) {
+			return s.efiBillAccessToken
+		}
+		return ""
+	}
+	if s.efiPixAccessToken != "" && now.Before(s.efiPixAccessTokenExp) {
+		return s.efiPixAccessToken
+	}
+	return ""
+}
+
+func (s *Server) storeEfiToken(billing bool, token string) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return
+	}
+	exp := time.Now().UTC().Add(45 * time.Minute)
+	s.efiMu.Lock()
+	defer s.efiMu.Unlock()
+	if billing {
+		s.efiBillAccessToken = token
+		s.efiBillAccessTokenExp = exp
+		return
+	}
+	s.efiPixAccessToken = token
+	s.efiPixAccessTokenExp = exp
 }
 
 func (s *Server) efiBillingRequest(ctx context.Context, client *http.Client, token, method, path string, payload any) (map[string]any, error) {
