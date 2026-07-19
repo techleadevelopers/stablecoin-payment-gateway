@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"payment-gateway/internal/database"
+	"payment-gateway/internal/transactions"
 	"payment-gateway/internal/workers"
 )
 
@@ -158,14 +159,43 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.db.AddBuyEvent(r.Context(), buy.ID, "buy.meta", map[string]any{"requestId": requestID(r), "ip": clientIP(r), "userAgent": r.UserAgent(), "customer": customerAudit})
 	s.workers.Bus.Publish(workers.Event{Type: "buy.created", OrderID: buy.ID, Payload: map[string]any{"requestId": requestID(r), "amountFiat": totalFiat, "fiatCurrency": fiatCurrency, "paymentMethod": paymentMethod}})
+	contract := transactions.Build(transactions.BuildInput{
+		Side:               transactions.SideBuy,
+		OrderID:            buy.ID,
+		SourceAsset:        fiatCurrency,
+		DestinationAsset:   asset,
+		SourceNetwork:      "FIAT",
+		DestinationNetwork: deliveryNetwork,
+		DestinationChainID: transactions.ChainID(deliveryNetwork),
+		SourceAmount:       totalFiat,
+		DestinationAmount:  cryptoAmount,
+		ExchangeRate:       rate,
+		SpreadBps:          s.cfg.BuyRateSpreadBps,
+		FeeAmount:          fee,
+		FeeAsset:           fiatCurrency,
+		WalletAddress:      strings.TrimSpace(req.Address),
+		TreasuryAddress:    s.cfg.TreasuryHot,
+		PaymentMethod:      paymentMethod,
+		PSPProvider:        "efi",
+		Status:             transactions.CanonicalBuyStatus(status),
+		Request:            r,
+		Metadata: map[string]any{
+			"surface":           "api",
+			"rateLockExpiresAt": buy.RateLockExpiresAt,
+			"providerPaymentId": firstNonEmpty(req.ProviderPaymentID, mapString(paymentPayload, "providerPaymentId"), mapString(paymentPayload, "txid")),
+		},
+	})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"buyId": buy.ID, "id": buy.ID, "accessToken": buy.AccessToken, "status": buy.Status, "amountFiat": totalFiat, "subtotalFiat": amountFiat, "fiatCurrency": fiatCurrency, "paymentMethod": paymentMethod, "feeFiat": fee, "totalFiat": totalFiat, "payoutFiat": payout,
 		"rate": rate, "marketRate": roundRate(marketRate), "cryptoAmount": cryptoAmount, "asset": asset, "network": deliveryNetwork, "destAddress": buy.DestAddress,
 		"feePolicy": s.feePolicy(fiatCurrency, rate), "feeBreakdown": s.buyFeeBreakdown(amountFiat),
 		"pixKey": paymentPayload["pixKey"], "qrCodeUrl": paymentPayload["qrCodeUrl"], "payment": paymentPayload,
-		"orderUrl":  fmt.Sprintf("/order/%s?accessToken=%s", buy.ID, buy.AccessToken),
-		"statusUrl": fmt.Sprintf("/api/buy/%s?accessToken=%s", buy.ID, buy.AccessToken),
-		"streamUrl": fmt.Sprintf("/api/buy/%s/stream?accessToken=%s", buy.ID, buy.AccessToken),
+		"tradeIntent":        contract.Trade,
+		"settlementContract": contract.Settlement,
+		"ledgerContract":     contract.Ledger,
+		"orderUrl":           fmt.Sprintf("/order/%s?accessToken=%s", buy.ID, buy.AccessToken),
+		"statusUrl":          fmt.Sprintf("/api/buy/%s?accessToken=%s", buy.ID, buy.AccessToken),
+		"streamUrl":          fmt.Sprintf("/api/buy/%s/stream?accessToken=%s", buy.ID, buy.AccessToken),
 	})
 }
 
