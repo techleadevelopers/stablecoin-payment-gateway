@@ -15,10 +15,19 @@ import (
 )
 
 type PriceWorker struct {
-	bus    *EventBus
-	client *http.Client
-	mu     sync.RWMutex
-	prices map[string]float64
+	bus       *EventBus
+	client    *http.Client
+	mu        sync.RWMutex
+	prices    map[string]float64
+	updatedAt time.Time
+	source    string
+}
+
+type PriceSnapshot struct {
+	Currency  string
+	Price     float64
+	UpdatedAt time.Time
+	Source    string
 }
 
 type CoinGeckoResponse struct {
@@ -50,13 +59,23 @@ func (pw *PriceWorker) GetCurrentPrice() float64 {
 }
 
 func (pw *PriceWorker) GetPrice(currency string) float64 {
+	snapshot := pw.GetSnapshot(currency)
+	return snapshot.Price
+}
+
+func (pw *PriceWorker) GetSnapshot(currency string) PriceSnapshot {
 	pw.mu.RLock()
 	defer pw.mu.RUnlock()
 	currency = strings.ToUpper(strings.TrimSpace(currency))
 	if currency == "" {
 		currency = "BRL"
 	}
-	return pw.prices[currency]
+	return PriceSnapshot{
+		Currency:  currency,
+		Price:     pw.prices[currency],
+		UpdatedAt: pw.updatedAt,
+		Source:    pw.source,
+	}
 }
 
 func (pw *PriceWorker) Start(ctx context.Context) {
@@ -104,6 +123,8 @@ func (pw *PriceWorker) fetchPrice() {
 			}
 		}
 	}
+	pw.updatedAt = time.Now().UTC()
+	pw.source = source
 
 	if changed {
 		payload := make(map[string]any, len(pw.prices))
