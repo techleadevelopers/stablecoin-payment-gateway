@@ -25,6 +25,7 @@ const BASE_URL = cleanBaseURL(
 );
 const TIMEOUT_MS = intEnv("SECURITY_RPA_TIMEOUT_MS", 6000);
 const RATE_LIMIT_COUNT = intEnv("SECURITY_RPA_RATE_LIMIT_COUNT", 0);
+const WARMUP_COUNT = intEnv("SECURITY_RPA_WARMUP_COUNT", 3);
 const REPORT_DIR = process.env.SECURITY_RPA_REPORT_DIR || "tests";
 const EVIL_ORIGIN = process.env.SECURITY_RPA_EVIL_ORIGIN || "https://evil.example";
 
@@ -40,9 +41,10 @@ main().catch((err) => {
 async function main() {
   console.log(`ChainFX security cloud RPA`);
   console.log(`Target: ${BASE_URL}`);
-  console.log(`Mode: non-destructive, rate_limit_count=${RATE_LIMIT_COUNT}`);
+  console.log(`Mode: non-destructive, warmup_count=${WARMUP_COUNT}, rate_limit_count=${RATE_LIMIT_COUNT}`);
   console.log("");
 
+  await warmup();
   await runPublicSurface();
   await runProtectedSurface();
   await runAuthAndEnumeration();
@@ -56,6 +58,15 @@ async function main() {
   printSummary(report);
 
   if (report.failures > 0) process.exit(1);
+}
+
+async function warmup() {
+  if (WARMUP_COUNT <= 0) return;
+  section("Warmup");
+  for (let i = 0; i < WARMUP_COUNT; i += 1) {
+    const res = await request("GET", "/healthz", {}, null, { recordLatency: false });
+    console.log(`WARM healthz ${i + 1}/${WARMUP_COUNT} status=${res.status} ${res.latencyMs}ms`);
+  }
 }
 
 async function runPublicSurface() {
@@ -80,6 +91,9 @@ async function runPublicSurface() {
       latencyMs: res.latencyMs,
       pass: allowed.includes(res.status),
       severity: "medium",
+      control: "PUB-001",
+      expected: allowed.join("|"),
+      observed: String(res.status),
       detail: `expected ${allowed.join("|")}`,
     });
   }
@@ -112,6 +126,9 @@ async function runProtectedSurface() {
       latencyMs: res.latencyMs,
       pass: isAuthRejected(res.status),
       severity: "high",
+      control: "AUTH-001",
+      expected: "401|403|404|405|429",
+      observed: String(res.status),
       detail: "unauthenticated request must not return 2xx",
     });
   }
@@ -126,6 +143,9 @@ async function runProtectedSurface() {
       latencyMs: res.latencyMs,
       pass: [401, 403].includes(res.status),
       severity: "high",
+      control: "AUTH-002",
+      expected: "401|403",
+      observed: String(res.status),
       detail: "tampered JWT must be rejected",
     });
   }
@@ -153,6 +173,9 @@ async function runAuthAndEnumeration() {
     latencyMs: maxLatency(bodies),
     pass: statusUniform && lengthDelta < 200 && !looksLikeEnumerationLeak(normalized.join(" ")),
     severity: "medium",
+    control: "ENUM-001",
+    expected: "uniform_error",
+    observed: `${bodies[0].status}/${bodies[1].status}`,
     detail: `status_uniform=${statusUniform} body_length_delta=${lengthDelta}`,
   });
 
@@ -167,6 +190,9 @@ async function runAuthAndEnumeration() {
     latencyMs: adminRes.latencyMs,
     pass: !is2xx(adminRes.status) && !containsToken(adminRes.bodyText) && adminRes.status < 500,
     severity: "high",
+    control: "AUTH-003",
+    expected: "no_token_non_5xx",
+    observed: String(adminRes.status),
     detail: "invalid credentials must not authenticate or leak server errors",
   });
 }
@@ -189,6 +215,9 @@ async function runHeadersAndCORS() {
       latencyMs: res.latencyMs,
       pass: value.toLowerCase().includes(expected),
       severity,
+      control: "HDR-001",
+      expected,
+      observed: value || "<missing>",
       detail: value ? `value=${value}` : "missing",
     });
   }
@@ -203,25 +232,39 @@ async function runHeadersAndCORS() {
       pass: true,
       warning: true,
       severity: "low",
+      control: "HDR-002",
+      expected: "present",
+      observed: value || "<missing>",
       detail: value ? `value=${value}` : "missing; recommended for browser-facing production domains",
     });
   }
 
-  const corsRes = await request("OPTIONS", "/api/mobile/health", {
-    Origin: EVIL_ORIGIN,
-    "Access-Control-Request-Method": "POST",
-  });
-  const corsHeaders = lowerHeaders(corsRes.headers);
-  const echoed = corsHeaders["access-control-allow-origin"] === EVIL_ORIGIN || corsHeaders["access-control-allow-origin"] === "*";
-  addResult({
-    name: "CORS does not allow arbitrary evil origin",
-    category: "cors",
-    status: corsRes.status,
-    latencyMs: corsRes.latencyMs,
-    pass: !echoed,
-    severity: "high",
-    detail: `access-control-allow-origin=${corsHeaders["access-control-allow-origin"] || "<empty>"}`,
-  });
+  for (const origin of [
+    EVIL_ORIGIN,
+    "null",
+    "https://chainfx.store.evil.example",
+    "https://CHAINFX.STORE.evil.example",
+    "https://chainfx.store:444",
+  ]) {
+    const corsRes = await request("OPTIONS", "/api/mobile/health", {
+      Origin: origin,
+      "Access-Control-Request-Method": "POST",
+    });
+    const corsHeaders = lowerHeaders(corsRes.headers);
+    const echoed = corsHeaders["access-control-allow-origin"] === origin || corsHeaders["access-control-allow-origin"] === "*";
+    addResult({
+      name: `CORS rejects arbitrary origin ${origin}`,
+      category: "cors",
+      status: corsRes.status,
+      latencyMs: corsRes.latencyMs,
+      pass: !echoed,
+      severity: "high",
+      control: "CORS-001",
+      expected: "no ACAO echo or wildcard",
+      observed: corsHeaders["access-control-allow-origin"] || "<empty>",
+      detail: `access-control-allow-origin=${corsHeaders["access-control-allow-origin"] || "<empty>"}`,
+    });
+  }
 
   const querySecret = await request("GET", "/rates?apiKey=sk_live_should_not_be_in_query");
   addResult({
@@ -232,6 +275,9 @@ async function runHeadersAndCORS() {
     pass: [400, 401, 403].includes(querySecret.status),
     warning: querySecret.status === 200,
     severity: "medium",
+    control: "HDR-003",
+    expected: "400|401|403",
+    observed: String(querySecret.status),
     detail: "production should reject apiKey query parameter",
   });
 }
@@ -326,6 +372,9 @@ async function runAttackPayloads() {
       latencyMs: res.latencyMs,
       pass: tc.pass(res),
       severity: tc.severity,
+      control: tc.control || "PAYLOAD-001",
+      expected: "no_2xx_no_5xx_or_no_reflection",
+      observed: String(res.status),
       detail: res.status >= 500 ? "server returned 5xx to adversarial input" : "non-destructive payload",
     });
   }
@@ -346,6 +395,9 @@ async function runAttackPayloads() {
     latencyMs: maxLatency([first, second]),
     pass: !is2xx(first.status) && !is2xx(second.status),
     severity: "high",
+    control: "REPLAY-001",
+    expected: "no_2xx",
+    observed: `${first.status}/${second.status}`,
     detail: "invalid replay probe; no valid API key supplied",
   });
 }
@@ -377,6 +429,9 @@ async function runSensitivePathEnumeration() {
       pass: !sensitive,
       warning: genericCatchAll,
       severity: "critical",
+      control: "ENUM-002",
+      expected: "404|403 and no sensitive body",
+      observed: String(res.status),
       detail: genericCatchAll
         ? "returned generic catch-all page; no sensitive marker detected"
         : "sensitive local file/debug path must not be served",
@@ -392,6 +447,9 @@ async function runSensitivePathEnumeration() {
       latencyMs: res.latencyMs,
       pass: !is2xx(res.status),
       severity: method === "TRACE" || method === "CONNECT" ? "high" : "medium",
+      control: "HTTP-001",
+      expected: "not_2xx",
+      observed: String(res.status),
       detail: "unexpected HTTP methods should not return success",
     });
   }
@@ -408,6 +466,9 @@ async function runOptionalRateLimitProbe() {
       pass: true,
       warning: true,
       severity: "low",
+      control: "RL-000",
+      expected: "skip unless SECURITY_RPA_RATE_LIMIT_COUNT is set",
+      observed: "skip",
       detail: "set SECURITY_RPA_RATE_LIMIT_COUNT to run a bounded flood",
     });
     return;
@@ -424,18 +485,22 @@ async function runOptionalRateLimitProbe() {
   const fiveXX = responses.filter((r) => r.status >= 500).length;
   const twoXX = responses.filter((r) => is2xx(r.status)).length;
   const rateLimited = responses.filter((r) => r.status === 429).length;
+  const retryAfterCount = responses.filter((r) => r.status === 429 && lowerHeaders(r.headers)["retry-after"]).length;
   addResult({
     name: `bounded invalid execution flood stays fail-closed (${count} requests)`,
     category: "rate_limit",
-    status: `${rateLimited}/${count} rate-limited, ${fiveXX}/${count} 5xx, ${twoXX}/${count} success`,
+    status: `${rateLimited}/${count} rate-limited, ${retryAfterCount}/${rateLimited} retry-after, ${fiveXX}/${count} 5xx, ${twoXX}/${count} success`,
     latencyMs: Date.now() - started,
-    pass: twoXX === 0 && fiveXX === 0,
+    pass: twoXX === 0 && fiveXX === 0 && (rateLimited === 0 || retryAfterCount === rateLimited),
     severity: "high",
+    control: "RL-001",
+    expected: "0 success, 0 5xx, Retry-After on every 429",
+    observed: `${rateLimited}/${count} 429, ${retryAfterCount}/${rateLimited} retry-after`,
     detail: "bounded unauth/invalid requests must not succeed or crash",
   });
 }
 
-async function request(method, urlPath, headers = {}, body = null) {
+async function request(method, urlPath, headers = {}, body = null, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   const started = Date.now();
@@ -460,7 +525,7 @@ async function request(method, urlPath, headers = {}, body = null) {
     const res = await fetch(BASE_URL + urlPath, init);
     const bodyText = await safeText(res);
     const latencyMs = Date.now() - started;
-    latencies.push(latencyMs);
+    if (options.recordLatency !== false) latencies.push(latencyMs);
     return {
       status: res.status,
       headers: Object.fromEntries(res.headers.entries()),
@@ -483,11 +548,15 @@ async function request(method, urlPath, headers = {}, body = null) {
 }
 
 function addResult(item) {
+  const control = item.control || defaultControl(item.category);
+  const expected = item.expected || "";
+  const observed = item.observed || String(item.status);
+  const blocking = item.blocking !== undefined ? item.blocking : item.severity === "critical" || item.severity === "high";
   const status = item.pass ? (item.warning ? "WARN" : "PASS") : "FAIL";
-  results.push({ ...item, outcome: status });
+  results.push({ ...item, control, expected, observed, blocking, outcome: status });
   const statusText = String(item.status).padEnd(18);
   const latencyText = item.latencyMs ? `${item.latencyMs}ms` : "";
-  console.log(`${status.padEnd(4)} ${item.name} status=${statusText} ${latencyText} ${item.detail ? `- ${item.detail}` : ""}`);
+  console.log(`${status.padEnd(4)} ${control} ${item.name} status=${statusText} ${latencyText} ${item.detail ? `- ${item.detail}` : ""}`);
 }
 
 function buildReport() {
@@ -551,9 +620,26 @@ function textReport(report) {
   );
   lines.push("");
   for (const r of report.results) {
-    lines.push(`${r.outcome} [${r.severity}] ${r.category} - ${r.name} - status=${r.status} latency=${r.latencyMs}ms - ${r.detail || ""}`);
+    lines.push(`${r.outcome} [${r.severity}] ${r.control} ${r.category} - ${r.name}`);
+    lines.push(`  expected=${r.expected || ""} observed=${r.observed || r.status} blocking=${r.blocking} status=${r.status} latency=${r.latencyMs}ms`);
+    if (r.detail) lines.push(`  detail=${r.detail}`);
   }
   return lines.join("\n") + "\n";
+}
+
+function defaultControl(category) {
+  const map = {
+    public_surface: "PUB-000",
+    auth_required: "AUTH-000",
+    enumeration: "ENUM-000",
+    headers: "HDR-000",
+    cors: "CORS-000",
+    attack_payload: "PAYLOAD-000",
+    replay: "REPLAY-000",
+    method_surface: "HTTP-000",
+    rate_limit: "RL-000",
+  };
+  return map[category] || "GEN-000";
 }
 
 function jsonHeaders() {
