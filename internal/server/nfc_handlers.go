@@ -198,7 +198,6 @@ func (s *Server) handleNFCGetAuthorization(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "authorization not found"})
 		return
 	}
-	s.publishNFCEvent("nfc.capture.completed", auth)
 	writeJSON(w, http.StatusOK, nfcAuthorizationView(auth))
 }
 
@@ -218,7 +217,7 @@ func (s *Server) handleNFCCaptureAuthorization(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "authorization not found"})
 		return
 	}
-	s.publishNFCEvent("nfc.authorization.reversed", auth)
+	s.publishNFCEvent("nfc.capture.completed", auth)
 	writeJSON(w, http.StatusOK, nfcAuthorizationView(auth))
 }
 
@@ -238,6 +237,7 @@ func (s *Server) handleNFCReverseAuthorization(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "authorization not found"})
 		return
 	}
+	s.publishNFCEvent("nfc.authorization.reversed", auth)
 	writeJSON(w, http.StatusOK, nfcAuthorizationView(auth))
 }
 
