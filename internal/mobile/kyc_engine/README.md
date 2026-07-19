@@ -120,6 +120,111 @@ Ela ainda não é um detector biométrico regulatório completo. Para produção
 5. Liveness real por movimento/piscada/pose.
 6. Classificador antifraude para replay, deepfake e tela.
 
+## Provider Real de Produção
+
+Quando `KYC_ENGINE_PROVIDER_URL` está definido, `NewFromEnv` usa um provider HTTP externo em vez do modo determinístico.
+
+Variáveis:
+
+```text
+KYC_ENGINE_PROVIDER_URL=https://kyc-provider.internal/analyze
+KYC_ENGINE_PROVIDER_API_KEY=...
+FACE_BIOMETRY_SECRET=...
+```
+
+Contrato enviado ao provider:
+
+```json
+{
+  "RequestID": "uuid",
+  "UserID": "uuid",
+  "Level": 1,
+  "DocumentURL": "https://...",
+  "DocumentBackURL": "https://...",
+  "SelfieURL": "https://...",
+  "FacialVideoURL": "https://...",
+  "DeviceFingerprint": "...",
+  "IPAddress": "...",
+  "UserAgent": "..."
+}
+```
+
+Contrato esperado de resposta:
+
+```json
+{
+  "provider": "aws_rekognition_textract",
+  "model_version": "v1",
+  "decision": "approved",
+  "score": 94,
+  "document_score": 96,
+  "face_match_score": 92,
+  "liveness_score": 91,
+  "replay_risk_score": 4,
+  "duplicate_score": 100,
+  "risk_score": 8,
+  "latency_ms": 1300,
+  "embedding": [0.12, -0.44],
+  "embedding_hash": "optional",
+  "flags": [],
+  "details": {}
+}
+```
+
+`embedding` precisa ser retornado pelo provider para o backend salvar `face_embedding_encrypted`. Se vier ausente, a decisão `approved` é rebaixada para `manual_review`.
+
+## Provider Local Self-Hosted
+
+Existe uma implementação de referência sem AWS/GCP/vendor KYC em:
+
+```text
+scripts/kyc_provider_local_ai.py
+```
+
+Ela é o contrato do nosso provider local. Em produção, conectar modelos próprios:
+
+- `FACE_EMBEDDING_ONNX`: modelo local para embedding facial.
+- `LIVENESS_ONNX`: modelo local para prova de vida/replay/deepfake.
+- OCR local ou `OCR_PROVIDER_URL`: leitura estruturada do documento.
+- Detector local de face no documento e no video.
+
+Instalação local:
+
+```bash
+pip install flask requests opencv-python numpy onnxruntime
+set KYC_PROVIDER_API_KEY=local-secret
+set FACE_EMBEDDING_ONNX=C:\models\face_embedding.onnx
+set LIVENESS_ONNX=C:\models\liveness.onnx
+python scripts/kyc_provider_local_ai.py
+```
+
+Backend:
+
+```bash
+set KYC_ENGINE_PROVIDER_URL=http://127.0.0.1:9097/analyze
+set KYC_ENGINE_PROVIDER_API_KEY=local-secret
+set FACE_BIOMETRY_SECRET=<secret-forte>
+```
+
+Sem modelos reais configurados, o provider retorna `manual_review` e flag `local_models_not_configured`. Isso evita aprovar usuário fingindo biometria bancária.
+
+## Teste de Eficiência
+
+Script:
+
+```powershell
+.\scripts\kyc_engine_efficiency.ps1 -BaseUrl http://localhost:8080 -Token $env:MOBILE_ACCESS_TOKEN -Runs 20
+```
+
+Ele consulta `/api/mobile/kyc/engine/metrics`, mede latência HTTP e salva um JSON local com:
+
+- média HTTP;
+- máximo HTTP;
+- média da engine;
+- p95 da engine;
+- máximo da engine;
+- amostras por execução.
+
 ## Testes
 
 ```bash
