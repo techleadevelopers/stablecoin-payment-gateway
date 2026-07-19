@@ -103,6 +103,10 @@ func (q *mobileQueries) UpdateUser(ctx context.Context, id string, fields map[st
 		args = append(args, v)
 		i++
 	}
+	if set != "" {
+		set += ", "
+	}
+	set += "updated_at=NOW()"
 	args = append(args, id)
 	_, err := q.sql.ExecContext(ctx, "UPDATE users SET "+set+" WHERE id=$"+itoa(i), args...)
 	return err
