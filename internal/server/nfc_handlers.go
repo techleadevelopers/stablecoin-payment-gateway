@@ -10,6 +10,7 @@ import (
 	"payment-gateway/internal/database"
 	"payment-gateway/internal/money"
 	"payment-gateway/internal/nfc"
+	"payment-gateway/internal/workers"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -197,6 +198,7 @@ func (s *Server) handleNFCGetAuthorization(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "authorization not found"})
 		return
 	}
+	s.publishNFCEvent("nfc.capture.completed", auth)
 	writeJSON(w, http.StatusOK, nfcAuthorizationView(auth))
 }
 
@@ -216,6 +218,7 @@ func (s *Server) handleNFCCaptureAuthorization(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "authorization not found"})
 		return
 	}
+	s.publishNFCEvent("nfc.authorization.reversed", auth)
 	writeJSON(w, http.StatusOK, nfcAuthorizationView(auth))
 }
 
@@ -337,6 +340,10 @@ func nfcAuthorizationView(a *database.NFCAuthorization) map[string]any {
 		"reason":           a.Reason,
 		"idempotent":       a.Idempotent,
 		"created_at":       a.CreatedAt,
+		"rail":             "chainfx_tap",
+		"scheme":           "chainfx_own_closed_loop",
+		"card_network":     "none",
+		"settlement":       nfcSettlementView(a),
 	}
 	if a.ExternalRef != "" {
 		out["external_ref"] = a.ExternalRef
@@ -345,6 +352,54 @@ func nfcAuthorizationView(a *database.NFCAuthorization) map[string]any {
 		out["hold_expires_at"] = *a.HoldExpiresAt
 	}
 	return out
+}
+
+func (s *Server) publishNFCEvent(eventType string, a *database.NFCAuthorization) {
+	if s == nil || s.workers == nil || s.workers.Bus == nil || a == nil {
+		return
+	}
+	s.workers.Bus.Publish(workers.Event{
+		Type:    eventType,
+		OrderID: a.ID,
+		Payload: map[string]any{
+			"authorization_id":         a.ID,
+			"wallet_address":           a.Wallet,
+			"network":                  a.Network,
+			"merchant_id":              a.MerchantID,
+			"terminal_id":              a.TerminalID,
+			"external_ref":             a.ExternalRef,
+			"amount_brl_minor":         a.AmountBRLMinor,
+			"required_usdt_micro":      a.RequiredUSDTMic,
+			"rail":                     "chainfx_tap",
+			"scheme":                   "chainfx_own_closed_loop",
+			"card_network":             "none",
+			"fiat_settlement_rail":     "efi_pix",
+			"merchant_settlement_mode": "manual_or_worker",
+		},
+	})
+}
+
+func nfcSettlementView(a *database.NFCAuthorization) map[string]any {
+	mode := "not_applicable"
+	switch a.Status {
+	case database.NFCStatusApproved:
+		mode = "hold_active"
+	case database.NFCStatusCaptured:
+		mode = "efi_pix_pending_or_manual"
+	case database.NFCStatusReversed:
+		mode = "reversed_no_fiat_settlement"
+	case database.NFCStatusRequiresFunding:
+		mode = "insufficient_usdt"
+	case database.NFCStatusDeclined:
+		mode = "declined"
+	}
+	return map[string]any{
+		"fiat_rail":                "efi_pix",
+		"crypto_source_asset":      "USDT",
+		"crypto_debit_source":      "nfc_internal_usdt_ledger",
+		"merchant_settlement_mode": mode,
+		"card_network":             "none",
+	}
 }
 
 func nfcBalanceView(b *database.NFCBalance) map[string]any {
