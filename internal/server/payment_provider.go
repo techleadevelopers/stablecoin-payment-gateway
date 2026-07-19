@@ -80,7 +80,7 @@ func (s *Server) createEfiCreditCardCharge(ctx context.Context, buyID string, am
 			"notification_url": strings.TrimRight(s.cfg.EmailSiteURL, "/") + "/api/efi/charges/webhook/buy",
 		},
 	}
-	charge, err := s.efiBillingRequest(ctx, client, token, http.MethodPost, "/v1/charge", createPayload)
+	charge, err := s.efiBillingRequestWithAuthRetry(ctx, client, token, http.MethodPost, "/v1/charge", createPayload)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func (s *Server) createEfiCreditCardCharge(ctx context.Context, buyID string, am
 			"credit_card": creditCard,
 		},
 	}
-	payment, err := s.efiBillingRequest(ctx, client, token, http.MethodPost, "/v1/charge/"+chargeID+"/pay", payPayload)
+	payment, err := s.efiBillingRequestWithAuthRetry(ctx, client, token, http.MethodPost, "/v1/charge/"+chargeID+"/pay", payPayload)
 	if err != nil {
 		return nil, err
 	}
@@ -318,9 +318,18 @@ func (s *Server) loadEfiCertificate(certPath, keyPath string) (tls.Certificate, 
 }
 
 func (s *Server) efiAccessToken(ctx context.Context, client *http.Client) (string, error) {
-	if token := s.cachedEfiToken(false); token != "" {
+	if token, wait := s.beginEfiTokenRefresh(false); token != "" || wait != nil {
+		if token == "" {
+			select {
+			case <-wait:
+				return s.efiAccessToken(ctx, client)
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
 		return token, nil
 	}
+	defer s.finishEfiTokenRefresh(false)
 	raw := []byte(`{"grant_type":"client_credentials"}`)
 	endpoint := strings.TrimRight(s.cfg.EfiApiBaseURL, "/") + "/oauth/token"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
@@ -349,9 +358,18 @@ func (s *Server) efiAccessToken(ctx context.Context, client *http.Client) (strin
 }
 
 func (s *Server) efiBillingAccessToken(ctx context.Context, client *http.Client) (string, error) {
-	if token := s.cachedEfiToken(true); token != "" {
+	if token, wait := s.beginEfiTokenRefresh(true); token != "" || wait != nil {
+		if token == "" {
+			select {
+			case <-wait:
+				return s.efiBillingAccessToken(ctx, client)
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
 		return token, nil
 	}
+	defer s.finishEfiTokenRefresh(true)
 	raw := []byte(`{"grant_type":"client_credentials"}`)
 	endpoint := strings.TrimRight(s.cfg.EfiChargesBaseURL, "/") + "/v1/authorize"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
@@ -379,20 +397,60 @@ func (s *Server) efiBillingAccessToken(ctx context.Context, client *http.Client)
 	return data.AccessToken, nil
 }
 
-func (s *Server) cachedEfiToken(billing bool) string {
+func (s *Server) beginEfiTokenRefresh(billing bool) (string, <-chan struct{}) {
 	s.efiMu.Lock()
 	defer s.efiMu.Unlock()
-	now := time.Now().UTC()
+	now := time.Now().UTC().Add(30 * time.Second)
 	if billing {
 		if s.efiBillAccessToken != "" && now.Before(s.efiBillAccessTokenExp) {
-			return s.efiBillAccessToken
+			return s.efiBillAccessToken, nil
 		}
-		return ""
+		if s.efiBillRefreshing {
+			return "", s.efiBillRefreshDone
+		}
+		s.efiBillRefreshing = true
+		s.efiBillRefreshDone = make(chan struct{})
+		return "", nil
 	}
 	if s.efiPixAccessToken != "" && now.Before(s.efiPixAccessTokenExp) {
-		return s.efiPixAccessToken
+		return s.efiPixAccessToken, nil
 	}
-	return ""
+	if s.efiPixRefreshing {
+		return "", s.efiPixRefreshDone
+	}
+	s.efiPixRefreshing = true
+	s.efiPixRefreshDone = make(chan struct{})
+	return "", nil
+}
+
+func (s *Server) finishEfiTokenRefresh(billing bool) {
+	s.efiMu.Lock()
+	defer s.efiMu.Unlock()
+	if billing {
+		if s.efiBillRefreshDone != nil {
+			close(s.efiBillRefreshDone)
+		}
+		s.efiBillRefreshing = false
+		s.efiBillRefreshDone = nil
+		return
+	}
+	if s.efiPixRefreshDone != nil {
+		close(s.efiPixRefreshDone)
+	}
+	s.efiPixRefreshing = false
+	s.efiPixRefreshDone = nil
+}
+
+func (s *Server) invalidateEfiToken(billing bool) {
+	s.efiMu.Lock()
+	defer s.efiMu.Unlock()
+	if billing {
+		s.efiBillAccessToken = ""
+		s.efiBillAccessTokenExp = time.Time{}
+		return
+	}
+	s.efiPixAccessToken = ""
+	s.efiPixAccessTokenExp = time.Time{}
 }
 
 func (s *Server) storeEfiToken(billing bool, token string) {
@@ -441,6 +499,19 @@ func (s *Server) efiBillingRequest(ctx context.Context, client *http.Client, tok
 		return nil, fmt.Errorf("Efí Cobranças respondeu JSON invalido")
 	}
 	return out, nil
+}
+
+func (s *Server) efiBillingRequestWithAuthRetry(ctx context.Context, client *http.Client, token, method, path string, payload any) (map[string]any, error) {
+	out, err := s.efiBillingRequest(ctx, client, token, method, path, payload)
+	if err == nil || !strings.Contains(err.Error(), "status 401") {
+		return out, err
+	}
+	s.invalidateEfiToken(true)
+	freshToken, refreshErr := s.efiBillingAccessToken(ctx, client)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	return s.efiBillingRequest(ctx, client, freshToken, method, path, payload)
 }
 
 func buildEfiDebtor(customer paymentCustomerInput) map[string]any {
