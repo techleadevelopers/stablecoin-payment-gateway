@@ -114,7 +114,13 @@ func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Add("Vary", "Origin")
 	if allowed == "*" {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if s != nil && s.cfg != nil && s.cfg.IsProduction() {
+			if isMobileAllowedOrigin(origin, "") {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			}
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
 	} else {
 		if isMobileAllowedOrigin(origin, allowed) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
