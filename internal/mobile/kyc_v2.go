@@ -22,12 +22,15 @@ import (
 func (s *Server) handleKYCSubmit(w http.ResponseWriter, r *http.Request) {
 	uid := userIDFromCtx(r)
 	var req struct {
-		Level        int    `json:"level"`         // 1, 2 or 3
-		DocumentType string `json:"document_type"` // rg, cnh, passport
-		DocumentURL  string `json:"document_url"`
-		SelfieURL    string `json:"selfie_url"`
-		ProofAddrURL string `json:"proof_of_address_url"`
-		ProofIncURL  string `json:"proof_of_income_url"`
+		Level            int    `json:"level"`         // 1, 2 or 3
+		DocumentType     string `json:"document_type"` // rg, cnh, passport
+		DocumentURL      string `json:"document_url"`
+		DocumentFrontURL string `json:"document_front_url"`
+		DocumentBackURL  string `json:"document_back_url"`
+		SelfieURL        string `json:"selfie_url"`
+		FacialVideoURL   string `json:"facial_video_url"`
+		ProofAddrURL     string `json:"proof_of_address_url"`
+		ProofIncURL      string `json:"proof_of_income_url"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "payload inválido"})
@@ -36,6 +39,9 @@ func (s *Server) handleKYCSubmit(w http.ResponseWriter, r *http.Request) {
 	if req.Level < 1 || req.Level > 3 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "level deve ser 1, 2 ou 3"})
 		return
+	}
+	if req.DocumentURL == "" {
+		req.DocumentURL = req.DocumentFrontURL
 	}
 
 	// Validate required fields per level
@@ -69,7 +75,9 @@ func (s *Server) handleKYCSubmit(w http.ResponseWriter, r *http.Request) {
 		models.KYCLevel(req.Level),
 		nullableStr(req.DocumentType),
 		nullableStr(req.DocumentURL),
+		nullableStr(req.DocumentBackURL),
 		nullableStr(req.SelfieURL),
+		nullableStr(req.FacialVideoURL),
 		nullableStr(req.ProofAddrURL),
 		nullableStr(req.ProofIncURL),
 	)
