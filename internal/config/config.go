@@ -84,21 +84,23 @@ type Config struct {
 	PixWebhookSecret   string
 
 	// Tesouraria / signer / sweep
-	TreasuryHot         string
-	TreasuryCold        string
-	SignerUrl           string
-	SignerNetwork       string
-	SignerHmacSecret    string
-	BscRpcUrls          string
-	BscUsdtContract     string
-	PolygonRpcUrls      string
-	PolygonUsdtContract string
-	EnableSweepWorker   bool
-	EnableSweepStub     bool
-	SweepBatchUsdtMin   float64
-	SweepBatchUsdtMax   float64
-	SweepFrequencyMs    int
-	BscGasReserveBNB    float64
+	TreasuryHot             string
+	TreasuryCold            string
+	SignerUrl               string
+	SignerNetwork           string
+	SignerHmacSecret        string
+	BscRpcUrls              string
+	BscUsdtContract         string
+	BscTreasuryContract     string
+	PolygonRpcUrls          string
+	PolygonUsdtContract     string
+	PolygonTreasuryContract string
+	EnableSweepWorker       bool
+	EnableSweepStub         bool
+	SweepBatchUsdtMin       float64
+	SweepBatchUsdtMax       float64
+	SweepFrequencyMs        int
+	BscGasReserveBNB        float64
 
 	// SMTP / mensagens
 	SMTPHost       string
@@ -269,21 +271,23 @@ func LoadConfig() *Config {
 		EfiPixFeeBps:       getEnvAsInt("EFI_PIX_FEE_BPS", 119),
 		PixWebhookSecret:   getEnv("PIX_WEBHOOK_SECRET", ""),
 
-		TreasuryHot:         getEnv("TREASURY_HOT", ""),
-		TreasuryCold:        getEnv("TREASURY_COLD", ""),
-		SignerUrl:           getEnv("SIGNER_URL", ""),
-		SignerNetwork:       strings.ToLower(getEnv("SIGNER_NETWORK", "bsc")),
-		SignerHmacSecret:    getEnv("SIGNER_HMAC_SECRET", ""),
-		BscRpcUrls:          getBscRpcUrls(),
-		BscUsdtContract:     getEnv("BSC_USDT_CONTRACT", getEnv("BSC_TOKEN_CONTRACT", "")),
-		PolygonRpcUrls:      getPolygonRpcUrls(),
-		PolygonUsdtContract: getEnv("POLYGON_USDT_CONTRACT", getEnv("POLYGON_TOKEN_CONTRACT", "")),
-		EnableSweepWorker:   getEnvAsBool("ENABLE_SWEEP_WORKER", false),
-		EnableSweepStub:     getEnvAsBool("ENABLE_SWEEP_STUB", false),
-		SweepBatchUsdtMin:   getEnvAsFloat("SWEEP_BATCH_USDT_MIN", 0),
-		SweepBatchUsdtMax:   getEnvAsFloat("SWEEP_BATCH_USDT_MAX", 1_000_000),
-		SweepFrequencyMs:    getEnvAsInt("SWEEP_FREQUENCY_MS", 80800),
-		BscGasReserveBNB:    getEnvAsFloat("BSC_GAS_RESERVE_BNB", 0.003),
+		TreasuryHot:             getEnv("TREASURY_HOT", ""),
+		TreasuryCold:            getEnv("TREASURY_COLD", ""),
+		SignerUrl:               getEnv("SIGNER_URL", ""),
+		SignerNetwork:           strings.ToLower(getEnv("SIGNER_NETWORK", "bsc")),
+		SignerHmacSecret:        getEnv("SIGNER_HMAC_SECRET", ""),
+		BscRpcUrls:              getBscRpcUrls(),
+		BscUsdtContract:         getEnv("BSC_USDT_CONTRACT", getEnv("BSC_TOKEN_CONTRACT", "")),
+		BscTreasuryContract:     getEnv("BSC_TREASURY_CONTRACT", ""),
+		PolygonRpcUrls:          getPolygonRpcUrls(),
+		PolygonUsdtContract:     getEnv("POLYGON_USDT_CONTRACT", getEnv("POLYGON_TOKEN_CONTRACT", "")),
+		PolygonTreasuryContract: getEnv("POLYGON_TREASURY_CONTRACT", ""),
+		EnableSweepWorker:       getEnvAsBool("ENABLE_SWEEP_WORKER", false),
+		EnableSweepStub:         getEnvAsBool("ENABLE_SWEEP_STUB", false),
+		SweepBatchUsdtMin:       getEnvAsFloat("SWEEP_BATCH_USDT_MIN", 0),
+		SweepBatchUsdtMax:       getEnvAsFloat("SWEEP_BATCH_USDT_MAX", 1_000_000),
+		SweepFrequencyMs:        getEnvAsInt("SWEEP_FREQUENCY_MS", 80800),
+		BscGasReserveBNB:        getEnvAsFloat("BSC_GAS_RESERVE_BNB", 0.003),
 
 		SMTPHost:            getEnv("SMTP_HOST", ""),
 		SMTPPort:            getEnvAsInt("SMTP_PORT", 587),
