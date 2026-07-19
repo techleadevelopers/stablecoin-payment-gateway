@@ -69,6 +69,7 @@ type Config struct {
 	PixMaxBrlPer24h        float64
 	OrderHoldSecForNewDest int
 	BscDepositTolerancePct float64
+	SellPayoutMode         string
 
 	// Efí Bank Pix
 	EfiClientID        string
@@ -258,6 +259,7 @@ func LoadConfig() *Config {
 		PixMaxBrlPer24h:        getEnvAsFloat("PIX_MAX_BRL_PER_24H", 20000.0),
 		OrderHoldSecForNewDest: getEnvAsInt("ORDER_HOLD_SEC_FOR_NEW_DEST", 180),
 		BscDepositTolerancePct: getEnvAsFloat("BSC_DEPOSIT_TOLERANCE_PCT", 0.02),
+		SellPayoutMode:         strings.ToLower(getEnv("SELL_PAYOUT_MODE", "manual")),
 
 		EfiClientID:        getEnv("EFI_CLIENT_ID", ""),
 		EfiClientSecret:    getEnv("EFI_CLIENT_SECRET", ""),
