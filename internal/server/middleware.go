@@ -399,8 +399,13 @@ func serverTimingHeader(timings *requestTimings, total time.Duration) string {
 		}
 		timings.mu.Unlock()
 	}
-	parts := make([]string, 0, 6)
-	for _, name := range []string{"limiter", "auth", "db_wait", "queue", "response_write"} {
+	parts := make([]string, 0, 16)
+	for _, name := range []string{
+		"limiter", "auth", "json_decode", "terminal_auth", "amount_parse",
+		"token_validation", "price_lookup", "risk_validation",
+		"authorization_lookup", "db_transaction", "ledger_capture", "ledger_reverse",
+		"queue", "response_write",
+	} {
 		if duration, ok := stages[name]; ok {
 			parts = append(parts, fmt.Sprintf("%s;dur=%.2f", name, duration.Seconds()*1000))
 		}
