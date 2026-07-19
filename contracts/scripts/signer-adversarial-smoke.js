@@ -146,6 +146,38 @@ async function parallelNonceReplayCase(baseURL, secret) {
   };
 }
 
+async function primedParallelNonceReplayCase(baseURL, secret) {
+  const body = transferBody({ amount: "0", idempotencyKey: `primed-${Date.now()}` });
+  const sharedNonce = nonce("primed");
+  const headers = signedHeaders(secret, body, sharedNonce);
+
+  await request(baseURL, "/hd/transfer", {
+    method: "POST",
+    body,
+    headers,
+  });
+
+  const attempts = await Promise.all(
+    Array.from({ length: 10 }, () =>
+      request(baseURL, "/hd/transfer", {
+        method: "POST",
+        body,
+        headers,
+      }),
+    ),
+  );
+  const unauthorized = attempts.filter((item) => item.status === 401).length;
+  const pass = unauthorized === attempts.length;
+  return {
+    name: "primed nonce replay rejects every retry",
+    pass,
+    status: `${unauthorized}/10 rejected`,
+    expected: "10/10 rejected",
+    ms: Math.max(...attempts.map((item) => item.ms)),
+    detail: attempts.map((item) => item.status).join(","),
+  };
+}
+
 async function main() {
   const baseURL = (arg("url", process.env.SIGNER_URL) || DEFAULT_SIGNER_URL).replace(/\/+$/, "");
   const secret = arg("secret", process.env.SIGNER_HMAC_SECRET || process.env.HMAC_SECRET || "");
@@ -236,6 +268,7 @@ async function main() {
     results.push(await signedTransferCase(baseURL, secret, "same idempotency key first invalid request is handled once", { amount: "0", idempotencyKey: idem }, [400, 409, 502]));
     results.push(await signedTransferCase(baseURL, secret, "same idempotency key replay with new nonce is deduped or blocked", { amount: "0", idempotencyKey: idem }, [200, 400, 409, 502]));
     results.push(await parallelNonceReplayCase(baseURL, secret));
+    results.push(await primedParallelNonceReplayCase(baseURL, secret));
   } else {
     console.log("SKIP signed adversarial cases: set SIGNER_HMAC_SECRET or pass --secret=...");
   }
