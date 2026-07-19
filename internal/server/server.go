@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -55,6 +56,18 @@ type Server struct {
 	certReadySource  string
 	certReadyOK      bool
 	certReadyErr     string
+
+	efiMu                 sync.Mutex
+	efiClient             *http.Client
+	efiClientSource       string
+	efiPixAccessToken     string
+	efiPixAccessTokenExp  time.Time
+	efiPixRefreshing      bool
+	efiPixRefreshDone     chan struct{}
+	efiBillAccessToken    string
+	efiBillAccessTokenExp time.Time
+	efiBillRefreshing     bool
+	efiBillRefreshDone    chan struct{}
 
 	readyMu      sync.Mutex
 	readyChecked time.Time
@@ -117,6 +130,13 @@ func (s *Server) WithPSP(router *psp.Router) {
 // POST /v1/admin/gas/chaos-run.  When nil the endpoint returns 503.
 func (s *Server) WithAdversarialEngine(e AdversarialEngine) {
 	s.adversarialEngine = e
+}
+
+func (s *Server) StartWebhooks(ctx context.Context) {
+	if s == nil || s.webhooks == nil || s.workers == nil || s.workers.Bus == nil {
+		return
+	}
+	s.webhooks.Start(ctx, s.workers.Bus)
 }
 
 func csvContains(csv, value string) bool {
