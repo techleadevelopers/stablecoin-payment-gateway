@@ -155,12 +155,21 @@ $env:SECURITY_RPA_BASE_URL="https://api-production-bc748.up.railway.app"
 node tests\security_cloud_adversarial.js
 ```
 
+Por padrao o script faz 3 chamadas de warmup fora dos percentis. Para mudar:
+
+```powershell
+$env:SECURITY_RPA_WARMUP_COUNT="5"
+node tests\security_cloud_adversarial.js
+```
+
 Probe opcional de flood baixo e nao destrutivo:
 
 ```powershell
 $env:SECURITY_RPA_RATE_LIMIT_COUNT="25"
 node tests\security_cloud_adversarial.js
 ```
+
+Quando o flood estiver ligado, use o resultado de rate limit para seguranca e nao como SLO principal de latencia.
 
 O script grava relatorios em `tests/security-cloud-report-*.json` e `tests/security-cloud-report-*.txt`. Resultado esperado: `FAIL=0`; `WARN` pode indicar hardening recomendado, como HSTS/CSP ou catch-all HTML para rotas inexistentes.
 
