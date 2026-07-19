@@ -7,9 +7,22 @@ interface IERC20 {
     function balanceOf(address account) external view returns (uint256);
 }
 
+library SafeERC20Lite {
+    function safeTransfer(IERC20 token, address to, uint256 amount) internal returns (bool) {
+        (bool success, bytes memory returndata) = address(token).call(
+            abi.encodeWithSelector(IERC20.transfer.selector, to, amount)
+        );
+        return success && (returndata.length == 0 || abi.decode(returndata, (bool)));
+    }
+}
+
 /// @notice Treasury/payout vault for EVM stablecoin operations.
 /// @dev Designed for USDT/USDC style ERC20 custody on BSC, Polygon, and compatible EVM networks. Keep business pricing off-chain.
 contract SwappyTreasuryVault {
+    using SafeERC20Lite for IERC20;
+
+    uint256 public constant MAX_BATCH_SIZE = 100;
+
     struct TokenPolicy {
         bool allowed;
         uint256 maxTransfer;
@@ -21,10 +34,12 @@ contract SwappyTreasuryVault {
     address public owner;
     address public pendingOwner;
     bool public paused;
+    uint256 private locked;
 
     mapping(address => bool) public guardians;
     mapping(address => bool) public operators;
     mapping(address => bool) public allowedRecipients;
+    mapping(address => bool) public allowedContractRecipients;
     mapping(address => bool) public blockedRecipients;
     mapping(address => TokenPolicy) public tokenPolicies;
     mapping(bytes32 => bool) public executedOperation;
@@ -34,6 +49,7 @@ contract SwappyTreasuryVault {
     event GuardianSet(address indexed guardian, bool allowed);
     event OperatorSet(address indexed operator, bool allowed);
     event RecipientAllowed(address indexed recipient, bool allowed);
+    event ContractRecipientAllowed(address indexed recipient, bool allowed);
     event RecipientBlocked(address indexed recipient, bool blocked);
     event TokenPolicySet(address indexed token, bool allowed, uint256 maxTransfer, uint256 dailyLimit);
     event Paused(address indexed account);
@@ -54,6 +70,10 @@ contract SwappyTreasuryVault {
     error OperationAlreadyExecuted();
     error TokenTransferFailed();
     error NativeTransferFailed();
+    error Reentrancy();
+    error BatchTooLarge();
+    error ContractRecipientNotAllowed();
+    error InvalidOperationId();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -73,6 +93,13 @@ contract SwappyTreasuryVault {
     modifier whenNotPaused() {
         if (paused) revert PausedError();
         _;
+    }
+
+    modifier nonReentrant() {
+        if (locked == 1) revert Reentrancy();
+        locked = 1;
+        _;
+        locked = 0;
     }
 
     constructor(address initialOwner) {
@@ -115,6 +142,13 @@ contract SwappyTreasuryVault {
         emit RecipientAllowed(recipient, allowed);
     }
 
+    function setContractRecipientAllowed(address recipient, bool allowed) external onlyOwner {
+        if (recipient == address(0)) revert ZeroAddress();
+        if (allowed && recipient.code.length == 0) revert ContractRecipientNotAllowed();
+        allowedContractRecipients[recipient] = allowed;
+        emit ContractRecipientAllowed(recipient, allowed);
+    }
+
     function setRecipientBlocked(address recipient, bool blocked) external onlyGuardianOrOwner {
         if (recipient == address(0)) revert ZeroAddress();
         blockedRecipients[recipient] = blocked;
@@ -140,7 +174,7 @@ contract SwappyTreasuryVault {
         emit Unpaused(msg.sender);
     }
 
-    function payout(bytes32 operationId, address token, address to, uint256 amount) external onlyOperatorOrOwner whenNotPaused {
+    function payout(bytes32 operationId, address token, address to, uint256 amount) external onlyOperatorOrOwner whenNotPaused nonReentrant {
         _executeTokenOutflow(operationId, token, to, amount, true);
         emit Payout(operationId, token, to, amount, msg.sender);
     }
@@ -150,25 +184,27 @@ contract SwappyTreasuryVault {
         address token,
         address[] calldata recipients,
         uint256[] calldata amounts
-    ) external onlyOperatorOrOwner whenNotPaused {
+    ) external onlyOperatorOrOwner whenNotPaused nonReentrant {
         uint256 length = operationIds.length;
         if (length != recipients.length || length != amounts.length) revert InvalidAmount();
+        if (length > MAX_BATCH_SIZE) revert BatchTooLarge();
         for (uint256 i = 0; i < length; i++) {
             _executeTokenOutflow(operationIds[i], token, recipients[i], amounts[i], true);
             emit Payout(operationIds[i], token, recipients[i], amounts[i], msg.sender);
         }
     }
 
-    function withdrawToTreasury(bytes32 operationId, address token, address to, uint256 amount) external onlyOwner {
+    function withdrawToTreasury(bytes32 operationId, address token, address to, uint256 amount) external onlyOwner nonReentrant {
         _executeTokenOutflow(operationId, token, to, amount, false);
         emit TreasuryWithdraw(operationId, token, to, amount);
     }
 
-    function withdrawNative(bytes32 operationId, address payable to, uint256 amount) external onlyOwner {
-        if (operationId == bytes32(0)) revert OperationAlreadyExecuted();
+    function withdrawNative(bytes32 operationId, address payable to, uint256 amount) external onlyOwner nonReentrant {
+        if (operationId == bytes32(0)) revert InvalidOperationId();
         if (executedOperation[operationId]) revert OperationAlreadyExecuted();
         if (to == address(0)) revert ZeroAddress();
         if (amount == 0) revert InvalidAmount();
+        _enforceRecipientContractPolicy(to);
         executedOperation[operationId] = true;
         (bool ok, ) = to.call{value: amount}("");
         if (!ok) revert NativeTransferFailed();
@@ -176,11 +212,12 @@ contract SwappyTreasuryVault {
     }
 
     function _executeTokenOutflow(bytes32 operationId, address token, address to, uint256 amount, bool requireAllowedRecipient) internal {
-        if (operationId == bytes32(0)) revert OperationAlreadyExecuted();
+        if (operationId == bytes32(0)) revert InvalidOperationId();
         if (executedOperation[operationId]) revert OperationAlreadyExecuted();
         if (token == address(0) || to == address(0)) revert ZeroAddress();
         if (amount == 0) revert InvalidAmount();
         if (blockedRecipients[to]) revert RecipientIsBlocked();
+        _enforceRecipientContractPolicy(to);
         if (requireAllowedRecipient && !allowedRecipients[to]) revert RecipientNotAllowed();
 
         TokenPolicy storage policy = tokenPolicies[token];
@@ -189,7 +226,11 @@ contract SwappyTreasuryVault {
         _applyDailyLimit(policy, amount);
 
         executedOperation[operationId] = true;
-        if (!IERC20(token).transfer(to, amount)) revert TokenTransferFailed();
+        if (!IERC20(token).safeTransfer(to, amount)) revert TokenTransferFailed();
+    }
+
+    function _enforceRecipientContractPolicy(address to) internal view {
+        if (to.code.length != 0 && !allowedContractRecipients[to]) revert ContractRecipientNotAllowed();
     }
 
     function _applyDailyLimit(TokenPolicy storage policy, uint256 amount) internal {
