@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"payment-gateway/internal/database"
+	"payment-gateway/internal/models"
+	"payment-gateway/internal/workers"
 
 	"github.com/lib/pq"
 	"gopkg.in/yaml.v3"
@@ -156,6 +158,58 @@ func (s *Server) handleAdminTransactions(w http.ResponseWriter, r *http.Request)
 		"transactions": transactions,
 		"count":        len(transactions),
 	})
+}
+
+func (s *Server) handleAdminSellManualPixPaid(w http.ResponseWriter, r *http.Request) {
+	adminUser, _, ok := s.authorizeAdmin(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		ProviderID  string `json:"providerId"`
+		ReceiptID   string `json:"receiptId"`
+		ReceiptURL  string `json:"receiptUrl"`
+		ReceiptNote string `json:"receiptNote"`
+		Note        string `json:"note"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	orderID := strings.TrimSpace(r.PathValue("id"))
+	order, err := s.db.GetOrder(r.Context(), orderID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if order == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "ordem nao encontrada"})
+		return
+	}
+	if order.DepositTx == nil || strings.TrimSpace(*order.DepositTx) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ordem ainda nao tem deposito on-chain confirmado"})
+		return
+	}
+	providerID := firstNonEmpty(req.ProviderID, req.ReceiptID)
+	note := firstNonEmpty(req.Note, req.ReceiptNote, req.ReceiptURL)
+	updated, err := s.db.MarkManualPixPaid(r.Context(), orderID, providerID, adminUser.Email, note)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !updated {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "status atual nao permite confirmar PIX manual"})
+		return
+	}
+	s.workers.Bus.Publish(workers.Event{
+		Type:    "payout.manual_settled",
+		OrderID: orderID,
+		Payload: map[string]any{
+			"providerId": providerID,
+			"adminEmail": adminUser.Email,
+		},
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "orderId": orderID, "status": string(models.StatusConcluida)})
 }
 
 func (s *Server) handleAdminMobileTestPurge(w http.ResponseWriter, r *http.Request) {
