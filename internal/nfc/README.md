@@ -1,31 +1,47 @@
-# ChainFX NFC Rail
+# ChainFX Tap NFC Rail
 
-`internal/nfc` e o nucleo Go do cartao NFC fechado da ChainFX. Ele implementa o protocolo financeiro real usado por app mobile, leitor/terminal ChainFX e backend:
+`internal/nfc` e o nucleo Go do ChainFX Tap, o trilho NFC proprio da ChainFX. Ele implementa o protocolo usado por app mobile, leitor/terminal ChainFX e backend:
 
 - emissao de token dinamico `nfc1...`;
 - contrato APDU/TLV do cartao digital;
 - parser do token lido no terminal;
-- autorizacao online;
-- hold de USDT;
-- captura;
+- autorizacao online no backend ChainFX;
+- hold de USDT no ledger NFC;
+- captura/debito do saldo USDT travado;
 - reversao;
 - auditoria e idempotencia.
 
-O NFC fisico do celular continua sendo responsabilidade do app mobile nativo, porque Android/iOS controlam a antena e o registro de AID. O Go e a fonte de verdade do protocolo, do token, do autorizador e do dinheiro.
+O NFC fisico do celular continua sendo responsabilidade do app mobile nativo, porque Android/iOS controlam a antena e o registro de AID. O Go e a fonte de verdade do protocolo, do token, do autorizador e do ledger USDT.
 
 ## Escopo de Producao
 
-Este trilho e real e closed-loop:
+Este trilho e proprio e fechado da ChainFX:
 
 ```text
-ChainFX mobile wallet -> NFC tap -> ChainFX terminal -> ChainFX Go API -> USDT hold/capture
+ChainFX mobile app -> NFC tap -> ChainFX terminal -> ChainFX Go API -> USDT hold/capture -> Efi/PIX settlement
 ```
 
-Ele nao usa PAN, CVV ou Track2 real. Tambem nao tenta se passar por Visa/Mastercard. Maquininha comum de adquirente so roteia para a ChainFX se existir contrato tecnico/comercial de adquirente, bandeira, BIN sponsor ou issuer processor. Sem isso, o caminho correto e terminal/leitor ChainFX.
+Ele nao usa Visa, Mastercard, PAN, CVV, Track2 ou adquirencia tradicional. A maquininha desse fluxo e um terminal/leitor ChainFX que fala diretamente com a API ChainFX. A liquidacao BRL para o recebedor acontece pelo trilho Efi/PIX da propria ChainFX.
+
+Importante: na implementacao atual, o pagamento debita `nfc_wallet_balances`, que e um ledger interno de saldo NFC em micro-USDT. Para producao com dinheiro real, esse ledger precisa ser alimentado por um evento real e reconciliavel, por exemplo:
+
+```text
+deposito USDT confirmado / saldo custodial liberado
+      ↓
+credito NFC ledger auditado
+      ↓
+autorizacao NFC trava saldo
+      ↓
+capture consome saldo travado
+      ↓
+settlement Efi/PIX + conciliacao merchant/terminal
+```
+
+Sem essa ponte de funding/reconciliacao, `NFC_ENABLED=true` deve ser tratado como piloto ChainFX Tap, nao como dinheiro real liberado em producao.
 
 ## Fluxo Financeiro
 
-1. Usuario tem wallet mobile registrada.
+1. Usuario tem wallet mobile registrada e saldo USDT liberado para NFC.
 2. App chama `POST /api/mobile/nfc/provision` com JWT mobile.
 3. Go emite token `nfc1...` com TTL curto e persiste `token_hash`.
 4. App nativo entrega o token via NFC usando o contrato APDU ChainFX.
@@ -38,7 +54,11 @@ Ele nao usa PAN, CVV ou Track2 real. Tambem nao tenta se passar por Visa/Masterc
    - `response_code=51`, `status=requires_funding`;
    - `response_code=05`, `status=declined`.
 10. Na conclusao da venda, terminal chama `POST /api/nfc/authorizations/{id}/capture`.
-11. Se houver cancelamento/falha, terminal chama `POST /api/nfc/authorizations/{id}/reverse`.
+11. Capture consome o saldo USDT travado e publica evento `nfc.capture.completed`.
+12. A camada operacional liquida o recebedor via Efi/PIX e concilia merchant/terminal.
+13. Se houver cancelamento/falha antes do capture, terminal chama `POST /api/nfc/authorizations/{id}/reverse`.
+
+O token `nfc1...` e de uso unico no autorizador: uma tentativa valida revoga o token dentro da mesma transacao de banco antes de aprovar, negar por saldo insuficiente ou capturar hold. Repeticao com a mesma idempotency key retorna a autorizacao original; repeticao com nova idempotency key cai como token revogado.
 
 ## Contrato APDU
 
@@ -112,14 +132,34 @@ Funcoes:
 
 ## Endpoints Mobile
 
-### Cartao Digital
+### ChainFX Tap Digital
 
 ```http
 GET /api/mobile/nfc/card
 Authorization: Bearer <mobile-access-token>
 ```
 
-Retorna wallet, asset, rede, AID e saldo NFC.
+Retorna wallet, asset, rede, AID, saldo NFC e metadados do trilho proprio ChainFX.
+
+```json
+{
+  "card": {
+    "type": "chainfx_tap_usdt",
+    "display_name": "ChainFX Tap",
+    "scheme": "chainfx_own_closed_loop",
+    "card_network": "none",
+    "fiat_settlement": {
+      "rail": "efi_pix",
+      "provider": "efi",
+      "mode": "chainfx_terminal_to_chainfx_backend"
+    },
+    "crypto_debit": {
+      "asset": "USDT",
+      "source": "nfc_internal_usdt_ledger"
+    }
+  }
+}
+```
 
 ### Provisionamento
 
@@ -184,7 +224,7 @@ Content-Type: application/json
 POST /api/nfc/authorizations/{id}/capture
 ```
 
-Finaliza a venda e consome o saldo travado.
+Finaliza a venda, consome o saldo USDT travado e publica `nfc.capture.completed` para a camada de settlement Efi/PIX.
 
 ### Reverter
 
@@ -212,7 +252,7 @@ migrations/020_nfc_closed_loop.sql
 Tabelas:
 
 - `nfc_tokens`: token id, hash, wallet, device, rede, status e expiracao.
-- `nfc_wallet_balances`: saldo disponivel e travado por wallet/rede/asset.
+- `nfc_wallet_balances`: ledger interno de saldo NFC disponivel e travado por wallet/rede/asset.
 - `nfc_authorizations`: autorizacao, valor BRL, taxa, USDT requerido, status, hold, capture e reverse.
 
 Estados:
@@ -235,6 +275,15 @@ NFC_MAX_AMOUNT_BRL=500
 ```
 
 Em producao, `NFC_TOKEN_SECRET` e obrigatorio quando `NFC_ENABLED=true`.
+
+Para dinheiro real, tambem e obrigatorio definir operacionalmente:
+
+- origem do credito NFC ledger: deposito on-chain confirmado, saldo custodial liberado ou pre-funding;
+- processo de liquidacao Efi/PIX do recebedor depois do capture;
+- processo de conciliacao entre autorizacao, capture, merchant/terminal, PIX Efi e saldo USDT;
+- limites por usuario, terminal, merchant e janela diaria;
+- rotina de expiracao/reversao de holds vencidos;
+- auditoria de cada alteracao em `available_usdt_micro` e `locked_usdt_micro`.
 
 ## Performance
 
