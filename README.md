@@ -145,6 +145,33 @@ Integracoes recentes refletidas no backend:
 - **Adversarial/Chaos Ops**: `schema_chaos.sql`, `internal/adversarial`, `/v1/admin/gas/chaos-run`, `/v1/admin/gas/chaos-history` e `/admin/chaos`.
 - **Stress tests k6**: `tests/paymaster_stress.js` cobre spike, colisao de idempotencia, rate limit por tier, quote load e status probe.
 
+## Signer: Smoke Adversarial e Latencia
+
+Como o fluxo atual de Buy/Sell nao depende de contrato Swappy em producao, a camada critica e o signer com wallet direta, HMAC, nonce, idempotencia, custody guard, allowlist e limites.
+
+Smoke seguro, sem envio on-chain:
+
+```powershell
+cd C:\Users\Paulo\Desktop\payment-gateway\contracts
+$env:SIGNER_URL="https://transaction-signer-production-8394.up.railway.app"
+$env:SIGNER_HMAC_SECRET="mesmo segredo do signer"
+npm run smoke:signer-adversarial
+```
+
+O resultado mostra `PASS/FAIL` por caso e resumo de latencia:
+
+```text
+count=15 min=...ms avg=...ms p50=...ms p55=...ms p75=...ms p90=...ms p95=...ms p99=...ms max=...ms
+```
+
+Teste com transacao real/testnet fica separado e exige flag explicita:
+
+```powershell
+npm run smoke:signer-live-testnet -- --i-understand-this-sends-funds
+```
+
+Esse comando deve ser usado apenas em testnet ou com wallet de saldo pequeno, porque envia transacao real.
+
 Schemas/migrations relevantes:
 
 ```text
