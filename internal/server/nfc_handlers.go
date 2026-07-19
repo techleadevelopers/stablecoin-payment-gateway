@@ -149,12 +149,16 @@ func (s *Server) handleNFCAuthorize(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]any{"error": err.Error(), "code": code, "response_code": "05"})
 		return
 	}
-	usdtRate := s.workers.PriceWorker.GetPrice("BRL")
-	if usdtRate <= 0 {
+	price := s.workers.PriceWorker.GetSnapshot("BRL")
+	if price.Price <= 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "USDT/BRL rate unavailable"})
 		return
 	}
-	required := money.TokensFromFiat(amount, money.RateFromFloat(usdtRate))
+	if price.UpdatedAt.IsZero() || time.Since(price.UpdatedAt) > time.Duration(s.cfg.NFCPriceMaxAgeSec)*time.Second {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "USDT/BRL rate is stale", "code": "NFC_PRICE_STALE", "response_code": "91"})
+		return
+	}
+	required := money.TokensFromFiat(amount, money.RateFromFloat(price.Price))
 	if required <= 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "invalid required USDT amount"})
 		return
@@ -171,7 +175,7 @@ func (s *Server) handleNFCAuthorize(w http.ResponseWriter, r *http.Request) {
 		TerminalID:      req.TerminalID,
 		ExternalRef:     req.ExternalRef,
 		AmountBRLMinor:  int64(amount),
-		USDTRate:        usdtRate,
+		USDTRate:        price.Price,
 		RequiredUSDTMic: int64(required),
 		HoldExpiresAt:   time.Now().UTC().Add(time.Duration(s.cfg.NFCHoldTTLSeconds) * time.Second),
 	})
@@ -448,6 +452,8 @@ func nfcSettlementView(a *database.NFCAuthorization) map[string]any {
 		mode = "efi_pix_pending_or_manual"
 	case database.NFCStatusReversed:
 		mode = "reversed_no_fiat_settlement"
+	case database.NFCStatusExpired:
+		mode = "expired_hold_released"
 	case database.NFCStatusRequiresFunding:
 		mode = "insufficient_usdt"
 	case database.NFCStatusDeclined:
