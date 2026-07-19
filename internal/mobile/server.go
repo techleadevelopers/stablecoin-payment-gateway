@@ -154,6 +154,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// ── User / KYC ────────────────────────────────────────────────────────────
 	mux.HandleFunc("GET /api/mobile/user/profile", s.requireAuth(s.handleGetProfile))
 	mux.HandleFunc("PUT /api/mobile/user/profile", s.requireAuth(s.handleUpdateProfile))
+	mux.HandleFunc("POST /api/mobile/user/avatar", s.requireAuth(s.handleUploadAvatar))
 	mux.HandleFunc("DELETE /api/mobile/user/account", s.requireAuth(s.handleDeleteAccount))
 	mux.HandleFunc("POST /api/mobile/user/kyc", s.requireAuth(s.handleSubmitKYC))
 	mux.HandleFunc("GET /api/mobile/user/kyc/status", s.requireAuth(s.handleKYCStatus))
@@ -235,6 +236,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/mobile/countries/{code}/rails", s.handleListCountryRails)
 
 	// ── Phase 5: KYC async (non-blocking) ────────────────────────────────────
+	mux.HandleFunc("POST /api/mobile/uploads/kyc", s.requireAuth(s.handleUploadKYCMedia))
 	mux.HandleFunc("POST /api/mobile/kyc/submit", s.requireAuth(s.handleKYCSubmit))
 	mux.HandleFunc("GET /api/mobile/kyc/status", s.requireAuth(s.handleKYCStatusV2))
 	mux.HandleFunc("GET /api/mobile/kyc/history", s.requireAuth(s.handleKYCHistory))
