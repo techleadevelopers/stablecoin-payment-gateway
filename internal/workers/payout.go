@@ -94,6 +94,35 @@ func (pw *PayoutWorker) processPayout(ctx context.Context, event Event) {
 	// proceeds even if the event is delivered multiple times (re-delivery,
 	// crash-loop or multi-replica fan-out). If another worker already claimed
 	// the order, rows affected = 0 → we bail out silently.
+	if strings.EqualFold(strings.TrimSpace(pw.cfg.SellPayoutMode), "manual") || strings.TrimSpace(pw.cfg.SellPayoutMode) == "" {
+		claimCtx, claimCancel := context.WithTimeout(ctx, 5*time.Second)
+		claimed, err := pw.db.ClaimOrderForManualPayout(claimCtx, orderID, map[string]any{
+			"mode":          "manual",
+			"depositTx":     stringValue(order.DepositTx),
+			"depositAmount": floatValue(order.DepositAmount),
+			"pixKeyPresent": order.PixKey != "",
+			"payoutBRL":     order.PayoutBRL,
+		})
+		claimCancel()
+		if err != nil {
+			slog.Error("PayoutWorker: erro ao enfileirar payout manual", "order_id", orderID, "err", err)
+			pw.dlq.Push(event, 1, "manual payout queue error: "+err.Error())
+			return
+		}
+		if !claimed {
+			slog.Debug("PayoutWorker: payout manual ja enfileirado ou processado", "order_id", orderID)
+			return
+		}
+		pw.bus.Publish(Event{
+			Type:    "payout.manual_required",
+			OrderID: orderID,
+			Payload: map[string]any{"status": string(models.StatusAguardandoPixManual), "payout_brl": order.PayoutBRL},
+		})
+		slog.Warn("PayoutWorker: payout PIX manual requerido",
+			"order_id", orderID, "payout_brl", order.PayoutBRL, "duration_ms", time.Since(start).Milliseconds())
+		return
+	}
+
 	claimCtx, claimCancel := context.WithTimeout(ctx, 5*time.Second)
 	claimed, err := pw.db.ClaimOrderForPayout(claimCtx, orderID)
 	claimCancel()
@@ -308,4 +337,18 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func floatValue(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
