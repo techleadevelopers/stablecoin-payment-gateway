@@ -161,7 +161,7 @@ npm run smoke:signer-adversarial
 O resultado mostra `PASS/FAIL` por caso e resumo de latencia:
 
 ```text
-count=15 min=...ms avg=...ms p50=...ms p55=...ms p75=...ms p90=...ms p95=...ms p99=...ms max=...ms
+count=16 min=...ms avg=...ms p50=...ms p55=...ms p75=...ms p90=...ms p95=...ms p99=...ms max=...ms
 ```
 
 Teste com transacao real/testnet fica separado e exige flag explicita:
