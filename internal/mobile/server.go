@@ -164,7 +164,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/mobile/wallet/tokens", s.requireAuth(s.handleWalletTokens))
 	mux.HandleFunc("GET /api/mobile/wallet/address", s.requireAuth(s.handleWalletAddress))
 	mux.HandleFunc("POST /api/mobile/wallet/generate", s.requireAuth(s.handleWalletGenerate))
-	mux.HandleFunc("POST /api/mobile/wallet/transfer", s.requireAuth(s.handleWalletTransfer))
+	mux.HandleFunc("POST /api/mobile/wallet/transfer", s.requireAuth(s.requireIdempotency("mobile.wallet.transfer", s.handleWalletTransfer)))
 	mux.HandleFunc("GET /api/mobile/wallet/history", s.requireAuth(s.handleWalletHistory))
 	mux.HandleFunc("GET /api/mobile/nfc/card", s.requireAuth(s.handleNFCCard))
 	mux.HandleFunc("POST /api/mobile/nfc/provision", s.requireAuth(s.handleNFCProvision))
