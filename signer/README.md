@@ -35,7 +35,7 @@ Esse teste deve terminar com todos os casos `PASS` e um resumo:
 
 ```text
 Latency summary:
-count=15 min=...ms avg=...ms p50=...ms p55=...ms p75=...ms p90=...ms p95=...ms p99=...ms max=...ms
+count=16 min=...ms avg=...ms p50=...ms p55=...ms p75=...ms p90=...ms p95=...ms p99=...ms max=...ms
 ```
 
 Casos cobertos:
@@ -45,7 +45,8 @@ Casos cobertos:
 - timestamp expirado;
 - payload alterado depois da assinatura;
 - replay de nonce;
-- replay paralelo do mesmo nonce;
+- replay paralelo do mesmo nonce em primeiro uso;
+- replay paralelo de nonce ja consumido, que deve rejeitar 10/10 tentativas;
 - token fora da allowlist;
 - valor acima de `SIGNER_MAX_TRANSFER_AMOUNT`;
 - rede invalida;
