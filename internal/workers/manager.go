@@ -35,6 +35,7 @@ type WorkerManager struct {
 	KYCWorker           *KYCWorker
 	M2MSettlementWorker *M2MSettlementWorker
 	AutoSweeperWorker   *AutoSweeperWorker
+	NFCExpirationWorker *NFCExpirationWorker
 	PaymasterService    *paymaster.Service
 	PSPRouter           *psp.Router // optional; set by cmd/api/main.go before StartAll when Efí is configured
 	db                  *database.DB
@@ -62,6 +63,7 @@ func NewWorkerManager(db *database.DB, cfg *config.Config, mailer *email.Service
 		KYCWorker:           NewKYCWorker(bus, db, cfg),
 		M2MSettlementWorker: NewM2MSettlementWorker(bus, db, cfg),
 		AutoSweeperWorker:   NewAutoSweeperWorker(cfg, db, pool),
+		NFCExpirationWorker: NewNFCExpirationWorker(bus, db, cfg),
 		PaymasterService:    paymasterSvc,
 		db:                  db,
 		cfg:                 cfg,
@@ -72,7 +74,7 @@ func NewWorkerManager(db *database.DB, cfg *config.Config, mailer *email.Service
 func (wm *WorkerManager) StartAll(ctx context.Context) {
 	slog.Info("Iniciando todos os workers...")
 
-	workerCount := 11 // base workers + KYC + AutoSweeper + Paymaster
+	workerCount := 12 // base workers + KYC + AutoSweeper + Paymaster + NFC expiration
 	if wm.PSPRouter != nil {
 		workerCount++ // + PSP health probe
 	}
@@ -126,6 +128,11 @@ func (wm *WorkerManager) StartAll(ctx context.Context) {
 	go func() {
 		defer wm.wg.Done()
 		wm.AutoSweeperWorker.Start(ctx)
+	}()
+
+	go func() {
+		defer wm.wg.Done()
+		wm.NFCExpirationWorker.Start(ctx)
 	}()
 
 	go func() {
