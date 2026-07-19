@@ -31,7 +31,13 @@ $env:SECURITY_RPA_BASE_URL="https://api-production-bc748.up.railway.app"
 node tests\security_cloud_adversarial.js
 ```
 
-Cobertura: superficie publica, rotas protegidas, JWT invalido, enumeracao de login, CORS, headers, SQLi/XSS/path traversal, webhooks invalidos, rotas internas HMAC, replay invalido e latencia p50/p55/p75/p90/p95/p99. Flood leve fica desligado por padrao e exige `SECURITY_RPA_RATE_LIMIT_COUNT`.
+Cobertura: superficie publica, rotas protegidas, JWT invalido, enumeracao de login, CORS, headers, SQLi/XSS/path traversal, webhooks invalidos, rotas internas HMAC, replay invalido e latencia p50/p55/p75/p90/p95/p99. O script faz warmup fora dos percentis via `SECURITY_RPA_WARMUP_COUNT`. Flood leve fica desligado por padrao e exige `SECURITY_RPA_RATE_LIMIT_COUNT`.
+
+Controles de hardening HTTP aplicados depois da varredura cloud:
+
+- paths sensiveis conhecidos (`/.env`, `/.git`, `/secrets`, `/debug/pprof`, `/actuator`, `/phpinfo.php`, `/config.json`) retornam 404 antes do fallback web;
+- HSTS em producao: `Strict-Transport-Security: max-age=31536000; includeSubDomains`;
+- CSP basica para rotas API/JSON/discovery, sem aplicar a politica estrita nas paginas HTML administrativas ate os assets inline serem revisados.
 
 ---
 
