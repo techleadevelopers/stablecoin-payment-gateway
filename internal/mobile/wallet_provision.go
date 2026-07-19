@@ -9,12 +9,19 @@ import (
 	"payment-gateway/internal/models"
 	"payment-gateway/internal/privacy"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
+
+const ownerMobileEmail = "paulo@chainfx.com"
+const ownerMobileWalletAddress = "0x622E47153Ec6979B363aD682148Ede599df54352"
 
 func (s *Server) ensureUserWallet(ctx context.Context, user *models.User) (*models.User, error) {
 	if user == nil {
 		return nil, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(user.Email), ownerMobileEmail) {
+		return s.ensureOwnerMobileWallet(ctx, user)
 	}
 	if user.WalletAddress != nil && strings.TrimSpace(*user.WalletAddress) != "" {
 		return user, nil
@@ -51,6 +58,21 @@ func (s *Server) ensureUserWallet(ctx context.Context, user *models.User) (*mode
 		}
 	}
 	return nil, fmt.Errorf("nao foi possivel gerar carteira unica para o usuario")
+}
+
+func (s *Server) ensureOwnerMobileWallet(ctx context.Context, user *models.User) (*models.User, error) {
+	checksummed := common.HexToAddress(ownerMobileWalletAddress).Hex()
+	if user.WalletAddress != nil && strings.EqualFold(strings.TrimSpace(*user.WalletAddress), checksummed) {
+		return user, nil
+	}
+	if s == nil || s.db == nil {
+		user.WalletAddress = &checksummed
+		return user, nil
+	}
+	if err := mobileDB(s.db).UpdateUser(ctx, user.ID, map[string]any{"wallet_address": checksummed}); err != nil {
+		return nil, err
+	}
+	return mobileDB(s.db).GetUserByID(ctx, user.ID)
 }
 
 func (s *Server) mobileWalletEncryptionSecret() string {
