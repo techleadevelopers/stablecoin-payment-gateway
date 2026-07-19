@@ -168,6 +168,12 @@ FOR UPDATE`, in.TokenID, in.TokenHash).Scan(&dbWallet, &dbNetwork, &tokenStatus,
 		reason = "token_wallet_mismatch"
 		return txInsertNFCAuthorization(ctx, tx, in, status, responseCode, reason, holdExpires)
 	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE nfc_tokens
+SET status = 'revoked', last_used_at = NOW()
+WHERE token_id = $1 AND status = 'active'`, in.TokenID); err != nil {
+		return nil, false, fmt.Errorf("nfc: consume token: %w", err)
+	}
 
 	var available, locked int64
 	err = tx.QueryRowContext(ctx, `
@@ -195,7 +201,6 @@ WHERE wallet_address = $1 AND network = $2 AND asset = 'USDT'`,
 	if err != nil {
 		return nil, false, fmt.Errorf("nfc: lock balance: %w", err)
 	}
-	_, _ = tx.ExecContext(ctx, `UPDATE nfc_tokens SET last_used_at = NOW() WHERE token_id = $1`, in.TokenID)
 
 	status = NFCStatusApproved
 	responseCode = "00"
