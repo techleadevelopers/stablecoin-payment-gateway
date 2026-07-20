@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -36,9 +37,10 @@ type NFCMerchantSettlementWorker struct {
 }
 
 type efiPixSendResult struct {
-	IDEnvio string
-	E2EID   string
-	Status  string
+	IDEnvio        string
+	E2EID          string
+	Status         string
+	AmountBRLMinor int64
 }
 
 func NewNFCMerchantSettlementWorker(bus *EventBus, db *database.DB, cfg *config.Config) *NFCMerchantSettlementWorker {
@@ -211,11 +213,15 @@ func (w *NFCMerchantSettlementWorker) reconcileOne(ctx context.Context, settleme
 		w.publishSettlementFailure(settlement, false, err.Error())
 		return
 	}
-	duplicate, updated, err := w.db.ApplyMerchantSettlementProviderEvent(ctx, settlement.Provider, firstNonEmpty(result.IDEnvio, settlement.IdempotencyKey), result.E2EID, result.Status, map[string]any{
+	eventPayload := map[string]any{
 		"source": "poll",
 		"status": result.Status,
 		"e2e_id": result.E2EID,
-	})
+	}
+	if result.AmountBRLMinor > 0 {
+		eventPayload["amount_brl_minor"] = result.AmountBRLMinor
+	}
+	duplicate, updated, err := w.db.ApplyMerchantSettlementProviderEvent(ctx, settlement.Provider, firstNonEmpty(result.IDEnvio, settlement.IdempotencyKey), result.E2EID, result.Status, eventPayload)
 	if err != nil {
 		slog.Error("NFC settlement: reconciliação falhou", "settlement_id", settlement.ID, "err", err)
 		return
@@ -331,6 +337,7 @@ func parseEfiPixSendResult(raw []byte) (efiPixSendResult, error) {
 		E2EID      string `json:"e2eId"`
 		EndToEndID string `json:"endToEndId"`
 		Status     string `json:"status"`
+		Valor      string `json:"valor"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return efiPixSendResult{}, fmt.Errorf("efi pix send response parse: %w", err)
@@ -340,9 +347,10 @@ func parseEfiPixSendResult(raw []byte) (efiPixSendResult, error) {
 		return efiPixSendResult{}, fmt.Errorf("efi pix send: provider reference vazio")
 	}
 	return efiPixSendResult{
-		IDEnvio: result.IDEnvio,
-		E2EID:   firstNonEmpty(result.E2EID, result.EndToEndID),
-		Status:  firstNonEmpty(result.Status, "SUBMITTED"),
+		IDEnvio:        result.IDEnvio,
+		E2EID:          firstNonEmpty(result.E2EID, result.EndToEndID),
+		Status:         firstNonEmpty(result.Status, "SUBMITTED"),
+		AmountBRLMinor: parseBRLMinorWorker(result.Valor),
 	}, nil
 }
 
@@ -476,4 +484,16 @@ func onlyDigitsWorker(value string) string {
 		}
 	}
 	return b.String()
+}
+
+func parseBRLMinorWorker(value string) int64 {
+	value = strings.TrimSpace(strings.ReplaceAll(value, ",", "."))
+	if value == "" {
+		return 0
+	}
+	amount, err := strconv.ParseFloat(value, 64)
+	if err != nil || amount <= 0 {
+		return 0
+	}
+	return int64(math.Round(amount * 100))
 }
