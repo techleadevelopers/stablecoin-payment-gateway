@@ -37,6 +37,8 @@ func sanitizeUser(u *models.User) map[string]any {
 		"email":              u.Email,
 		"phone":              u.Phone,
 		"full_name":          u.FullName,
+		"cpf":                u.CPF,
+		"birth_date":         u.BirthDate,
 		"avatar_url":         u.AvatarURL,
 		"wallet_address":     u.WalletAddress,
 		"pix_key":            u.PixKey,
@@ -48,6 +50,13 @@ func sanitizeUser(u *models.User) map[string]any {
 	if cpf := mobileUserCPF(u); cpf != "" {
 		out["cpf"] = cpf
 		out["document_number"] = cpf
+	}
+	address := mobileUserAddress(u)
+	if len(address) > 0 {
+		out["address"] = address
+		for key, value := range address {
+			out["address_"+key] = value
+		}
 	}
 	return out
 }
@@ -68,7 +77,13 @@ func mobileUserString(value *string) string {
 }
 
 func mobileUserCPF(u *models.User) string {
-	if u == nil || u.KYCDocuments == nil {
+	if u == nil {
+		return ""
+	}
+	if cpf := onlyDigitsMobile(mobileUserString(u.CPF)); cpf != "" {
+		return cpf
+	}
+	if u.KYCDocuments == nil {
 		return ""
 	}
 	var docs map[string]any
@@ -83,6 +98,41 @@ func mobileUserCPF(u *models.User) string {
 		}
 	}
 	return ""
+}
+
+func mobileUserAddress(u *models.User) map[string]any {
+	if u == nil {
+		return nil
+	}
+	out := map[string]any{}
+	add := func(key string, value *string) {
+		if trimmed := mobileUserString(value); trimmed != "" {
+			out[key] = trimmed
+		}
+	}
+	add("postal_code", u.AddressPostalCode)
+	add("street", u.AddressStreet)
+	add("number", u.AddressNumber)
+	add("neighborhood", u.AddressNeighborhood)
+	add("city", u.AddressCity)
+	add("state", u.AddressState)
+	add("country", u.AddressCountry)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mobileUserKYCApproved(u *models.User) bool {
+	if u == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(string(u.KYCStatus))) {
+	case "approved", "verified", "verificado":
+		return true
+	default:
+		return false
+	}
 }
 
 func onlyDigitsMobile(value any) string {
