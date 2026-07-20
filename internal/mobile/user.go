@@ -25,9 +25,18 @@ func (s *Server) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	uid := userIDFromCtx(r)
 	var req struct {
-		FullName string `json:"full_name"`
-		Phone    string `json:"phone"`
-		PixKey   string `json:"pix_key"`
+		FullName            string `json:"full_name"`
+		Phone               string `json:"phone"`
+		CPF                 string `json:"cpf"`
+		PixKey              string `json:"pix_key"`
+		BirthDate           string `json:"birth_date"`
+		AddressPostalCode   string `json:"address_postal_code"`
+		AddressStreet       string `json:"address_street"`
+		AddressNumber       string `json:"address_number"`
+		AddressNeighborhood string `json:"address_neighborhood"`
+		AddressCity         string `json:"address_city"`
+		AddressState        string `json:"address_state"`
+		AddressCountry      string `json:"address_country"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "payload inválido"})
@@ -40,8 +49,35 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	if phone := strings.TrimSpace(req.Phone); phone != "" {
 		fields["phone"] = phone
 	}
+	if cpf := onlyDigitsMobile(req.CPF); cpf != "" {
+		fields["cpf"] = cpf
+	}
 	if pixKey := strings.TrimSpace(req.PixKey); pixKey != "" {
 		fields["pix_key"] = pixKey
+	}
+	if birthDate := strings.TrimSpace(req.BirthDate); birthDate != "" {
+		fields["birth_date"] = birthDate
+	}
+	if postalCode := onlyDigitsMobile(req.AddressPostalCode); postalCode != "" {
+		fields["address_postal_code"] = postalCode
+	}
+	if street := strings.TrimSpace(req.AddressStreet); street != "" {
+		fields["address_street"] = street
+	}
+	if number := strings.TrimSpace(req.AddressNumber); number != "" {
+		fields["address_number"] = number
+	}
+	if neighborhood := strings.TrimSpace(req.AddressNeighborhood); neighborhood != "" {
+		fields["address_neighborhood"] = neighborhood
+	}
+	if city := strings.TrimSpace(req.AddressCity); city != "" {
+		fields["address_city"] = city
+	}
+	if state := strings.ToUpper(strings.TrimSpace(req.AddressState)); state != "" {
+		fields["address_state"] = state
+	}
+	if country := strings.ToUpper(strings.TrimSpace(req.AddressCountry)); country != "" {
+		fields["address_country"] = country
 	}
 	if len(fields) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "nenhum campo para atualizar"})
