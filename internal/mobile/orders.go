@@ -28,7 +28,7 @@ func (s *Server) handleMobileBuyQuote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	asset := strings.ToUpper(firstNonEmptyStr(req.Asset, "USDT"))
-	if asset != "USDT" {
+	if !mobileSellAssetSupported(asset) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "asset nao suportado nesta fase"})
 		return
 	}
@@ -369,6 +369,7 @@ func (s *Server) handleMobileSellQuote(w http.ResponseWriter, r *http.Request) {
 		"asset":         asset,
 		"fiat":          "BRL",
 		"amount_usdt":   req.AmountUSDT,
+		"amount_crypto": req.AmountUSDT,
 		"cryptoAmount":  req.AmountUSDT,
 		"rate":          rate,
 		"market_rate":   roundRateLocal(marketRate),
@@ -402,7 +403,12 @@ func (s *Server) handleMobileSell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Asset = strings.ToUpper(firstNonEmptyStr(req.Asset, "USDT"))
-	if _, err := s.verifyMobileQuote(req.QuoteID, "sell", req.Asset, req.AmountUSDT, time.Now()); err != nil {
+	if !mobileSellAssetSupported(req.Asset) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "asset nao suportado nesta fase"})
+		return
+	}
+	claims, err := s.verifyMobileQuote(req.QuoteID, "sell", req.Asset, req.AmountUSDT, time.Now())
+	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "MOBILE_QUOTE_INVALID"})
 		return
 	}
@@ -420,6 +426,7 @@ func (s *Server) handleMobileSell(w http.ResponseWriter, r *http.Request) {
 		"pixCpf":     req.PixCpf,
 		"asset":      req.Asset,
 		"quoteId":    req.QuoteID,
+		"rateLocked": claims.Rate,
 	}
 	resp, err := forwardToInternal(r, "POST", s.internalBase(r)+"/api/order", payload, s.internalAPIKey())
 	if err != nil {
@@ -437,6 +444,15 @@ func (s *Server) handleMobileSell(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
+}
+
+func mobileSellAssetSupported(asset string) bool {
+	switch strings.ToUpper(strings.TrimSpace(asset)) {
+	case "USDT", "BTC", "BNB":
+		return true
+	default:
+		return false
+	}
 }
 
 // handleMobileSwap — POST /api/mobile/order/swap
