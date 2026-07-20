@@ -94,16 +94,34 @@ func (s *Server) handleMobileBuyQuote(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMobileBuy(w http.ResponseWriter, r *http.Request) {
 	uid := userIDFromCtx(r)
 	var req struct {
-		AmountBRL     float64 `json:"amount_brl"`
-		Asset         string  `json:"asset"`
-		DestAddress   string  `json:"dest_address"`
-		Network       string  `json:"network"`
-		PaymentMethod string  `json:"payment_method"` // "pix" | "card"
-		CustomerName  string  `json:"customer_name"`
-		CustomerEmail string  `json:"customer_email"`
-		CustomerCPF   string  `json:"customer_cpf"`
-		CustomerPhone string  `json:"customer_phone"`
-		QuoteID       string  `json:"quote_id"`
+		AmountBRL                   float64        `json:"amount_brl"`
+		Asset                       string         `json:"asset"`
+		DestAddress                 string         `json:"dest_address"`
+		Network                     string         `json:"network"`
+		PaymentMethod               string         `json:"payment_method"` // "pix" | "card"
+		CPF                         string         `json:"cpf"`
+		CustomerName                string         `json:"customer_name"`
+		CustomerEmail               string         `json:"customer_email"`
+		CustomerCPF                 string         `json:"customer_cpf"`
+		CustomerPhone               string         `json:"customer_phone"`
+		CustomerBirthDate           string         `json:"customer_birth_date"`
+		CustomerAddress             map[string]any `json:"customer_address"`
+		CustomerAddressPostalCode   string         `json:"customer_address_postal_code"`
+		CustomerAddressStreet       string         `json:"customer_address_street"`
+		CustomerAddressNumber       string         `json:"customer_address_number"`
+		CustomerAddressNeighborhood string         `json:"customer_address_neighborhood"`
+		CustomerAddressCity         string         `json:"customer_address_city"`
+		CustomerAddressState        string         `json:"customer_address_state"`
+		CustomerAddressCountry      string         `json:"customer_address_country"`
+		Customer                    struct {
+			Name      string         `json:"name"`
+			Email     string         `json:"email"`
+			CPF       string         `json:"cpf"`
+			Phone     string         `json:"phone"`
+			BirthDate string         `json:"birthDate"`
+			Address   map[string]any `json:"address"`
+		} `json:"customer"`
+		QuoteID string `json:"quote_id"`
 	}
 	if err := decodeJSON(r, &req); err != nil || req.AmountBRL <= 0 || req.DestAddress == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "amount_brl e dest_address obrigatórios"})
@@ -132,15 +150,32 @@ func (s *Server) handleMobileBuy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, _ := mobileDB(s.db).GetUserByID(r.Context(), uid)
-	customerName := strings.TrimSpace(req.CustomerName)
-	customerEmail := strings.TrimSpace(req.CustomerEmail)
-	customerCPF := onlyDigitsMobile(req.CustomerCPF)
-	customerPhone := onlyDigitsMobile(req.CustomerPhone)
+	customerName := strings.TrimSpace(firstNonEmptyStr(req.CustomerName, req.Customer.Name))
+	customerEmail := strings.TrimSpace(firstNonEmptyStr(req.CustomerEmail, req.Customer.Email))
+	customerCPF := onlyDigitsMobile(firstNonEmptyStr(req.CustomerCPF, req.CPF, req.Customer.CPF))
+	customerPhone := onlyDigitsMobile(firstNonEmptyStr(req.CustomerPhone, req.Customer.Phone))
+	customerBirthDate := strings.TrimSpace(firstNonEmptyStr(req.CustomerBirthDate, req.Customer.BirthDate))
+	customerAddress := normalizeMobileCustomerAddress(firstNonNilAddress(req.CustomerAddress, req.Customer.Address))
+	if len(customerAddress) == 0 {
+		customerAddress = normalizeMobileCustomerAddress(map[string]any{
+			"postal_code":  req.CustomerAddressPostalCode,
+			"street":       req.CustomerAddressStreet,
+			"number":       req.CustomerAddressNumber,
+			"neighborhood": req.CustomerAddressNeighborhood,
+			"city":         req.CustomerAddressCity,
+			"state":        req.CustomerAddressState,
+			"country":      req.CustomerAddressCountry,
+		})
+	}
 	if user != nil {
 		customerName = strings.TrimSpace(firstNonEmptyStr(customerName, mobileUserString(user.FullName)))
 		customerEmail = strings.TrimSpace(firstNonEmptyStr(customerEmail, user.Email))
 		customerCPF = onlyDigitsMobile(firstNonEmptyStr(customerCPF, mobileUserCPF(user)))
 		customerPhone = onlyDigitsMobile(firstNonEmptyStr(customerPhone, mobileUserString(user.Phone)))
+		customerBirthDate = strings.TrimSpace(firstNonEmptyStr(customerBirthDate, mobileUserString(user.BirthDate)))
+		if len(customerAddress) == 0 {
+			customerAddress = mobileUserAddress(user)
+		}
 	}
 	if strings.EqualFold(req.PaymentMethod, "pix") {
 		if customerName == "" {
@@ -148,7 +183,7 @@ func (s *Server) handleMobileBuy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if customerCPF == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cpf do cliente obrigatorio no perfil ou KYC"})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cpf do cliente obrigatorio no cadastro"})
 			return
 		}
 	}
@@ -163,10 +198,12 @@ func (s *Server) handleMobileBuy(w http.ResponseWriter, r *http.Request) {
 		"quoteId":       req.QuoteID,
 		"rateLocked":    claims.Rate,
 		"customer": map[string]any{
-			"name":  customerName,
-			"email": customerEmail,
-			"cpf":   customerCPF,
-			"phone": customerPhone,
+			"name":      customerName,
+			"email":     customerEmail,
+			"cpf":       customerCPF,
+			"phone":     customerPhone,
+			"birthDate": customerBirthDate,
+			"address":   customerAddress,
 		},
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
@@ -422,6 +459,18 @@ func (s *Server) handleMobileSell(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "MOBILE_QUOTE_INVALID"})
 		return
 	}
+	user, err := mobileDB(s.db).GetUserByID(r.Context(), uid)
+	if err != nil || user == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "usuario nao encontrado"})
+		return
+	}
+	if !mobileUserKYCApproved(user) {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error": "KYC aprovado obrigatorio para vender cripto no app mobile",
+			"code":  "MOBILE_SELL_KYC_REQUIRED",
+		})
+		return
+	}
 	pixKey := req.PixKey
 	if pixKey == "" && req.PixPhone != "" {
 		pixKey = req.PixPhone
@@ -590,11 +639,58 @@ func forwardToInternal(r *http.Request, method, url string, payload any, apiKey 
 
 func firstNonEmptyStr(vals ...string) string {
 	for _, v := range vals {
-		if v != "" {
-			return v
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			return trimmed
 		}
 	}
 	return ""
+}
+
+func normalizeMobileCustomerAddress(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	add := func(outKey string, keys ...string) {
+		for _, key := range keys {
+			if raw, ok := input[key]; ok {
+				value := strings.TrimSpace(valueToString(raw))
+				if value != "" {
+					out[outKey] = value
+					return
+				}
+			}
+		}
+	}
+	add("postal_code", "postal_code", "postalCode", "zipcode", "zipCode", "cep")
+	add("street", "street", "logradouro", "addressLine1")
+	add("number", "number", "numero")
+	add("neighborhood", "neighborhood", "bairro")
+	add("city", "city", "cidade")
+	add("state", "state", "uf", "province")
+	add("country", "country", "pais")
+	if postalCode, ok := out["postal_code"].(string); ok {
+		out["postal_code"] = onlyDigitsMobile(postalCode)
+	}
+	if state, ok := out["state"].(string); ok {
+		out["state"] = strings.ToUpper(strings.TrimSpace(state))
+	}
+	if country, ok := out["country"].(string); ok {
+		out["country"] = strings.ToUpper(strings.TrimSpace(country))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func firstNonNilAddress(values ...map[string]any) map[string]any {
+	for _, value := range values {
+		if len(value) > 0 {
+			return value
+		}
+	}
+	return nil
 }
 
 func looksLikeEVMAddress(address string) bool {
