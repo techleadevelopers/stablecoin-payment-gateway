@@ -171,6 +171,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/mobile/wallet/address", s.requireAuth(s.handleWalletAddress))
 	mux.HandleFunc("POST /api/mobile/wallet/generate", s.requireAuth(s.handleWalletGenerate))
 	mux.HandleFunc("POST /api/mobile/wallet/transfer", s.requireAuth(s.requireIdempotency("mobile.wallet.transfer", s.handleWalletTransfer)))
+	mux.HandleFunc("POST /api/mobile/wallet/tokens/import", s.requireAuth(s.handleImportWalletToken))
 	mux.HandleFunc("GET /api/mobile/wallet/history", s.requireAuth(s.handleWalletHistory))
 	mux.HandleFunc("GET /api/mobile/nfc/card", s.requireAuth(s.handleNFCCard))
 	mux.HandleFunc("POST /api/mobile/nfc/provision", s.requireAuth(s.handleNFCProvision))
@@ -265,6 +266,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/mobile/webhooks", s.requireAuth(s.handleListWebhooks))
 	mux.HandleFunc("DELETE /api/mobile/webhooks/{id}", s.requireAuth(s.handleDeleteWebhook))
 	mux.HandleFunc("PUT /api/mobile/webhooks/{id}/toggle", s.requireAuth(s.handleToggleWebhook))
+
+	// Support
+	mux.HandleFunc("POST /api/mobile/support/tickets", s.requireAuth(s.handleCreateSupportTicket))
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
