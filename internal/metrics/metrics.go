@@ -160,6 +160,10 @@ func ObserveHTTPStage(method, route, stage string, duration time.Duration) {
 	global.observeHTTPStage(method, route, stage, duration)
 }
 
+func IncInternalHTTPLoopback(source, target string) {
+	global.incInternalHTTPLoopback(source, target)
+}
+
 func RoutePattern(method, path, muxPattern string) string {
 	muxPattern = strings.TrimSpace(muxPattern)
 	if muxPattern != "" {
@@ -241,6 +245,7 @@ type registry struct {
 	opLog         []overpaymentLogEntry // ring buffer, max 1 000 entries
 	httpDurations map[httpMetricKey]*histogram
 	httpStages    map[httpStageMetricKey]*histogram
+	loopbacks     map[loopbackMetricKey]uint64
 	startedAt     time.Time
 }
 
@@ -254,6 +259,11 @@ type httpStageMetricKey struct {
 	Method string
 	Route  string
 	Stage  string
+}
+
+type loopbackMetricKey struct {
+	Source string
+	Target string
 }
 
 type histogram struct {
@@ -275,6 +285,7 @@ func newRegistry() *registry {
 		onchainFloors: make(map[string]uint64),
 		httpDurations: make(map[httpMetricKey]*histogram),
 		httpStages:    make(map[httpStageMetricKey]*histogram),
+		loopbacks:     make(map[loopbackMetricKey]uint64),
 		startedAt:     time.Now(),
 	}
 }
@@ -310,6 +321,14 @@ func (reg *registry) observeHTTPStage(method, route, stage string, duration time
 		reg.httpStages[key] = h
 	}
 	h.observe(duration.Seconds())
+}
+
+func (reg *registry) incInternalHTTPLoopback(source, target string) {
+	source = sanitizeMetricLabel(source, "unknown")
+	target = sanitizeMetricLabel(target, "unknown")
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	reg.loopbacks[loopbackMetricKey{Source: source, Target: target}]++
 }
 
 func (h *histogram) observe(seconds float64) {
@@ -385,7 +404,7 @@ func formatLabels(labels map[string]string) string {
 	if len(labels) == 0 {
 		return ""
 	}
-	order := []string{"method", "route", "status", "stage", "le"}
+	order := []string{"method", "route", "status", "stage", "source", "target", "le"}
 	parts := make([]string, 0, len(labels))
 	seen := make(map[string]bool, len(labels))
 	for _, key := range order {
@@ -444,6 +463,10 @@ func (reg *registry) render() string {
 	for k, v := range reg.httpStages {
 		httpStages[k] = v.clone()
 	}
+	loopbacks := make(map[loopbackMetricKey]uint64, len(reg.loopbacks))
+	for k, v := range reg.loopbacks {
+		loopbacks[k] = v
+	}
 	reg.mu.RUnlock()
 
 	uptimeSec := time.Since(reg.startedAt).Seconds()
@@ -468,6 +491,15 @@ func (reg *registry) render() string {
 			"route":  key.Route,
 			"stage":  key.Stage,
 		}, h)
+	}
+
+	b.WriteString("# HELP chainfx_internal_http_loopback_total Internal HTTP loopback requests still used by adapter surfaces.\n")
+	b.WriteString("# TYPE chainfx_internal_http_loopback_total counter\n")
+	for key, count := range loopbacks {
+		fmt.Fprintf(&b, "chainfx_internal_http_loopback_total%s %d\n", formatLabels(map[string]string{
+			"source": key.Source,
+			"target": key.Target,
+		}), count)
 	}
 
 	// ── chainfx_m2m_overpayment_total ──────────────────────────────────────
