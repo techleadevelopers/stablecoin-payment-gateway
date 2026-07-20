@@ -89,6 +89,10 @@ func IncWebhookFailure() {
 	global.webhookFailureTotal.Add(1)
 }
 
+func IncNFCLiquidityRejection() {
+	global.nfcLiquidityRejections.Add(1)
+}
+
 // ── Gas Station ───────────────────────────────────────────────────────────────
 
 // IncPaymasterRelay records one successfully submitted relay request.
@@ -132,15 +136,20 @@ func SetOnchainConfirmationFloor(network string, floor uint64) {
 
 type NFCSettlementSnapshot struct {
 	Counts                     map[string]int64
+	AnomalyCounts              map[string]int64
 	QueueAgeSeconds            float64
 	SubmitLatencySeconds       float64
 	ConfirmationLatencySeconds float64
 	EndToEndSeconds            float64
+	TreasurySnapshotAgeSeconds float64
 	EfiBalanceBRL              float64
 	EfiPendingBRL              float64
 	EfiSubmittedBRL            float64
+	EfiReservedBRL             float64
 	EfiMinBufferBRL            float64
 	EfiAvailableRealBRL        float64
+	ReconciliationLastSuccess  float64
+	ReconciliationDuration     float64
 }
 
 func SetNFCSettlementSnapshot(snapshot NFCSettlementSnapshot) {
@@ -148,6 +157,9 @@ func SetNFCSettlementSnapshot(snapshot NFCSettlementSnapshot) {
 	defer global.mu.Unlock()
 	if snapshot.Counts == nil {
 		snapshot.Counts = map[string]int64{}
+	}
+	if snapshot.AnomalyCounts == nil {
+		snapshot.AnomalyCounts = map[string]int64{}
 	}
 	global.nfcSettlement = snapshot
 }
@@ -166,12 +178,13 @@ func Handler() http.HandlerFunc {
 
 type registry struct {
 	// Counters (thread-safe via sync/atomic)
-	overpaymentTotal     atomic.Int64
-	overpaymentUSDTMicro atomic.Int64 // micro-USDT (×1_000_000)
-	mcpToolCallTotal     atomic.Int64
-	mcpToolCallErrors    atomic.Int64
-	mcpRateLimitedTotal  atomic.Int64
-	webhookFailureTotal  atomic.Int64
+	overpaymentTotal       atomic.Int64
+	overpaymentUSDTMicro   atomic.Int64 // micro-USDT (×1_000_000)
+	mcpToolCallTotal       atomic.Int64
+	mcpToolCallErrors      atomic.Int64
+	mcpRateLimitedTotal    atomic.Int64
+	webhookFailureTotal    atomic.Int64
+	nfcLiquidityRejections atomic.Int64
 
 	penaltyBoxActiveBans           atomic.Int64
 	penaltyBoxBansTotal            atomic.Int64
@@ -236,6 +249,10 @@ func (reg *registry) render() string {
 	nfcCounts := make(map[string]int64, len(nfcSettlement.Counts))
 	for k, v := range nfcSettlement.Counts {
 		nfcCounts[k] = v
+	}
+	nfcAnomalies := make(map[string]int64, len(nfcSettlement.AnomalyCounts))
+	for k, v := range nfcSettlement.AnomalyCounts {
+		nfcAnomalies[k] = v
 	}
 	reg.mu.RUnlock()
 
@@ -304,6 +321,7 @@ func (reg *registry) render() string {
 	for _, status := range []string{"PENDING", "SUBMITTED", "SUBMISSION_UNKNOWN", "CONFIRMED", "REJECTED", "MANUAL_REVIEW"} {
 		fmt.Fprintf(&b, "nfc_settlement_%s_total %d\n", strings.ToLower(status), nfcCounts[status])
 	}
+	fmt.Fprintf(&b, "nfc_settlement_unknown_total %d\n", nfcCounts["SUBMISSION_UNKNOWN"])
 	b.WriteString("# HELP nfc_settlement_queue_age_seconds Age in seconds of the oldest active NFC settlement queue item.\n")
 	b.WriteString("# TYPE nfc_settlement_queue_age_seconds gauge\n")
 	fmt.Fprintf(&b, "nfc_settlement_queue_age_seconds %.2f\n", nfcSettlement.QueueAgeSeconds)
@@ -316,11 +334,35 @@ func (reg *registry) render() string {
 	b.WriteString("# HELP nfc_settlement_end_to_end_seconds Average seconds from settlement creation to confirmation.\n")
 	b.WriteString("# TYPE nfc_settlement_end_to_end_seconds gauge\n")
 	fmt.Fprintf(&b, "nfc_settlement_end_to_end_seconds %.2f\n", nfcSettlement.EndToEndSeconds)
+	b.WriteString("# HELP nfc_treasury_snapshot_age_seconds Age in seconds of the latest persisted NFC treasury snapshot.\n")
+	b.WriteString("# TYPE nfc_treasury_snapshot_age_seconds gauge\n")
+	fmt.Fprintf(&b, "nfc_treasury_snapshot_age_seconds %.2f\n", nfcSettlement.TreasurySnapshotAgeSeconds)
+	b.WriteString("# HELP nfc_treasury_effective_available_brl Effective BRL available for new NFC authorizations after reservations, outflow and buffer.\n")
+	b.WriteString("# TYPE nfc_treasury_effective_available_brl gauge\n")
+	fmt.Fprintf(&b, "nfc_treasury_effective_available_brl %.2f\n", nfcSettlement.EfiAvailableRealBRL)
+	b.WriteString("# HELP nfc_treasury_reserved_brl Active BRL liquidity reservations created by NFC authorizations.\n")
+	b.WriteString("# TYPE nfc_treasury_reserved_brl gauge\n")
+	fmt.Fprintf(&b, "nfc_treasury_reserved_brl %.2f\n", nfcSettlement.EfiReservedBRL)
+	b.WriteString("# HELP nfc_treasury_liquidity_rejections_total NFC authorizations rejected by BRL treasury liquidity policy.\n")
+	b.WriteString("# TYPE nfc_treasury_liquidity_rejections_total counter\n")
+	fmt.Fprintf(&b, "nfc_treasury_liquidity_rejections_total %d\n", reg.nfcLiquidityRejections.Load())
+	b.WriteString("# HELP nfc_settlement_anomalies_total Current open NFC settlement reconciliation anomalies by type.\n")
+	b.WriteString("# TYPE nfc_settlement_anomalies_total gauge\n")
+	for anomalyType, count := range nfcAnomalies {
+		fmt.Fprintf(&b, "nfc_settlement_anomalies_total{type=%q} %d\n", anomalyType, count)
+	}
+	b.WriteString("# HELP nfc_reconciliation_last_success_timestamp Unix timestamp of the last successful NFC settlement reconciliation run.\n")
+	b.WriteString("# TYPE nfc_reconciliation_last_success_timestamp gauge\n")
+	fmt.Fprintf(&b, "nfc_reconciliation_last_success_timestamp %.0f\n", nfcSettlement.ReconciliationLastSuccess)
+	b.WriteString("# HELP nfc_reconciliation_duration_seconds Duration of the last successful NFC settlement reconciliation run.\n")
+	b.WriteString("# TYPE nfc_reconciliation_duration_seconds gauge\n")
+	fmt.Fprintf(&b, "nfc_reconciliation_duration_seconds %.3f\n", nfcSettlement.ReconciliationDuration)
 	b.WriteString("# HELP nfc_efi_treasury_brl Operational Efi treasury BRL snapshot.\n")
 	b.WriteString("# TYPE nfc_efi_treasury_brl gauge\n")
 	fmt.Fprintf(&b, "nfc_efi_treasury_brl{kind=\"balance\"} %.2f\n", nfcSettlement.EfiBalanceBRL)
 	fmt.Fprintf(&b, "nfc_efi_treasury_brl{kind=\"pending\"} %.2f\n", nfcSettlement.EfiPendingBRL)
 	fmt.Fprintf(&b, "nfc_efi_treasury_brl{kind=\"submitted\"} %.2f\n", nfcSettlement.EfiSubmittedBRL)
+	fmt.Fprintf(&b, "nfc_efi_treasury_brl{kind=\"reserved\"} %.2f\n", nfcSettlement.EfiReservedBRL)
 	fmt.Fprintf(&b, "nfc_efi_treasury_brl{kind=\"min_buffer\"} %.2f\n", nfcSettlement.EfiMinBufferBRL)
 	fmt.Fprintf(&b, "nfc_efi_treasury_brl{kind=\"available_real\"} %.2f\n", nfcSettlement.EfiAvailableRealBRL)
 
