@@ -112,6 +112,10 @@ func (s *Server) isDeliveryAddress(address string) bool {
 	}
 }
 
+func isEVMDeliveryAddress(address string) bool {
+	return common.IsHexAddress(strings.TrimSpace(address))
+}
+
 func normalizePaymentRail(currency, method string, amountFiat, amountBRL, amountUSD float64) (string, string, float64) {
 	currency = strings.ToUpper(strings.TrimSpace(currency))
 	method = strings.ToLower(strings.TrimSpace(method))
