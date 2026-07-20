@@ -23,6 +23,7 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 		PaymentMethod     string  `json:"paymentMethod"`
 		ProviderPaymentID string  `json:"providerPaymentId"`
 		Asset             string  `json:"asset"`
+		Network           string  `json:"network"`
 		Address           string  `json:"address"`
 		PixCpf            string  `json:"pixCpf"`
 		PixPhone          string  `json:"pixPhone"`
@@ -64,8 +65,12 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "asset nao suportado nesta fase"})
 		return
 	}
-	deliveryNetwork := s.deliveryNetwork()
-	if !s.isDeliveryAddress(req.Address) {
+	deliveryNetwork := normalizeStablecoinNetwork(defaultString(req.Network, s.deliveryNetwork()))
+	if deliveryNetwork != "BSC" && deliveryNetwork != "POLYGON" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "network deve ser BSC ou POLYGON"})
+		return
+	}
+	if !isEVMDeliveryAddress(req.Address) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("endereco %s invalido", deliveryNetwork)})
 		return
 	}
