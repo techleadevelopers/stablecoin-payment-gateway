@@ -130,6 +130,28 @@ func SetOnchainConfirmationFloor(network string, floor uint64) {
 	global.onchainFloors[strings.ToUpper(network)] = floor
 }
 
+type NFCSettlementSnapshot struct {
+	Counts                     map[string]int64
+	QueueAgeSeconds            float64
+	SubmitLatencySeconds       float64
+	ConfirmationLatencySeconds float64
+	EndToEndSeconds            float64
+	EfiBalanceBRL              float64
+	EfiPendingBRL              float64
+	EfiSubmittedBRL            float64
+	EfiMinBufferBRL            float64
+	EfiAvailableRealBRL        float64
+}
+
+func SetNFCSettlementSnapshot(snapshot NFCSettlementSnapshot) {
+	global.mu.Lock()
+	defer global.mu.Unlock()
+	if snapshot.Counts == nil {
+		snapshot.Counts = map[string]int64{}
+	}
+	global.nfcSettlement = snapshot
+}
+
 // Handler returns an HTTP handler that serves Prometheus text format metrics.
 // Wire it at GET /metrics behind your admin auth middleware.
 func Handler() http.HandlerFunc {
@@ -169,6 +191,7 @@ type registry struct {
 
 	// Structured state (protected by mu)
 	mu            sync.RWMutex
+	nfcSettlement NFCSettlementSnapshot
 	onchainFloors map[string]uint64     // network → min confirmations
 	opLog         []overpaymentLogEntry // ring buffer, max 1 000 entries
 	startedAt     time.Time
@@ -208,6 +231,11 @@ func (reg *registry) render() string {
 	floors := make(map[string]uint64, len(reg.onchainFloors))
 	for k, v := range reg.onchainFloors {
 		floors[k] = v
+	}
+	nfcSettlement := reg.nfcSettlement
+	nfcCounts := make(map[string]int64, len(nfcSettlement.Counts))
+	for k, v := range nfcSettlement.Counts {
+		nfcCounts[k] = v
 	}
 	reg.mu.RUnlock()
 
@@ -271,6 +299,31 @@ func (reg *registry) render() string {
 	}
 
 	// ── chainfx_paymaster_relay_total ──────────────────────────────────────
+	b.WriteString("# HELP nfc_settlement_status_total Current NFC merchant settlements by status.\n")
+	b.WriteString("# TYPE nfc_settlement_status_total gauge\n")
+	for _, status := range []string{"PENDING", "SUBMITTED", "SUBMISSION_UNKNOWN", "CONFIRMED", "REJECTED", "MANUAL_REVIEW"} {
+		fmt.Fprintf(&b, "nfc_settlement_%s_total %d\n", strings.ToLower(status), nfcCounts[status])
+	}
+	b.WriteString("# HELP nfc_settlement_queue_age_seconds Age in seconds of the oldest active NFC settlement queue item.\n")
+	b.WriteString("# TYPE nfc_settlement_queue_age_seconds gauge\n")
+	fmt.Fprintf(&b, "nfc_settlement_queue_age_seconds %.2f\n", nfcSettlement.QueueAgeSeconds)
+	b.WriteString("# HELP nfc_settlement_submit_latency_seconds Average seconds from settlement creation to provider submission.\n")
+	b.WriteString("# TYPE nfc_settlement_submit_latency_seconds gauge\n")
+	fmt.Fprintf(&b, "nfc_settlement_submit_latency_seconds %.2f\n", nfcSettlement.SubmitLatencySeconds)
+	b.WriteString("# HELP nfc_settlement_confirmation_latency_seconds Average seconds from provider submission to confirmation.\n")
+	b.WriteString("# TYPE nfc_settlement_confirmation_latency_seconds gauge\n")
+	fmt.Fprintf(&b, "nfc_settlement_confirmation_latency_seconds %.2f\n", nfcSettlement.ConfirmationLatencySeconds)
+	b.WriteString("# HELP nfc_settlement_end_to_end_seconds Average seconds from settlement creation to confirmation.\n")
+	b.WriteString("# TYPE nfc_settlement_end_to_end_seconds gauge\n")
+	fmt.Fprintf(&b, "nfc_settlement_end_to_end_seconds %.2f\n", nfcSettlement.EndToEndSeconds)
+	b.WriteString("# HELP nfc_efi_treasury_brl Operational Efi treasury BRL snapshot.\n")
+	b.WriteString("# TYPE nfc_efi_treasury_brl gauge\n")
+	fmt.Fprintf(&b, "nfc_efi_treasury_brl{kind=\"balance\"} %.2f\n", nfcSettlement.EfiBalanceBRL)
+	fmt.Fprintf(&b, "nfc_efi_treasury_brl{kind=\"pending\"} %.2f\n", nfcSettlement.EfiPendingBRL)
+	fmt.Fprintf(&b, "nfc_efi_treasury_brl{kind=\"submitted\"} %.2f\n", nfcSettlement.EfiSubmittedBRL)
+	fmt.Fprintf(&b, "nfc_efi_treasury_brl{kind=\"min_buffer\"} %.2f\n", nfcSettlement.EfiMinBufferBRL)
+	fmt.Fprintf(&b, "nfc_efi_treasury_brl{kind=\"available_real\"} %.2f\n", nfcSettlement.EfiAvailableRealBRL)
+
 	b.WriteString("# HELP chainfx_paymaster_relay_total Gas Station relay requests submitted successfully.\n")
 	b.WriteString("# TYPE chainfx_paymaster_relay_total counter\n")
 	fmt.Fprintf(&b, "chainfx_paymaster_relay_total %d\n", reg.paymasterRelayTotal.Load())
@@ -340,6 +393,9 @@ func HasPendingOverpayments() bool {
 // Intended for the /app/risk dashboard endpoint.
 func Snapshot() map[string]any {
 	microUsdt := global.overpaymentUSDTMicro.Load()
+	global.mu.RLock()
+	nfcSettlement := global.nfcSettlement
+	global.mu.RUnlock()
 	return map[string]any{
 		"overpayment_count":       global.overpaymentTotal.Load(),
 		"overpayment_usdt":        float64(microUsdt) / 1_000_000,
@@ -358,6 +414,7 @@ func Snapshot() map[string]any {
 		"autosweeper_runs":        global.autosweeperRunsTotal.Load(),
 		"autosweeper_errors":      global.autosweeperErrors.Load(),
 		"autosweeper_swept_usdt":  float64(global.autosweeperSweptMicro.Load()) / 1_000_000,
+		"nfc_settlement":          nfcSettlement,
 		"uptime_seconds":          time.Since(global.startedAt).Seconds(),
 	}
 }
