@@ -34,15 +34,17 @@ func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
 		walletAddr = *user.WalletAddress
 	}
 	price := mobileAssetPriceBRL(s.PriceCache(), "USDT")
+	bnbPrice := mobileAssetPriceBRL(s.PriceCache(), "BNB")
 	usdtAmount, bnbAmount := s.mobileOnchainWalletBalances(r.Context(), walletAddr)
 	usdtValueBRL := usdtAmount * price
+	bnbValueBRL := bnbAmount * bnbPrice
 	writeJSON(w, http.StatusOK, map[string]any{
 		"wallet_address": walletAddr,
 		"balances": []map[string]any{
-			{"symbol": "USDT", "network": "BSC", "amount": usdtAmount, "value_brl": usdtValueBRL},
-			{"symbol": "BNB", "network": "BSC", "amount": bnbAmount, "value_brl": 0},
+			{"symbol": "USDT", "network": "BSC", "amount": usdtAmount, "value_brl": usdtValueBRL, "price_brl": price, "change_24h": mobileAssetChange24h(s.PriceCache(), "USDT")},
+			{"symbol": "BNB", "network": "BSC", "amount": bnbAmount, "value_brl": bnbValueBRL, "price_brl": bnbPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "BNB")},
 		},
-		"total_brl":  usdtValueBRL,
+		"total_brl":  usdtValueBRL + bnbValueBRL,
 		"price_usdt": price,
 	})
 }
@@ -123,10 +125,11 @@ func bigIntToFloat(value *big.Int, decimals int) float64 {
 func (s *Server) handleWalletTokens(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", mobileRateCacheControl)
 	price := mobileAssetPriceBRL(s.PriceCache(), "USDT")
+	bnbPrice := mobileAssetPriceBRL(s.PriceCache(), "BNB")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tokens": []map[string]any{
 			{"symbol": "USDT", "name": "Tether USD", "network": "BSC", "contract": s.cfg.BscUsdtContract, "price_brl": price, "decimals": 18},
-			{"symbol": "BNB", "name": "BNB", "network": "BSC", "contract": "", "price_brl": 0, "decimals": 18},
+			{"symbol": "BNB", "name": "BNB", "network": "BSC", "contract": "", "price_brl": bnbPrice, "decimals": 18},
 		},
 	})
 }
