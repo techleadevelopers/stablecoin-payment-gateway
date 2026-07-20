@@ -962,8 +962,8 @@ func (db *DB) ListAdminTransactions(ctx context.Context, limit int) ([]AdminTran
                                op.pix_phone_enc,
                                error,
                                request_id,
-                               created_at,
-                               COALESCE(updated_at, created_at) AS updated_at
+                               o.created_at,
+                               COALESCE(o.updated_at, o.created_at) AS updated_at
                         FROM orders o
                         LEFT JOIN order_private op ON op.order_id = o.id
                 ) txs
