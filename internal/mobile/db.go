@@ -21,6 +21,18 @@ type mobileWalletKey struct {
 	Network             string
 }
 
+type mobileWalletToken struct {
+	ID        string
+	UserID    string
+	Symbol    string
+	Name      string
+	Network   string
+	Contract  string
+	Decimals  int
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 // mobileDB wraps the existing DB to add mobile-specific queries.
 // Uses DB.SQL directly so we don't touch the existing database package.
 type mobileQueries struct {
@@ -206,6 +218,55 @@ func (q *mobileQueries) RecordMobileWalletTransfer(ctx context.Context, userID, 
 	return err
 }
 
+func (q *mobileQueries) UpsertWalletToken(ctx context.Context, userID, network, contract, symbol, name string, decimals int) (*mobileWalletToken, error) {
+	if err := q.ensureMobileWalletTokenSchema(ctx); err != nil {
+		return nil, err
+	}
+	if decimals <= 0 {
+		decimals = 18
+	}
+	token := &mobileWalletToken{}
+	err := q.sql.QueryRowContext(ctx, `
+                INSERT INTO mobile_wallet_tokens
+                  (user_id, network, contract_address, symbol, name, decimals)
+                VALUES ($1::uuid, $2, $3, $4, $5, $6)
+                ON CONFLICT (user_id, network, symbol, contract_address) DO UPDATE SET
+                  name=EXCLUDED.name,
+                  decimals=EXCLUDED.decimals,
+                  updated_at=NOW()
+                RETURNING id::text, user_id::text, symbol, name, network, contract_address, decimals, created_at, updated_at`,
+		userID, network, contract, symbol, name, decimals).Scan(
+		&token.ID, &token.UserID, &token.Symbol, &token.Name, &token.Network, &token.Contract, &token.Decimals, &token.CreatedAt, &token.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return token, nil
+}
+
+func (q *mobileQueries) ListWalletTokens(ctx context.Context, userID string) ([]mobileWalletToken, error) {
+	if err := q.ensureMobileWalletTokenSchema(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := q.sql.QueryContext(ctx, `
+                SELECT id::text, user_id::text, symbol, name, network, contract_address, decimals, created_at, updated_at
+                  FROM mobile_wallet_tokens
+                 WHERE user_id=$1::uuid
+                 ORDER BY created_at ASC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []mobileWalletToken
+	for rows.Next() {
+		token := mobileWalletToken{}
+		if err := rows.Scan(&token.ID, &token.UserID, &token.Symbol, &token.Name, &token.Network, &token.Contract, &token.Decimals, &token.CreatedAt, &token.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, token)
+	}
+	return out, rows.Err()
+}
+
 func (q *mobileQueries) ensureMobileWalletKeySchema(ctx context.Context) error {
 	_, err := q.sql.ExecContext(ctx, `
                 CREATE TABLE IF NOT EXISTS mobile_wallet_keys (
@@ -249,6 +310,29 @@ func (q *mobileQueries) ensureMobileWalletTransferSchema(ctx context.Context) er
 	_, err = q.sql.ExecContext(ctx, `
                 CREATE INDEX IF NOT EXISTS idx_mobile_wallet_transfers_user_created
                   ON mobile_wallet_transfers (user_id, created_at DESC)`)
+	return err
+}
+
+func (q *mobileQueries) ensureMobileWalletTokenSchema(ctx context.Context) error {
+	_, err := q.sql.ExecContext(ctx, `
+                CREATE TABLE IF NOT EXISTS mobile_wallet_tokens (
+                  id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+                  user_id          UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  network          TEXT        NOT NULL,
+                  contract_address TEXT        NOT NULL DEFAULT '',
+                  symbol           TEXT        NOT NULL,
+                  name             TEXT        NOT NULL,
+                  decimals         INTEGER     NOT NULL DEFAULT 18,
+                  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  UNIQUE (user_id, network, symbol, contract_address)
+                )`)
+	if err != nil {
+		return err
+	}
+	_, err = q.sql.ExecContext(ctx, `
+                CREATE INDEX IF NOT EXISTS idx_mobile_wallet_tokens_user
+                  ON mobile_wallet_tokens (user_id, created_at DESC)`)
 	return err
 }
 
@@ -507,6 +591,18 @@ func (q *mobileQueries) ListNotifications(ctx context.Context, userID string, li
 		out = append(out, n)
 	}
 	return out, rows.Err()
+}
+
+func (q *mobileQueries) GetNotification(ctx context.Context, userID, id string) (*models.Notification, error) {
+	n := &models.Notification{}
+	err := q.sql.QueryRowContext(ctx, `
+                SELECT id,user_id,title,body,type,read,data,created_at
+                FROM notifications WHERE user_id=$1 AND id=$2`, userID, id).
+		Scan(&n.ID, &n.UserID, &n.Title, &n.Body, &n.Type, &n.Read, &n.Data, &n.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return n, nil
 }
 
 func (q *mobileQueries) MarkNotificationsRead(ctx context.Context, userID string, ids []string) error {
