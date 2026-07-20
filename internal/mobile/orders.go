@@ -57,8 +57,21 @@ func (s *Server) handleMobileBuyQuote(w http.ResponseWriter, r *http.Request) {
 	totalFiat := roundMoney(req.AmountBRL + fee)
 	cryptoAmount := roundCrypto(req.AmountBRL / rate)
 	expiresAt := time.Now().UTC().Add(time.Duration(s.mobileRateLockSec()) * time.Second)
+	quoteID, err := s.issueMobileQuote(mobileQuoteClaims{
+		Side:      "buy",
+		Asset:     asset,
+		Amount:    req.AmountBRL,
+		Rate:      rate,
+		Fee:       fee,
+		Total:     totalFiat,
+		ExpiresAt: expiresAt.Unix(),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "erro ao assinar cotacao"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"quote_id":       "buyq_" + strings.ReplaceAll(database.NewID(), "-", ""),
+		"quote_id":       quoteID,
 		"side":           "buy",
 		"asset":          asset,
 		"fiat":           "BRL",
@@ -91,6 +104,7 @@ func (s *Server) handleMobileBuy(w http.ResponseWriter, r *http.Request) {
 		CustomerEmail string  `json:"customer_email"`
 		CustomerCPF   string  `json:"customer_cpf"`
 		CustomerPhone string  `json:"customer_phone"`
+		QuoteID       string  `json:"quote_id"`
 	}
 	if err := decodeJSON(r, &req); err != nil || req.AmountBRL <= 0 || req.DestAddress == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "amount_brl e dest_address obrigatórios"})
@@ -101,6 +115,12 @@ func (s *Server) handleMobileBuy(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.PaymentMethod == "" {
 		req.PaymentMethod = "pix"
+	}
+	req.Asset = strings.ToUpper(firstNonEmptyStr(req.Asset, "USDT"))
+	claims, err := s.verifyMobileQuote(req.QuoteID, "buy", req.Asset, req.AmountBRL, time.Now())
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "MOBILE_QUOTE_INVALID"})
+		return
 	}
 
 	user, _ := mobileDB(s.db).GetUserByID(r.Context(), uid)
@@ -131,6 +151,8 @@ func (s *Server) handleMobileBuy(w http.ResponseWriter, r *http.Request) {
 		"asset":         req.Asset,
 		"address":       req.DestAddress,
 		"paymentMethod": req.PaymentMethod,
+		"quoteId":       req.QuoteID,
+		"rateLocked":    claims.Rate,
 		"customer": map[string]any{
 			"name":  customerName,
 			"email": customerEmail,
@@ -144,7 +166,7 @@ func (s *Server) handleMobileBuy(w http.ResponseWriter, r *http.Request) {
 	resp, err := forwardToInternal(internalReq, "POST", s.internalBase(r)+"/api/buy", payload, s.internalAPIKey())
 	if err != nil {
 		if strings.EqualFold(req.PaymentMethod, "pix") {
-			if s.writeDegradedMobileBuy(w, r, req.AmountBRL, req.Asset, req.DestAddress, req.PaymentMethod, customerEmail, "internal_request_failed") {
+			if s.writeDegradedMobileBuy(w, r, req.AmountBRL, req.Asset, req.DestAddress, req.PaymentMethod, customerEmail, claims.Rate, "internal_request_failed") {
 				return
 			}
 		}
@@ -154,7 +176,7 @@ func (s *Server) handleMobileBuy(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 500 && strings.EqualFold(req.PaymentMethod, "pix") {
-		if s.writeDegradedMobileBuy(w, r, req.AmountBRL, req.Asset, req.DestAddress, req.PaymentMethod, customerEmail, "payment_provider_unavailable") {
+		if s.writeDegradedMobileBuy(w, r, req.AmountBRL, req.Asset, req.DestAddress, req.PaymentMethod, customerEmail, claims.Rate, "payment_provider_unavailable") {
 			return
 		}
 	}
@@ -171,7 +193,7 @@ func (s *Server) handleMobileBuy(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
-func (s *Server) writeDegradedMobileBuy(w http.ResponseWriter, r *http.Request, amountBRL float64, asset, destAddress, paymentMethod, customerEmail, reason string) bool {
+func (s *Server) writeDegradedMobileBuy(w http.ResponseWriter, r *http.Request, amountBRL float64, asset, destAddress, paymentMethod, customerEmail string, lockedRate float64, reason string) bool {
 	uid := userIDFromCtx(r)
 	asset = strings.ToUpper(strings.TrimSpace(firstNonEmptyStr(asset, "USDT")))
 	paymentMethod = strings.ToLower(strings.TrimSpace(firstNonEmptyStr(paymentMethod, "pix")))
@@ -192,7 +214,10 @@ func (s *Server) writeDegradedMobileBuy(w http.ResponseWriter, r *http.Request, 
 	if marketRate <= 0 {
 		return false
 	}
-	rate := s.mobileBuyRate(marketRate)
+	rate := lockedRate
+	if rate <= 0 {
+		rate = s.mobileBuyRate(marketRate)
+	}
 	fee, feeBreakdown := s.mobileBuyFee(amountBRL)
 	totalFiat := roundMoney(amountBRL + fee)
 	cryptoAmount := roundCrypto(amountBRL / rate)
@@ -301,6 +326,7 @@ func (s *Server) handleMobileSellQuote(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		AmountUSDT float64 `json:"amount_usdt"`
 		Asset      string  `json:"asset"`
+		QuoteID    string  `json:"quote_id"`
 	}
 	if err := decodeJSON(r, &req); err != nil || req.AmountUSDT <= 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "amount_usdt obrigatorio"})
@@ -324,8 +350,21 @@ func (s *Server) handleMobileSellQuote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expiresAt := time.Now().UTC().Add(time.Duration(s.mobileRateLockSec()) * time.Second)
+	quoteID, err := s.issueMobileQuote(mobileQuoteClaims{
+		Side:      "sell",
+		Asset:     asset,
+		Amount:    req.AmountUSDT,
+		Rate:      rate,
+		Fee:       spreadBRL,
+		Total:     payoutBRL,
+		ExpiresAt: expiresAt.Unix(),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "erro ao assinar cotacao"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"quote_id":      "sellq_" + strings.ReplaceAll(database.NewID(), "-", ""),
+		"quote_id":      quoteID,
 		"side":          "sell",
 		"asset":         asset,
 		"fiat":          "BRL",
@@ -356,9 +395,15 @@ func (s *Server) handleMobileSell(w http.ResponseWriter, r *http.Request) {
 		PixCpf     string  `json:"pix_cpf"`
 		PixPhone   string  `json:"pix_phone"`
 		Asset      string  `json:"asset"`
+		QuoteID    string  `json:"quote_id"`
 	}
 	if err := decodeJSON(r, &req); err != nil || req.AmountUSDT <= 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "amount_usdt obrigatório"})
+		return
+	}
+	req.Asset = strings.ToUpper(firstNonEmptyStr(req.Asset, "USDT"))
+	if _, err := s.verifyMobileQuote(req.QuoteID, "sell", req.Asset, req.AmountUSDT, time.Now()); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "MOBILE_QUOTE_INVALID"})
 		return
 	}
 	pixKey := req.PixKey
@@ -373,7 +418,8 @@ func (s *Server) handleMobileSell(w http.ResponseWriter, r *http.Request) {
 		"amountUSDT": req.AmountUSDT,
 		"pixPhone":   pixKey,
 		"pixCpf":     req.PixCpf,
-		"asset":      firstNonEmptyStr(req.Asset, "USDT"),
+		"asset":      req.Asset,
+		"quoteId":    req.QuoteID,
 	}
 	resp, err := forwardToInternal(r, "POST", s.internalBase(r)+"/api/order", payload, s.internalAPIKey())
 	if err != nil {
