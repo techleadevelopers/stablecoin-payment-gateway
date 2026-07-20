@@ -177,6 +177,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// ── Orders ────────────────────────────────────────────────────────────────
 	mux.HandleFunc("POST /api/mobile/order/buy", s.requireAuth(s.requireIdempotency("mobile.order.buy", s.handleMobileBuy)))
+	mux.HandleFunc("POST /api/mobile/order/sell/quote", s.requireAuth(s.handleMobileSellQuote))
 	mux.HandleFunc("POST /api/mobile/order/sell", s.requireAuth(s.requireIdempotency("mobile.order.sell", s.handleMobileSell)))
 	mux.HandleFunc("POST /api/mobile/order/swap", s.requireAuth(s.requireIdempotency("mobile.order.swap", s.handleMobileSwap)))
 	mux.HandleFunc("GET /api/mobile/order/{id}", s.requireAuth(s.handleMobileGetOrder))
