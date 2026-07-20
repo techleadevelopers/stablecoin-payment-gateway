@@ -157,7 +157,7 @@ func (s *Server) shouldSkipSmartRateLimit(r *http.Request) bool {
 	case "/healthz", "/readyz", "/api/mobile/health",
 		"/api/rates", "/rates", "/api/price", "/price",
 		"/mcp/initialize", "/mcp/tools/list", "/mcp/resources/list", "/mcp/prompts/list",
-		"/api/pix/webhook", "/api/pix/webhook/buy", "/api/efi/charges/webhook/buy":
+		"/api/pix/webhook", "/api/pix/webhook/buy", "/api/efi/pix/send/webhook", "/api/efi/charges/webhook/buy":
 		return true
 	default:
 		return false
