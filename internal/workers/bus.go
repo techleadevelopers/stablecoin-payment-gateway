@@ -129,7 +129,7 @@ func isCriticalMoneyEvent(eventType string) bool {
 		"payout.requested", "payout.settled", "payout.manual_required",
 		"onchain.detected", "m2m.deposit.confirmed", "m2m.settlement.done", "m2m.settlement.failed",
 		"nfc.capture.completed", "nfc.authorization.reversed", "nfc.authorization.expired",
-		"nfc.settlement.manual_required", "nfc.settlement.confirmed", "nfc.settlement.failed",
+		"nfc.settlement.manual_required", "nfc.settlement.submitted", "nfc.settlement.submission_unknown", "nfc.settlement.confirmed", "nfc.settlement.failed",
 		"mobile.payout.requested", "sweep.sent":
 		return true
 	default:
