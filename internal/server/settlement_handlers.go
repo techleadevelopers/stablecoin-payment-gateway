@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"payment-gateway/internal/database"
@@ -297,11 +299,13 @@ func (s *Server) handleEfiPixSendWebhook(w http.ResponseWriter, r *http.Request)
 		E2EID       string `json:"e2eId"`
 		EndToEndID  string `json:"endToEndId"`
 		Status      string `json:"status"`
+		Valor       string `json:"valor"`
 		PixEnviados []struct {
 			IDEnvio    string `json:"idEnvio"`
 			E2EID      string `json:"e2eId"`
 			EndToEndID string `json:"endToEndId"`
 			Status     string `json:"status"`
+			Valor      string `json:"valor"`
 		} `json:"pixEnviados"`
 	}
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -312,6 +316,7 @@ func (s *Server) handleEfiPixSendWebhook(w http.ResponseWriter, r *http.Request)
 		req.IDEnvio = firstNonEmpty(req.IDEnvio, req.PixEnviados[0].IDEnvio)
 		req.E2EID = firstNonEmpty(req.E2EID, req.PixEnviados[0].E2EID, req.PixEnviados[0].EndToEndID)
 		req.Status = firstNonEmpty(req.Status, req.PixEnviados[0].Status)
+		req.Valor = firstNonEmpty(req.Valor, req.PixEnviados[0].Valor)
 	}
 	req.E2EID = firstNonEmpty(req.E2EID, req.EndToEndID)
 	if req.IDEnvio == "" && req.E2EID == "" {
@@ -321,13 +326,17 @@ func (s *Server) handleEfiPixSendWebhook(w http.ResponseWriter, r *http.Request)
 	if req.Status == "" {
 		req.Status = "SUBMITTED"
 	}
-	duplicate, settlement, err := s.db.ApplyMerchantSettlementProviderEvent(r.Context(), "efi", req.IDEnvio, req.E2EID, req.Status, map[string]any{
+	eventPayload := map[string]any{
 		"source":    "webhook",
 		"idEnvio":   req.IDEnvio,
 		"e2eId":     req.E2EID,
 		"status":    req.Status,
 		"requestId": requestID(r),
-	})
+	}
+	if amountMinor := parseWebhookBRLMinor(req.Valor); amountMinor > 0 {
+		eventPayload["amount_brl_minor"] = amountMinor
+	}
+	duplicate, settlement, err := s.db.ApplyMerchantSettlementProviderEvent(r.Context(), "efi", req.IDEnvio, req.E2EID, req.Status, eventPayload)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -346,6 +355,18 @@ func (s *Server) handleEfiPixSendWebhook(w http.ResponseWriter, r *http.Request)
 		}})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "duplicate": duplicate, "settlement_id": settlement.ID, "status": settlement.Status})
+}
+
+func parseWebhookBRLMinor(value string) int64 {
+	value = strings.TrimSpace(strings.ReplaceAll(value, ",", "."))
+	if value == "" {
+		return 0
+	}
+	amount, err := strconv.ParseFloat(value, 64)
+	if err != nil || amount <= 0 {
+		return 0
+	}
+	return int64(math.Round(amount * 100))
 }
 
 // handlePixWebhookBuyViaPSP parses raw through the wired PSP Router and applies
