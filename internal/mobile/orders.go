@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"payment-gateway/internal/database"
+	"payment-gateway/internal/metrics"
 	"payment-gateway/internal/transactions"
 )
 
@@ -562,6 +563,7 @@ func forwardToInternal(r *http.Request, method, url string, payload any, apiKey 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-ChainFX-Internal-Call", "mobile-loopback")
 	if apiKey != "" {
 		first := strings.Split(apiKey, ",")[0]
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(first))
@@ -571,6 +573,7 @@ func forwardToInternal(r *http.Request, method, url string, payload any, apiKey 
 			req.Header.Set(header, value)
 		}
 	}
+	metrics.IncInternalHTTPLoopback("mobile", metrics.RoutePattern(method, req.URL.Path, ""))
 	return http.DefaultClient.Do(req)
 }
 
