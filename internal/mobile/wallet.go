@@ -38,14 +38,41 @@ func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
 	usdtAmount, bnbAmount := s.mobileOnchainWalletBalances(r.Context(), walletAddr)
 	usdtValueBRL := usdtAmount * price
 	bnbValueBRL := bnbAmount * bnbPrice
+	balances := []map[string]any{
+		{"symbol": "USDT", "name": "Tether USD", "network": "BSC", "amount": usdtAmount, "value_brl": usdtValueBRL, "price_brl": price, "change_24h": mobileAssetChange24h(s.PriceCache(), "USDT")},
+		{"symbol": "BNB", "name": "BNB", "network": "BSC", "amount": bnbAmount, "value_brl": bnbValueBRL, "price_brl": bnbPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "BNB")},
+	}
+	seen := map[string]bool{"USDT": true, "BNB": true}
+	imported, err := mobileDB(s.db).ListWalletTokens(r.Context(), uid)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	for _, token := range imported {
+		symbol := strings.ToUpper(strings.TrimSpace(token.Symbol))
+		if symbol == "" || seen[symbol] {
+			continue
+		}
+		tokenPrice := mobileAssetPriceBRL(s.PriceCache(), symbol)
+		balances = append(balances, map[string]any{
+			"symbol":     symbol,
+			"name":       token.Name,
+			"network":    token.Network,
+			"contract":   token.Contract,
+			"amount":     0,
+			"value_brl":  0,
+			"price_brl":  tokenPrice,
+			"change_24h": mobileAssetChange24h(s.PriceCache(), symbol),
+			"decimals":   token.Decimals,
+			"imported":   true,
+		})
+		seen[symbol] = true
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"wallet_address": walletAddr,
-		"balances": []map[string]any{
-			{"symbol": "USDT", "network": "BSC", "amount": usdtAmount, "value_brl": usdtValueBRL, "price_brl": price, "change_24h": mobileAssetChange24h(s.PriceCache(), "USDT")},
-			{"symbol": "BNB", "network": "BSC", "amount": bnbAmount, "value_brl": bnbValueBRL, "price_brl": bnbPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "BNB")},
-		},
-		"total_brl":  usdtValueBRL + bnbValueBRL,
-		"price_usdt": price,
+		"balances":       balances,
+		"total_brl":      usdtValueBRL + bnbValueBRL,
+		"price_usdt":     price,
 	})
 }
 
@@ -126,11 +153,35 @@ func (s *Server) handleWalletTokens(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", mobileRateCacheControl)
 	price := mobileAssetPriceBRL(s.PriceCache(), "USDT")
 	bnbPrice := mobileAssetPriceBRL(s.PriceCache(), "BNB")
+	tokens := []map[string]any{
+		{"symbol": "USDT", "name": "Tether USD", "network": "BSC", "contract": s.cfg.BscUsdtContract, "price_brl": price, "decimals": 18},
+		{"symbol": "BNB", "name": "BNB", "network": "BSC", "contract": "", "price_brl": bnbPrice, "decimals": 18},
+	}
+	seen := map[string]bool{"USDT": true, "BNB": true}
+	imported, err := mobileDB(s.db).ListWalletTokens(r.Context(), userIDFromCtx(r))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	for _, token := range imported {
+		symbol := strings.ToUpper(strings.TrimSpace(token.Symbol))
+		if symbol == "" || seen[symbol] {
+			continue
+		}
+		tokens = append(tokens, map[string]any{
+			"symbol":     symbol,
+			"name":       token.Name,
+			"network":    token.Network,
+			"contract":   token.Contract,
+			"price_brl":  mobileAssetPriceBRL(s.PriceCache(), symbol),
+			"change_24h": mobileAssetChange24h(s.PriceCache(), symbol),
+			"decimals":   token.Decimals,
+			"imported":   true,
+		})
+		seen[symbol] = true
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tokens": []map[string]any{
-			{"symbol": "USDT", "name": "Tether USD", "network": "BSC", "contract": s.cfg.BscUsdtContract, "price_brl": price, "decimals": 18},
-			{"symbol": "BNB", "name": "BNB", "network": "BSC", "contract": "", "price_brl": bnbPrice, "decimals": 18},
-		},
+		"tokens": tokens,
 	})
 }
 
