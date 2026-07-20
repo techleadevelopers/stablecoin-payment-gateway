@@ -114,10 +114,19 @@ func userIDFromCtx(r *http.Request) string {
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-		FullName string `json:"full_name"`
-		Phone    string `json:"phone"`
+		Email               string `json:"email"`
+		Password            string `json:"password"`
+		FullName            string `json:"full_name"`
+		Phone               string `json:"phone"`
+		CPF                 string `json:"cpf"`
+		BirthDate           string `json:"birth_date"`
+		AddressPostalCode   string `json:"address_postal_code"`
+		AddressStreet       string `json:"address_street"`
+		AddressNumber       string `json:"address_number"`
+		AddressNeighborhood string `json:"address_neighborhood"`
+		AddressCity         string `json:"address_city"`
+		AddressState        string `json:"address_state"`
+		AddressCountry      string `json:"address_country"`
 	}
 	if err := decodeJSON(r, &req); err != nil || req.Email == "" || req.Password == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "email e password obrigatórios"})
@@ -136,7 +145,21 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "erro interno"})
 		return
 	}
-	user, err := mobileDB(s.db).CreateUser(r.Context(), req.Email, string(hash), req.FullName, req.Phone)
+	user, err := mobileDB(s.db).CreateUser(r.Context(), createMobileUserInput{
+		Email:               req.Email,
+		PasswordHash:        string(hash),
+		FullName:            strings.TrimSpace(req.FullName),
+		Phone:               strings.TrimSpace(req.Phone),
+		CPF:                 onlyDigitsMobile(req.CPF),
+		BirthDate:           strings.TrimSpace(req.BirthDate),
+		AddressPostalCode:   onlyDigitsMobile(req.AddressPostalCode),
+		AddressStreet:       strings.TrimSpace(req.AddressStreet),
+		AddressNumber:       strings.TrimSpace(req.AddressNumber),
+		AddressNeighborhood: strings.TrimSpace(req.AddressNeighborhood),
+		AddressCity:         strings.TrimSpace(req.AddressCity),
+		AddressState:        strings.ToUpper(strings.TrimSpace(req.AddressState)),
+		AddressCountry:      firstNonEmptyStr(strings.ToUpper(strings.TrimSpace(req.AddressCountry)), "BR"),
+	})
 	if err != nil {
 		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "email já cadastrado"})
