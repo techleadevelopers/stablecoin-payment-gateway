@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	rpcpool "payment-gateway/internal/rpc"
@@ -15,6 +16,43 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
+
+// ─── Balance cache ────────────────────────────────────────────────────────────
+// Reduz chamadas RPC de cada request para uma por walletAddr a cada 30 segundos.
+
+const walletBalanceCacheTTL = 30 * time.Second
+
+type walletBalanceCacheEntry struct {
+	bscUSDT   float64
+	bnb       float64
+	polyUSDT  float64
+	matic     float64
+	expiresAt time.Time
+}
+
+var (
+	walletBalanceCacheMu sync.RWMutex
+	walletBalanceCache   = make(map[string]walletBalanceCacheEntry)
+)
+
+func getWalletBalanceCache(key string) (walletBalanceCacheEntry, bool) {
+	walletBalanceCacheMu.RLock()
+	defer walletBalanceCacheMu.RUnlock()
+	e, ok := walletBalanceCache[key]
+	if !ok || time.Now().After(e.expiresAt) {
+		return walletBalanceCacheEntry{}, false
+	}
+	return e, true
+}
+
+func setWalletBalanceCache(key string, e walletBalanceCacheEntry) {
+	walletBalanceCacheMu.Lock()
+	defer walletBalanceCacheMu.Unlock()
+	e.expiresAt = time.Now().Add(walletBalanceCacheTTL)
+	walletBalanceCache[key] = e
+}
+
+// ─── Handlers ─────────────────────────────────────────────────────────────────
 
 func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
 	uid := userIDFromCtx(r)
@@ -33,16 +71,43 @@ func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
 	if user.WalletAddress != nil {
 		walletAddr = *user.WalletAddress
 	}
-	price := mobileAssetPriceBRL(s.PriceCache(), "USDT")
+
+	// Fetch BSC + Polygon balances concurrently with cache
+	balResult := s.mobileOnchainWalletBalancesAll(r.Context(), walletAddr)
+
+	usdtPrice := mobileAssetPriceBRL(s.PriceCache(), "USDT")
 	bnbPrice := mobileAssetPriceBRL(s.PriceCache(), "BNB")
-	usdtAmount, bnbAmount := s.mobileOnchainWalletBalances(r.Context(), walletAddr)
-	usdtValueBRL := usdtAmount * price
-	bnbValueBRL := bnbAmount * bnbPrice
+	maticPrice := mobileAssetPriceBRL(s.PriceCache(), "MATIC")
+
+	usdtValueBRL := balResult.bscUSDT * usdtPrice
+	bnbValueBRL := balResult.bnb * bnbPrice
+	polyUSDTValueBRL := balResult.polyUSDT * usdtPrice
+	maticValueBRL := balResult.matic * maticPrice
+
 	balances := []map[string]any{
-		{"symbol": "USDT", "name": "Tether USD", "network": "BSC", "amount": usdtAmount, "value_brl": usdtValueBRL, "price_brl": price, "change_24h": mobileAssetChange24h(s.PriceCache(), "USDT")},
-		{"symbol": "BNB", "name": "BNB", "network": "BSC", "amount": bnbAmount, "value_brl": bnbValueBRL, "price_brl": bnbPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "BNB")},
+		{
+			"symbol": "USDT", "name": "Tether USD", "network": "BSC",
+			"amount": balResult.bscUSDT, "value_brl": usdtValueBRL,
+			"price_brl": usdtPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "USDT"),
+		},
+		{
+			"symbol": "BNB", "name": "BNB", "network": "BSC",
+			"amount": balResult.bnb, "value_brl": bnbValueBRL,
+			"price_brl": bnbPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "BNB"),
+		},
+		{
+			"symbol": "USDT", "name": "Tether USD (Polygon)", "network": "POLYGON",
+			"amount": balResult.polyUSDT, "value_brl": polyUSDTValueBRL,
+			"price_brl": usdtPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "USDT"),
+		},
+		{
+			"symbol": "MATIC", "name": "Polygon", "network": "POLYGON",
+			"amount": balResult.matic, "value_brl": maticValueBRL,
+			"price_brl": maticPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "MATIC"),
+		},
 	}
-	seen := map[string]bool{"USDT": true, "BNB": true}
+
+	seen := map[string]bool{"USDT": true, "BNB": true, "MATIC": true}
 	imported, err := mobileDB(s.db).ListWalletTokens(r.Context(), uid)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -68,40 +133,100 @@ func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
 		})
 		seen[symbol] = true
 	}
+
+	totalBRL := usdtValueBRL + bnbValueBRL + polyUSDTValueBRL + maticValueBRL
 	writeJSON(w, http.StatusOK, map[string]any{
 		"wallet_address": walletAddr,
 		"balances":       balances,
-		"total_brl":      usdtValueBRL + bnbValueBRL,
-		"price_usdt":     price,
+		"total_brl":      totalBRL,
+		"price_usdt":     usdtPrice,
 	})
 }
 
-func (s *Server) mobileOnchainWalletBalances(ctx context.Context, walletAddr string) (usdtAmount, bnbAmount float64) {
+// mobileOnchainWalletBalancesAll busca saldos BSC + Polygon em paralelo.
+// Resultado cacheado por walletBalanceCacheTTL para evitar RPC excessivo.
+func (s *Server) mobileOnchainWalletBalancesAll(ctx context.Context, walletAddr string) walletBalanceCacheEntry {
 	if s == nil || s.cfg == nil || strings.TrimSpace(walletAddr) == "" || !common.IsHexAddress(walletAddr) {
-		return 0, 0
+		return walletBalanceCacheEntry{}
 	}
-	rpcURLs := strings.TrimSpace(s.cfg.BscRpcUrls)
-	usdtContract := strings.TrimSpace(s.cfg.BscUsdtContract)
-	if rpcURLs == "" {
-		return 0, 0
+
+	cacheKey := strings.ToLower(walletAddr)
+	if cached, ok := getWalletBalanceCache(cacheKey); ok {
+		return cached
 	}
-	balCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+
+	var (
+		result walletBalanceCacheEntry
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+	)
+
+	wallet := common.HexToAddress(walletAddr)
+	balCtx, cancel := context.WithTimeout(ctx, 8*time.Second) // increased for parallel calls
 	defer cancel()
 
-	pool, err := rpcpool.NewPool(rpcURLs)
-	if err != nil {
-		return 0, 0
+	// ── BSC ──────────────────────────────────────────────────────────────────
+	if rpcURLs := strings.TrimSpace(s.cfg.BscRpcUrls); rpcURLs != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pool, err := rpcpool.NewPool(rpcURLs)
+			if err != nil {
+				return
+			}
+			var bscUSDT, bnb float64
+			if native, err := pool.BalanceAt(balCtx, wallet); err == nil && native != nil {
+				bnb = bigIntToFloat(native, 18)
+			}
+			usdtContract := strings.TrimSpace(s.cfg.BscUsdtContract)
+			if usdtContract != "" && common.IsHexAddress(usdtContract) {
+				if raw, err := mobileERC20BalanceOf(balCtx, pool, wallet, common.HexToAddress(usdtContract)); err == nil && raw != nil {
+					bscUSDT = bigIntToFloat(raw, 18)
+				}
+			}
+			mu.Lock()
+			result.bscUSDT = bscUSDT
+			result.bnb = bnb
+			mu.Unlock()
+		}()
 	}
-	wallet := common.HexToAddress(walletAddr)
-	if native, err := pool.BalanceAt(balCtx, wallet); err == nil && native != nil {
-		bnbAmount = bigIntToFloat(native, 18)
+
+	// ── Polygon ───────────────────────────────────────────────────────────────
+	if rpcURLs := strings.TrimSpace(s.cfg.PolygonRpcUrls); rpcURLs != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pool, err := rpcpool.NewPool(rpcURLs)
+			if err != nil {
+				return
+			}
+			var polyUSDT, matic float64
+			if native, err := pool.BalanceAt(balCtx, wallet); err == nil && native != nil {
+				matic = bigIntToFloat(native, 18)
+			}
+			usdtContract := strings.TrimSpace(s.cfg.PolygonUsdtContract)
+			if usdtContract != "" && common.IsHexAddress(usdtContract) {
+				if raw, err := mobileERC20BalanceOf(balCtx, pool, wallet, common.HexToAddress(usdtContract)); err == nil && raw != nil {
+					polyUSDT = bigIntToFloat(raw, 18)
+				}
+			}
+			mu.Lock()
+			result.polyUSDT = polyUSDT
+			result.matic = matic
+			mu.Unlock()
+		}()
 	}
-	if usdtContract != "" && common.IsHexAddress(usdtContract) {
-		if raw, err := mobileERC20BalanceOf(balCtx, pool, wallet, common.HexToAddress(usdtContract)); err == nil && raw != nil {
-			usdtAmount = bigIntToFloat(raw, 18)
-		}
-	}
-	return usdtAmount, bnbAmount
+
+	wg.Wait()
+	setWalletBalanceCache(cacheKey, result)
+	return result
+}
+
+// mobileOnchainWalletBalances é mantida para compatibilidade com código legado.
+// Retorna apenas USDT BSC e BNB. Novos callers devem usar mobileOnchainWalletBalancesAll.
+func (s *Server) mobileOnchainWalletBalances(ctx context.Context, walletAddr string) (usdtAmount, bnbAmount float64) {
+	r := s.mobileOnchainWalletBalancesAll(ctx, walletAddr)
+	return r.bscUSDT, r.bnb
 }
 
 func mobileERC20BalanceOf(ctx context.Context, pool *rpcpool.Pool, wallet, token common.Address) (*big.Int, error) {
@@ -153,11 +278,14 @@ func (s *Server) handleWalletTokens(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", mobileRateCacheControl)
 	price := mobileAssetPriceBRL(s.PriceCache(), "USDT")
 	bnbPrice := mobileAssetPriceBRL(s.PriceCache(), "BNB")
+	maticPrice := mobileAssetPriceBRL(s.PriceCache(), "MATIC")
 	tokens := []map[string]any{
 		{"symbol": "USDT", "name": "Tether USD", "network": "BSC", "contract": s.cfg.BscUsdtContract, "price_brl": price, "decimals": 18},
 		{"symbol": "BNB", "name": "BNB", "network": "BSC", "contract": "", "price_brl": bnbPrice, "decimals": 18},
+		{"symbol": "USDT", "name": "Tether USD", "network": "POLYGON", "contract": s.cfg.PolygonUsdtContract, "price_brl": price, "decimals": 6},
+		{"symbol": "MATIC", "name": "Polygon", "network": "POLYGON", "contract": "", "price_brl": maticPrice, "decimals": 18},
 	}
-	seen := map[string]bool{"USDT": true, "BNB": true}
+	seen := map[string]bool{"USDT": true, "BNB": true, "MATIC": true}
 	imported, err := mobileDB(s.db).ListWalletTokens(r.Context(), userIDFromCtx(r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -200,7 +328,8 @@ func (s *Server) handleWalletAddress(w http.ResponseWriter, r *http.Request) {
 	if user != nil && user.WalletAddress != nil && *user.WalletAddress != "" {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"wallet_address": *user.WalletAddress,
-			"network":        "BSC",
+			"networks":       []string{"BSC", "POLYGON"},
+			"network":        "BSC", // compatibilidade retroativa
 		})
 		return
 	}
@@ -240,7 +369,7 @@ func (s *Server) handleWalletGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"wallet_address": checksummed,
-		"network":        "BSC",
+		"networks":       []string{"BSC", "POLYGON"}, // mesmo endereço EVM funciona nas duas redes
 		"custody":        "client",
 		"message":        "wallet registrada; a private key deve permanecer somente no app/agente",
 	})

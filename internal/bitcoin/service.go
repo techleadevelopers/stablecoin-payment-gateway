@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,7 +46,7 @@ func (s *Service) Config() *Config { return s.cfg }
 // ─── Fase 2: Geração de endereço de recebimento ───────────────────────────────
 
 // GetOrCreateAddress retorna o endereço BTC ativo do usuário, criando-o se necessário.
-// A alocação de índice é transacional e possui restrição única — sem races.
+// A alocação de índice é atômica via UPDATE btc_wallet_state RETURNING — sem races.
 func (s *Service) GetOrCreateAddress(ctx context.Context, userID string) (*BTCAddress, error) {
 	network := string(s.cfg.Network)
 
@@ -58,7 +59,7 @@ func (s *Service) GetOrCreateAddress(ctx context.Context, userID string) (*BTCAd
 		return addr, nil
 	}
 
-	// Alocar próximo índice de derivação
+	// Alocar próximo índice de derivação de forma atômica
 	index, err := s.repo.GetNextDerivationIndex(ctx, network)
 	if err != nil {
 		return nil, fmt.Errorf("btc: erro ao alocar índice: %w", err)
@@ -89,16 +90,48 @@ func (s *Service) GetOrCreateAddress(ctx context.Context, userID string) (*BTCAd
 
 // ─── Fase 3 & 4: Detecção de depósitos + saldo ───────────────────────────────
 
-// SyncAddressUTXOs busca UTXOs do provider e persiste novos ou atualizados no banco.
+// SyncAddressUTXOs busca UTXOs do provider, persiste no banco e detecta reorgs.
+// Mantida para compatibilidade; a versão rica é SyncAddressUTXOsWithEvents.
 func (s *Service) SyncAddressUTXOs(ctx context.Context, addr BTCAddress) error {
-	utxos, err := s.provider.GetAddressUTXOs(ctx, addr.Address)
+	_, _, err := s.SyncAddressUTXOsWithEvents(ctx, addr)
+	return err
+}
+
+// SyncAddressUTXOsWithEvents sincroniza UTXOs e retorna eventos produzidos:
+//   - "btc.deposit.detected" — UTXO novo detectado (pending)
+//   - "btc.deposit.confirmed" — UTXO atingiu min confirmações
+//   - UTXOs que desapareceram do provider são marcados como 'orphaned'
+//
+// Também retorna a altura do bloco mais recente observada.
+func (s *Service) SyncAddressUTXOsWithEvents(ctx context.Context, addr BTCAddress) ([]BTCWorkerEvent, int64, error) {
+	network := string(s.cfg.Network)
+
+	// 1. Buscar estado atual no DB
+	existing, err := s.repo.GetActiveUTXOsByAddress(ctx, addr.ID, network)
 	if err != nil {
-		return fmt.Errorf("btc: sync utxos %s: %w", addr.Address, err)
+		return nil, 0, fmt.Errorf("btc: sync utxos DB %s: %w", addr.Address, err)
+	}
+	existingByKey := make(map[string]UTXO, len(existing))
+	for _, u := range existing {
+		existingByKey[u.Txid+":"+strconv.Itoa(int(u.Vout))] = u
+	}
+
+	// 2. Buscar UTXOs do provider
+	providerUTXOs, err := s.provider.GetAddressUTXOs(ctx, addr.Address)
+	if err != nil {
+		return nil, 0, fmt.Errorf("btc: sync utxos provider %s: %w", addr.Address, err)
 	}
 
 	blockHeight, _ := s.provider.GetCurrentBlockHeight(ctx)
 
-	for _, pu := range utxos {
+	// 3. Upsert e detectar novos / recém confirmados
+	var events []BTCWorkerEvent
+	providerKeys := make(map[string]bool, len(providerUTXOs))
+
+	for _, pu := range providerUTXOs {
+		key := pu.Txid + ":" + strconv.Itoa(int(pu.Vout))
+		providerKeys[key] = true
+
 		confirmations := 0
 		status := UTXOStatusPending
 		if pu.Status.Confirmed {
@@ -110,16 +143,14 @@ func (s *Service) SyncAddressUTXOs(ctx context.Context, addr BTCAddress) error {
 			}
 		}
 
-		// Derivar scriptPubKey do endereço
 		scriptHex := ""
-		script, e := ScriptFromAddress(addr.Address, s.cfg.HRP())
-		if e == nil {
+		if script, e := ScriptFromAddress(addr.Address, s.cfg.HRP()); e == nil {
 			scriptHex = hex.EncodeToString(script)
 		}
 
 		u := UTXO{
 			ID:              uuid.New().String(),
-			Network:         string(s.cfg.Network),
+			Network:         network,
 			UserID:          addr.UserID,
 			WalletAddressID: addr.ID,
 			Txid:            pu.Txid,
@@ -131,15 +162,61 @@ func (s *Service) SyncAddressUTXOs(ctx context.Context, addr BTCAddress) error {
 			Status:          status,
 			DetectedAt:      time.Now(),
 		}
+
+		prev, wasKnown := existingByKey[key]
+
 		if err := s.repo.UpsertUTXO(ctx, u); err != nil {
 			slog.Error("btc: erro ao upsert UTXO",
 				"address", addr.Address, "txid", pu.Txid, "err", err)
+			continue
+		}
+
+		// Publicar evento de depósito detectado (UTXO nunca visto antes)
+		if !wasKnown {
+			events = append(events, BTCWorkerEvent{
+				Type: "btc.deposit.detected",
+				Payload: map[string]any{
+					"user_id":     addr.UserID,
+					"address":     addr.Address,
+					"txid":        pu.Txid,
+					"vout":        pu.Vout,
+					"amount_sats": pu.Value,
+					"network":     network,
+					"status":      status,
+				},
+			})
+		} else if prev.Status == UTXOStatusPending && status == UTXOStatusConfirmed {
+			// UTXO que acabou de confirmar
+			events = append(events, BTCWorkerEvent{
+				Type: "btc.deposit.confirmed",
+				Payload: map[string]any{
+					"user_id":       addr.UserID,
+					"address":       addr.Address,
+					"txid":          pu.Txid,
+					"vout":          pu.Vout,
+					"amount_sats":   pu.Value,
+					"network":       network,
+					"confirmations": confirmations,
+				},
+			})
 		}
 	}
-	return nil
+
+	// 4. Detectar reorg: UTXOs no DB que sumiram do provider → orphaned
+	for key, dbUTXO := range existingByKey {
+		if !providerKeys[key] {
+			slog.Warn("btc: UTXO desapareceu do provider (possível reorg)",
+				"txid", dbUTXO.Txid, "vout", dbUTXO.Vout, "address", addr.Address)
+			if err := s.repo.MarkUTXOOrphaned(ctx, dbUTXO.ID); err != nil {
+				slog.Error("btc: erro ao marcar UTXO orphaned", "id", dbUTXO.ID, "err", err)
+			}
+		}
+	}
+
+	return events, blockHeight, nil
 }
 
-// GetBalance retorna o saldo confirmado e pendente do usuário.
+// GetBalance retorna o saldo confirmado, pendente, reservado e disponível do usuário.
 func (s *Service) GetBalance(ctx context.Context, userID string) (Balance, error) {
 	return s.repo.GetBalance(ctx, userID, string(s.cfg.Network))
 }
@@ -177,14 +254,28 @@ func (s *Service) EstimateFee(ctx context.Context, amountSats int64) (FeeEstimat
 // ─── Fase 5: Envio de BTC ────────────────────────────────────────────────────
 
 // Send executa um saque BTC: seleciona UTXOs, constrói, assina e faz broadcast.
-// Idempotente: se a chave já existe, retorna o resultado anterior.
+// Idempotente: se a chave já existe com o mesmo payload, retorna o resultado anterior.
+// Retorna ErrIdempotencyConflict se a chave foi usada com payload diferente.
 func (s *Service) Send(ctx context.Context, req SendRequest) (SendResult, error) {
+	network := string(s.cfg.Network)
+
+	// Computar request_hash para detectar conflitos de idempotência
+	reqHash := computeRequestHash(req.UserID, req.ToAddress, req.AmountSats, req.IdempotencyKey)
+	if req.RequestHash == "" {
+		req.RequestHash = reqHash
+	}
+
 	// 1. Idempotência: verificar se já foi processada
 	existing, err := s.repo.GetTransactionByIdempotencyKey(ctx, req.UserID, req.IdempotencyKey)
 	if err != nil && err != sql.ErrNoRows {
 		return SendResult{}, fmt.Errorf("btc: erro ao checar idempotência: %w", err)
 	}
 	if existing != nil {
+		// Detectar conflito: mesma chave de idempotência, payload diferente
+		if existing.RequestHash != "" && existing.RequestHash != reqHash {
+			return SendResult{}, ErrIdempotencyConflict
+		}
+		// Mesmo payload → retornar resultado cacheado
 		return SendResult{
 			TxID:       existing.Txid,
 			FeeSats:    existing.FeeSats,
@@ -192,8 +283,6 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (SendResult, error)
 			Status:     existing.Status,
 		}, nil
 	}
-
-	network := string(s.cfg.Network)
 
 	// 2. Validações
 	if req.AmountSats <= 0 {
@@ -204,6 +293,17 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (SendResult, error)
 	}
 	if s.cfg.MaxSendSats > 0 && req.AmountSats > s.cfg.MaxSendSats {
 		return SendResult{}, ErrMaxSendExceeded
+	}
+
+	// Validar limite diário de saques
+	if s.cfg.DailySendLimitSats > 0 {
+		todaySent, err := s.repo.GetTodayWithdrawalSats(ctx, req.UserID, network)
+		if err != nil {
+			return SendResult{}, fmt.Errorf("btc: erro ao verificar limite diário: %w", err)
+		}
+		if todaySent+req.AmountSats > s.cfg.DailySendLimitSats {
+			return SendResult{}, ErrDailyLimitExceeded
+		}
 	}
 
 	// Validar endereço de destino
@@ -235,7 +335,7 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (SendResult, error)
 		return SendResult{}, ErrFeeTooHigh
 	}
 
-	// 5. Buscar UTXOs do usuário
+	// 5. Buscar UTXOs confirmados com SELECT FOR UPDATE SKIP LOCKED (via ReserveUTXOs atômico)
 	utxos, err := s.repo.GetConfirmedUTXOs(ctx, req.UserID, network)
 	if err != nil {
 		return SendResult{}, fmt.Errorf("btc: erro ao buscar UTXOs: %w", err)
@@ -247,7 +347,7 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (SendResult, error)
 		return SendResult{}, err
 	}
 
-	// 7. Reservar UTXOs (previne double-spend interno)
+	// 7. Reservar UTXOs atomicamente (UPDATE WHERE status='confirmed' evita double-spend)
 	utxoIDs := make([]string, len(selected))
 	for i, u := range selected {
 		utxoIDs[i] = u.ID
@@ -273,7 +373,6 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (SendResult, error)
 
 	// Troco
 	if changeSats > 0 {
-		// Endereço de troco = endereço de recebimento do usuário
 		changeAddr, err := s.repo.GetUserAddress(ctx, req.UserID, network)
 		if err != nil || changeAddr == nil {
 			_ = s.repo.ReleaseUTXOs(ctx, utxoIDs)
@@ -294,24 +393,24 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (SendResult, error)
 		return SendResult{}, fmt.Errorf("btc: erro ao assinar transação: %w", err)
 	}
 
-	// 11. Persistir transação antes do broadcast (idempotência + auditoria)
+	// 11. Persistir antes do broadcast (idempotência + auditoria)
 	now := time.Now()
 	btcTx := BTCTransaction{
-		ID:             uuid.New().String(),
-		UserID:         req.UserID,
-		Network:        network,
-		Direction:      TxDirectionWithdrawal,
-		Txid:           txid,
-		RawTxHash:      rawHex,
+		ID:              uuid.New().String(),
+		UserID:          req.UserID,
+		Network:         network,
+		Direction:       TxDirectionWithdrawal,
+		Txid:            txid,
+		RawTxHash:       rawHex,
 		DestinationAddr: req.ToAddress,
-		AmountSats:     req.AmountSats,
-		FeeSats:        feeSats,
+		AmountSats:      req.AmountSats,
+		FeeSats:         feeSats,
 		FeeRateSatVByte: feeRate,
-		Status:         TxStatusSigned,
-		Confirmations:  0,
-		IdempotencyKey: req.IdempotencyKey,
-		RequestHash:    req.RequestHash,
-		BroadcastAt:    nil,
+		Status:          TxStatusSigned,
+		Confirmations:   0,
+		IdempotencyKey:  req.IdempotencyKey,
+		RequestHash:     req.RequestHash, // sempre preenchido agora
+		BroadcastAt:     nil,
 	}
 	if err := s.repo.SaveTransaction(ctx, btcTx); err != nil {
 		_ = s.repo.ReleaseUTXOs(ctx, utxoIDs)
@@ -321,7 +420,6 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (SendResult, error)
 	// 12. Broadcast
 	broadcastedTxid, err := s.provider.BroadcastTransaction(ctx, rawHex)
 	if err != nil {
-		// Se o broadcast é incerto, não revertemos — deixamos para reconciliação
 		if err == ErrBroadcastUnknown {
 			_ = s.repo.UpdateTransactionConfirmations(ctx, btcTx.ID, TxStatusBroadcast, 0, 0)
 			slog.Warn("btc: broadcast incerto — aguardando reconciliação", "txid", txid)
@@ -332,7 +430,6 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (SendResult, error)
 		return SendResult{}, fmt.Errorf("btc: broadcast falhou: %w", err)
 	}
 
-	// Usar o txid retornado pelo provider (pode diferir em edge cases)
 	finalTxid := broadcastedTxid
 	if finalTxid == "" {
 		finalTxid = txid
@@ -356,11 +453,18 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (SendResult, error)
 
 // ─── Fase 6: Confirmações ────────────────────────────────────────────────────
 
-// UpdateTransactionConfirmation atualiza o número de confirmações de um txid.
+// UpdateTransactionConfirmation atualiza confirmações (sem retornar wasConfirmed).
 func (s *Service) UpdateTransactionConfirmation(ctx context.Context, btcTx BTCTransaction) error {
-	status, err := s.provider.GetTransaction(ctx, btcTx.Txid)
-	if err != nil {
-		return err
+	_, err := s.UpdateTransactionConfirmationWithResult(ctx, btcTx)
+	return err
+}
+
+// UpdateTransactionConfirmationWithResult atualiza confirmações e retorna se a tx
+// acabou de ser confirmada neste ciclo (para o worker publicar eventos).
+func (s *Service) UpdateTransactionConfirmationWithResult(ctx context.Context, btcTx BTCTransaction) (wasConfirmed bool, err error) {
+	status, provErr := s.provider.GetTransaction(ctx, btcTx.Txid)
+	if provErr != nil {
+		return false, provErr
 	}
 
 	blockHeight, _ := s.provider.GetCurrentBlockHeight(ctx)
@@ -376,7 +480,15 @@ func (s *Service) UpdateTransactionConfirmation(ctx context.Context, btcTx BTCTr
 		}
 	}
 
-	return s.repo.UpdateTransactionConfirmations(ctx, btcTx.ID, txStatus, confs, status.Status.BlockHeight)
+	updErr := s.repo.UpdateTransactionConfirmations(ctx, btcTx.ID, txStatus, confs, status.Status.BlockHeight)
+	if updErr != nil {
+		return false, updErr
+	}
+
+	// wasConfirmed = transição pending/broadcast → confirmed neste ciclo
+	wasConfirmed = txStatus == TxStatusConfirmed &&
+		btcTx.Status != TxStatusConfirmed
+	return wasConfirmed, nil
 }
 
 // ─── Queries para handlers ────────────────────────────────────────────────────
@@ -403,17 +515,22 @@ func (s *Service) GetTransactionByTxid(ctx context.Context, txid string) (*BTCTr
 
 // ─── Helpers internos ─────────────────────────────────────────────────────────
 
+// computeRequestHash gera um hash determinístico do payload do pedido de saque.
+// Usado para detectar reuso indevido de idempotency key com payload diferente.
+func computeRequestHash(userID, toAddress string, amountSats int64, idempotencyKey string) string {
+	raw := userID + "|" + toAddress + "|" + strconv.FormatInt(amountSats, 10) + "|" + idempotencyKey
+	h := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(h[:])
+}
+
 // buildTxInputs mapeia UTXOs selecionados para TxInputs com chave privada derivada.
 func (s *Service) buildTxInputs(ctx context.Context, utxos []UTXO, accountXpriv *ExtendedKey) ([]TxInput, error) {
-	// Mapear wallet_address_id → derivation_index
-	// Buscamos o endereço de cada UTXO para obter o índice
 	indexCache := make(map[string]BTCAddress)
 
 	var inputs []TxInput
 	for _, u := range utxos {
 		addrInfo, ok := indexCache[u.WalletAddressID]
 		if !ok {
-			// Buscar pelo ID
 			addr, err := s.repo.GetUserAddress(ctx, u.UserID, string(s.cfg.Network))
 			if err != nil || addr == nil {
 				return nil, fmt.Errorf("btc: endereço do UTXO não encontrado")
@@ -440,11 +557,9 @@ func (s *Service) buildTxInputs(ctx context.Context, utxos []UTXO, accountXpriv 
 }
 
 // decryptAndParseXpriv decifra o xpriv com AES-GCM e o parseia.
-// A chave de criptografia vem de BTC_ENCRYPTION_KEY (hex de 32 bytes → AES-256).
 func (s *Service) decryptAndParseXpriv() (*ExtendedKey, error) {
 	keyHex := s.cfg.EncryptionKey
 	if len(keyHex) == 64 {
-		// hex de 32 bytes → chave AES-256
 		keyBytes, err := hex.DecodeString(keyHex)
 		if err != nil {
 			return nil, fmt.Errorf("btc: BTC_ENCRYPTION_KEY inválida")
@@ -457,12 +572,10 @@ func (s *Service) decryptAndParseXpriv() (*ExtendedKey, error) {
 		if err != nil {
 			return nil, fmt.Errorf("btc: falha ao decifrar seed: %w", err)
 		}
-		xprivStr := string(plaintext)
-		return ParseXPriv(xprivStr)
+		return ParseXPriv(string(plaintext))
 	}
 
-	// Se BTC_ENCRYPTION_KEY não é hex de 32 bytes, tentar como passphrase
-	// usando SHA256 da passphrase como chave AES
+	// Passphrase → SHA256 → chave AES-256
 	keyBytes := sha256Sum([]byte(keyHex))
 	cipherBytes, err := hex.DecodeString(s.cfg.EncryptedSeed)
 	if err != nil {

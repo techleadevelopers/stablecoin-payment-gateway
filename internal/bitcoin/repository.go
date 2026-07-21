@@ -15,33 +15,23 @@ type repository struct {
 
 // ─── Endereços ────────────────────────────────────────────────────────────────
 
-// GetNextDerivationIndex retorna o próximo índice livre de derivação para a rede,
-// de forma atômica com SELECT FOR UPDATE + INSERT. Garante unicidade.
+// GetNextDerivationIndex aloca atomicamente o próximo índice HD usando btc_wallet_state.
+// UPDATE ... RETURNING garante que dois requests concorrentes nunca recebem o mesmo índice.
+// A tabela deve ter sido pré-populada pela migration 028 com uma linha por rede.
 func (r *repository) GetNextDerivationIndex(ctx context.Context, network string) (int, error) {
-	tx, err := r.sql.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-
-	var maxIdx sql.NullInt64
-	err = tx.QueryRowContext(ctx,
-		`SELECT MAX(derivation_index) FROM btc_wallet_addresses WHERE network = $1`,
+	var idx int
+	err := r.sql.QueryRowContext(ctx, `
+		UPDATE btc_wallet_state
+		SET next_derivation_index = next_derivation_index + 1,
+		    updated_at = now()
+		WHERE network = $1
+		RETURNING next_derivation_index - 1`,
 		network,
-	).Scan(&maxIdx)
+	).Scan(&idx)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("btc: erro ao alocar índice de derivação (rede %s): %w", network, err)
 	}
-
-	next := 0
-	if maxIdx.Valid {
-		next = int(maxIdx.Int64) + 1
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return next, nil
+	return idx, nil
 }
 
 // AllocateAddress persiste um novo endereço BTC para o usuário.
@@ -152,26 +142,36 @@ func (r *repository) GetConfirmedUTXOs(ctx context.Context, userID, network stri
 	return scanUTXOs(rows)
 }
 
-// GetBalance soma saldo confirmado e pendente do usuário.
+// GetBalance soma saldo confirmado, pendente e reservado do usuário.
+// available_sats = confirmed - reserved (nunca negativo).
 func (r *repository) GetBalance(ctx context.Context, userID, network string) (Balance, error) {
 	row := r.sql.QueryRowContext(ctx, `
 		SELECT
-		  COALESCE(SUM(value_sats) FILTER (WHERE status = 'confirmed'), 0) AS confirmed,
-		  COALESCE(SUM(value_sats) FILTER (WHERE status = 'pending'), 0) AS pending
+		  COALESCE(SUM(value_sats) FILTER (WHERE status = 'confirmed'), 0),
+		  COALESCE(SUM(value_sats) FILTER (WHERE status = 'pending'),   0),
+		  COALESCE(SUM(value_sats) FILTER (WHERE status = 'reserved'),  0)
 		FROM btc_utxos
-		WHERE user_id = $1 AND network = $2 AND status IN ('confirmed','pending')`,
+		WHERE user_id = $1 AND network = $2 AND status IN ('confirmed','pending','reserved')`,
 		userID, network,
 	)
-	var confirmed, pending int64
-	if err := row.Scan(&confirmed, &pending); err != nil {
+	var confirmed, pending, reserved int64
+	if err := row.Scan(&confirmed, &pending, &reserved); err != nil {
 		return Balance{}, err
+	}
+	available := confirmed - reserved
+	if available < 0 {
+		available = 0
 	}
 	return Balance{
 		ConfirmedSats: confirmed,
 		PendingSats:   pending,
+		ReservedSats:  reserved,
+		AvailableSats: available,
 		TotalSats:     confirmed + pending,
 		ConfirmedBTC:  satsToBTCString(confirmed),
 		PendingBTC:    satsToBTCString(pending),
+		AvailableBTC:  satsToBTCString(available),
+		UpdatedAt:     time.Now(),
 	}, nil
 }
 
@@ -393,6 +393,81 @@ func (r *repository) UpdateTransactionError(ctx context.Context, id, code, messa
 		  status=$2, error_code=$3, error_message=$4, updated_at=now()
 		WHERE id=$1`,
 		id, status, code, message,
+	)
+	return err
+}
+
+// ─── Diário de saques ─────────────────────────────────────────────────────────
+
+// GetTodayWithdrawalSats soma os saques do usuário confirmados hoje (UTC).
+// Status 'failed', 'dropped' e 'replaced' são excluídos — não consumiram liquidez.
+func (r *repository) GetTodayWithdrawalSats(ctx context.Context, userID, network string) (int64, error) {
+	var total int64
+	err := r.sql.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(amount_sats), 0)
+		FROM btc_transactions
+		WHERE user_id = $1
+		  AND network = $2
+		  AND direction = 'withdrawal'
+		  AND status NOT IN ('failed', 'dropped', 'replaced')
+		  AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')`,
+		userID, network,
+	).Scan(&total)
+	return total, err
+}
+
+// ─── UTXOs por endereço (reorg detection) ─────────────────────────────────────
+
+// GetActiveUTXOsByAddress retorna UTXOs pending/confirmed de um wallet_address_id.
+// Usado pelo scanner para detectar UTXOs que desapareceram (reorg/double-spend).
+func (r *repository) GetActiveUTXOsByAddress(ctx context.Context, walletAddressID, network string) ([]UTXO, error) {
+	rows, err := r.sql.QueryContext(ctx, `
+		SELECT u.id, u.network, u.user_id, u.wallet_address_id,
+		       a.address,
+		       u.txid, u.vout, u.value_sats, u.script_pub_key,
+		       u.block_height, u.confirmations, u.status,
+		       COALESCE(u.spent_by_txid,''),
+		       u.detected_at,
+		       u.confirmed_at, u.spent_at,
+		       u.created_at, u.updated_at
+		FROM btc_utxos u
+		JOIN btc_wallet_addresses a ON a.id = u.wallet_address_id
+		WHERE u.wallet_address_id = $1 AND u.network = $2
+		  AND u.status IN ('pending','confirmed')`,
+		walletAddressID, network,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanUTXOs(rows)
+}
+
+// MarkUTXOOrphaned marca um UTXO como orphaned — aparecia no DB mas desapareceu
+// do provider (reorg ou double-spend externo).
+func (r *repository) MarkUTXOOrphaned(ctx context.Context, id string) error {
+	_, err := r.sql.ExecContext(ctx, `
+		UPDATE btc_utxos
+		SET status = 'orphaned', updated_at = now()
+		WHERE id = $1 AND status IN ('pending','confirmed')`,
+		id,
+	)
+	return err
+}
+
+// ─── Estado do scanner ────────────────────────────────────────────────────────
+
+// UpdateWalletState atualiza last_scanned_block e last_scan_at após cada ciclo.
+// Usa GREATEST para nunca regredir o bloco mesmo em re-execuções paralelas.
+func (r *repository) UpdateWalletState(ctx context.Context, network string, lastScannedBlock int64) error {
+	_, err := r.sql.ExecContext(ctx, `
+		UPDATE btc_wallet_state
+		SET last_scanned_block = GREATEST(last_scanned_block, $2),
+		    last_scan_at       = now(),
+		    scanner_status     = 'idle',
+		    updated_at         = now()
+		WHERE network = $1`,
+		network, lastScannedBlock,
 	)
 	return err
 }

@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -37,18 +38,21 @@ func (s *Server) handleBTCAddress(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	cfg := svc.Config()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"address":          addr.Address,
-		"network":          addr.Network,
-		"address_type":     addr.AddressType,
-		"derivation_path":  addr.DerivationPath,
-		"derivation_index": addr.DerivationIndex,
-		"created_at":       addr.CreatedAt,
+		"address":               addr.Address,
+		"network":               addr.Network,
+		"bitcoin_network":       string(cfg.Network), // "mainnet" | "testnet" | "signet" | "regtest"
+		"address_type":          addr.AddressType,
+		"derivation_path":       addr.DerivationPath,
+		"derivation_index":      addr.DerivationIndex,
+		"minimum_confirmations": cfg.MinConfirmations,
+		"created_at":            addr.CreatedAt,
 	})
 }
 
 // ─── GET /api/mobile/btc/balance ─────────────────────────────────────────────
-// Retorna saldo confirmado e pendente do usuário em satoshis.
+// Retorna saldo confirmado, pendente, reservado e disponível em satoshis.
 
 func (s *Server) handleBTCBalance(w http.ResponseWriter, r *http.Request) {
 	svc := s.btcSvcOrErr(w)
@@ -56,6 +60,7 @@ func (s *Server) handleBTCBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := userIDFromCtx(r)
+	cfg := svc.Config()
 	bal, err := svc.GetBalance(r.Context(), uid)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
@@ -64,6 +69,10 @@ func (s *Server) handleBTCBalance(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Enriquecer com campos de contexto para o mobile
+	bal.Asset = "BTC"
+	bal.Network = string(cfg.Network)
+	bal.MinimumConfirmations = cfg.MinConfirmations
 	writeJSON(w, http.StatusOK, bal)
 }
 
@@ -157,7 +166,7 @@ func (s *Server) handleBTCGetTransaction(w http.ResponseWriter, r *http.Request)
 }
 
 // ─── POST /api/mobile/btc/send ───────────────────────────────────────────────
-// Envia BTC para um endereço externo. Requer idempotency key.
+// Envia BTC para um endereço externo. Requer idempotency key no header.
 //
 // Body:
 //
@@ -230,22 +239,29 @@ func (s *Server) handleBTCSend(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status := http.StatusInternalServerError
 		code := "BTC_SEND_ERROR"
-		switch err {
-		case bitcoin.ErrInsufficientFunds:
+		switch {
+		case errors.Is(err, bitcoin.ErrInsufficientFunds):
 			status = http.StatusUnprocessableEntity
 			code = "INSUFFICIENT_FUNDS"
-		case bitcoin.ErrDustOutput:
+		case errors.Is(err, bitcoin.ErrDustOutput):
 			status = http.StatusUnprocessableEntity
 			code = "DUST_OUTPUT"
-		case bitcoin.ErrInvalidAddress, bitcoin.ErrWrongNetwork:
+		case errors.Is(err, bitcoin.ErrInvalidAddress), errors.Is(err, bitcoin.ErrWrongNetwork):
 			status = http.StatusBadRequest
 			code = "INVALID_ADDRESS"
-		case bitcoin.ErrNoSeed:
+		case errors.Is(err, bitcoin.ErrNoSeed):
 			status = http.StatusServiceUnavailable
 			code = "SIGNING_NOT_CONFIGURED"
-		case bitcoin.ErrMaxSendExceeded:
+		case errors.Is(err, bitcoin.ErrMaxSendExceeded):
 			status = http.StatusUnprocessableEntity
 			code = "MAX_SEND_EXCEEDED"
+		case errors.Is(err, bitcoin.ErrDailyLimitExceeded):
+			status = http.StatusUnprocessableEntity
+			code = "DAILY_LIMIT_EXCEEDED"
+		case errors.Is(err, bitcoin.ErrIdempotencyConflict):
+			// Mesma chave de idempotência mas payload diferente — conflito real
+			status = http.StatusConflict
+			code = "IDEMPOTENCY_CONFLICT"
 		}
 		writeJSON(w, status, map[string]any{
 			"code":    code,

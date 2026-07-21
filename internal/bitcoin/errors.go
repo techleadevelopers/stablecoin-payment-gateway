@@ -19,5 +19,6 @@ var (
 	ErrHardenedFromPub   = errors.New("bitcoin: não é possível derivar chave hardenada a partir de xpub")
 	ErrIndexExhausted    = errors.New("bitcoin: índice de derivação esgotado")
 	ErrMaxSendExceeded   = errors.New("bitcoin: valor excede BTC_MAX_SEND_SATS")
-	ErrDailyLimitExceeded = errors.New("bitcoin: limite diário de envio excedido")
+	ErrDailyLimitExceeded   = errors.New("bitcoin: limite diário de envio excedido")
+	ErrIdempotencyConflict  = errors.New("bitcoin: idempotency key já usada com payload diferente")
 )

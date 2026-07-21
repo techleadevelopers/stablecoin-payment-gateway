@@ -103,12 +103,27 @@ type BTCTransaction struct {
 
 // Balance representa o saldo BTC de um usuário.
 type Balance struct {
+	// Sats (int64 — nunca float para cálculo financeiro)
 	ConfirmedSats int64 `json:"confirmed_sats"`
 	PendingSats   int64 `json:"pending_sats"`
+	ReservedSats  int64 `json:"reserved_sats"`  // UTXOs reservados para saques em andamento
+	AvailableSats int64 `json:"available_sats"`  // confirmed - reserved
 	TotalSats     int64 `json:"total_sats"`
-	// Representação em BTC (float apenas para exibição, nunca para cálculo)
+	// Representação em BTC — string com 8 casas decimais, nunca float para cálculo
 	ConfirmedBTC string `json:"confirmed_btc"`
 	PendingBTC   string `json:"pending_btc"`
+	AvailableBTC string `json:"available_btc"`
+	// Campos de contexto enriquecidos para o mobile
+	Asset                string    `json:"asset,omitempty"`
+	Network              string    `json:"network,omitempty"`
+	MinimumConfirmations int       `json:"minimum_confirmations,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at,omitempty"`
+}
+
+// DepositEventSink permite ao BTCWorker publicar eventos de depósito sem importar
+// o pacote workers (evita importação circular). Implementado em workers.btcEventSinkAdapter.
+type DepositEventSink interface {
+	PublishBTCEvent(eventType string, payload map[string]any)
 }
 
 // FeeEstimate representa uma estimativa de fee para envio BTC.

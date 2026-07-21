@@ -64,6 +64,10 @@ func NewWorkerManager(db *database.DB, cfg *config.Config, mailer *email.Service
 		btcSvc = nil
 	}
 	btcWorker := bitcoin.NewBTCWorker(btcSvc)
+	// Wire event sink so the BTC worker publishes deposit/withdrawal events to the main bus.
+	if btcWorker != nil {
+		btcWorker.SetSink(&btcEventSinkAdapter{bus: bus})
+	}
 
 	return &WorkerManager{
 		Bus:                 bus,
@@ -246,4 +250,25 @@ func (wm *WorkerManager) StartAllAndWait(ctx context.Context) {
 	wm.StartAll(ctx)
 	<-ctx.Done()
 	wm.Shutdown(context.Background())
+}
+
+// ─── BTC event sink adapter ───────────────────────────────────────────────────
+
+// btcEventSinkAdapter implementa bitcoin.DepositEventSink traduzindo eventos BTC
+// para o EventBus interno do ChainFX. Sem importação circular: a interface é
+// definida no pacote bitcoin, a implementação concreta fica aqui no pacote workers.
+type btcEventSinkAdapter struct {
+	bus *EventBus
+}
+
+func (a *btcEventSinkAdapter) PublishBTCEvent(eventType string, payload map[string]any) {
+	if a.bus == nil {
+		return
+	}
+	orderID, _ := payload["user_id"].(string) // melhor identificador disponível
+	a.bus.Publish(Event{
+		Type:    eventType,
+		OrderID: orderID,
+		Payload: payload,
+	})
 }

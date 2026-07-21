@@ -1,0 +1,48 @@
+Bitcoin Mobile — Gaps
+Críticos (bloqueiam produção)
+#	Onde	Gap
+1	repository.go GetNextDerivationIndex	Usa SELECT MAX(derivation_index) — race condition entre dois requests simultâneos gera o mesmo índice. Precisa usar a tabela btc_wallet_state com UPDATE ... RETURNING
+2	service.go Send()	request_hash nunca computado — campo fica vazio no DB, idempotência fraca
+3	mobile/btc.go handleBTCSend	Chave de idempotência repetida com payload diferente (outro valor/endereço) retorna o resultado antigo silenciosamente sem erro — deveria retornar 409
+4	service.go Send()	Limite diário (BTC_DAILY_SEND_LIMIT_SATS) lido no config mas nunca verificado no fluxo de envio
+5	repository.go GetBalance	reserved_sats não retornado — available_sats calculado errado na resposta mobile
+6	worker.go scanDeposits	Nenhuma detecção de reorg: UTXO que desaparece do provider não é marcado como orphaned
+Importantes (resposta incorreta para o mobile)
+#	Onde	Gap
+7	mobile/btc.go handleBTCAddress	Resposta não inclui bitcoin_network, minimum_confirmations — mobile não sabe quantas confirmações aguardar
+8	mobile/btc.go handleBTCBalance	Faltam campos: asset, network, reserved_sats, available_sats, minimum_confirmations, updated_at
+9	worker.go	Nenhum evento publicado (btc.deposit.detected, btc.deposit.confirmed) — notificações push de depósito impossíveis
+10	repository.go	Tabela btc_wallet_state nunca usada — last_scanned_block e next_derivation_index não são persistidos entre restarts do worker
+Resiliência (falham sob carga ou instabilidade)
+#	Onde	Gap
+11	provider.go MempoolProvider	Sem retry com jitter, sem circuit breaker — uma falha pontual da API derruba o scan inteiro
+12	service.go Send()	UTXO reservation usa UPDATE WHERE status='confirmed' em bulk sem SELECT FOR UPDATE SKIP LOCKED — duas requisições simultâneas podem tentar os mesmos UTXOs
+13	btc_test.go	Sem testes de service, repository, worker ou idempotência — apenas primitivos (bech32, UTXO selection)
+🔷 EVM Mobile (BSC / Polygon) — Gaps
+Críticos
+#	Onde	Gap
+14	wallet.go handleWalletBalance	Busca saldo só na BSC via BscRpcUrls — Polygon completamente ausente do balanço nativo
+15	transfer.go handleWalletTransfer	Transferência de BNB nativo e MATIC nativo ausente — só ERC-20 está implementado (sendCustodialMobileERC20Transfer)
+16	wallet.go handleWalletGenerate	Gera carteira com label hardcoded "BSC" — Polygon não é inicializado explicitamente
+Importantes
+#	Onde	Gap
+17	server.go	Sem rate limiting nos endpoints de transferência além da idempotência — user pode tentar centenas de envios com chaves diferentes
+18	transfer.go	Sem validação de valor mínimo/máximo em transferências diretas wallet-to-wallet (existe só em buy/sell)
+19	wallet.go handleWalletHistory	Histórico vem do DB de orders, não da chain — transações externas recebidas (depósitos externos) não aparecem
+Gargalos de Performance
+#	Onde	Gargalo
+20	wallet.go mobileOnchainWalletBalances	Chamadas RPC sequenciais com timeout de 4s — multi-token em BSC + Polygon = 8s+ por request de balance
+21	wallet.go	Sem cache de balance — cada request ao mobile refaz todas as chamadas RPC
+Prioridade sugerida de correção
+🔴 BLOQUEIAM PRODUÇÃO (corrigir agora):
+   #1 race condition índice HD
+   #3 idempotência payload mismatch
+   #5 reserved_sats ausente → saldo errado
+   #14 Polygon ausente no balance
+   #15 BNB/MATIC transfer missing
+🟠 INCORREÇÃO DE DADOS (corrigir antes de usuários reais):
+   #2 #4 #7 #8 #9 #10 #16 #18 #19
+🟡 RESILIÊNCIA / PERFORMANCE (antes de escala):
+   #11 #12 #17 #20 #21
+🟢 QUALIDADE (antes de certificação):
+   #13 testes

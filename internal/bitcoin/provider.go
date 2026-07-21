@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -22,17 +23,20 @@ type Provider interface {
 
 // MempoolProvider implementa Provider usando a API REST do mempool.space.
 // Funciona com mainnet, testnet, signet e pode apontar para instância própria.
+// Todas as chamadas GET usam retry com exponential backoff + jitter (3 tentativas).
 type MempoolProvider struct {
-	baseURL string
-	token   string
-	client  *http.Client
+	baseURL    string
+	token      string
+	client     *http.Client
+	maxRetries int
 }
 
 // NewMempoolProvider cria um provider apontando para baseURL.
 func NewMempoolProvider(cfg *Config) *MempoolProvider {
 	return &MempoolProvider{
-		baseURL: strings.TrimRight(cfg.APIURL, "/"),
-		token:   cfg.APIToken,
+		baseURL:    strings.TrimRight(cfg.APIURL, "/"),
+		token:      cfg.APIToken,
+		maxRetries: 3,
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},
@@ -43,7 +47,7 @@ func NewMempoolProvider(cfg *Config) *MempoolProvider {
 // GET /address/{address}/utxo
 func (p *MempoolProvider) GetAddressUTXOs(ctx context.Context, address string) ([]ProviderUTXO, error) {
 	var utxos []ProviderUTXO
-	err := p.get(ctx, fmt.Sprintf("/address/%s/utxo", address), &utxos)
+	err := p.retryGet(ctx, fmt.Sprintf("/address/%s/utxo", address), &utxos)
 	return utxos, err
 }
 
@@ -51,7 +55,7 @@ func (p *MempoolProvider) GetAddressUTXOs(ctx context.Context, address string) (
 // GET /tx/{txid}
 func (p *MempoolProvider) GetTransaction(ctx context.Context, txid string) (*ProviderTxStatus, error) {
 	var tx ProviderTxStatus
-	if err := p.get(ctx, fmt.Sprintf("/tx/%s", txid), &tx); err != nil {
+	if err := p.retryGet(ctx, fmt.Sprintf("/tx/%s", txid), &tx); err != nil {
 		return nil, err
 	}
 	return &tx, nil
@@ -61,7 +65,7 @@ func (p *MempoolProvider) GetTransaction(ctx context.Context, txid string) (*Pro
 // GET /v1/fees/recommended
 func (p *MempoolProvider) EstimateFeeRate(ctx context.Context, targetBlocks int) (int64, error) {
 	var fees ProviderFeeRecommended
-	if err := p.get(ctx, "/v1/fees/recommended", &fees); err != nil {
+	if err := p.retryGet(ctx, "/v1/fees/recommended", &fees); err != nil {
 		return 0, err
 	}
 	switch {
@@ -77,7 +81,7 @@ func (p *MempoolProvider) EstimateFeeRate(ctx context.Context, targetBlocks int)
 }
 
 // BroadcastTransaction faz broadcast de uma transação assinada (raw hex).
-// POST /tx — retorna o txid no body.
+// POST /tx — retorna o txid no body. Não faz retry para evitar double-broadcast.
 func (p *MempoolProvider) BroadcastTransaction(ctx context.Context, rawTxHex string) (string, error) {
 	url := p.baseURL + "/tx"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(rawTxHex))
@@ -127,6 +131,53 @@ func (p *MempoolProvider) GetCurrentBlockHeight(ctx context.Context) (int64, err
 		return 0, fmt.Errorf("provider: erro ao decodificar block height: %w", err)
 	}
 	return height, nil
+}
+
+// ─── retry com exponential backoff + jitter ───────────────────────────────────
+
+// retryGet executa uma chamada GET com até p.maxRetries tentativas usando
+// exponential backoff + jitter. Erros 404 e 4xx (exceto 429) não são retriados.
+func (p *MempoolProvider) retryGet(ctx context.Context, path string, dest any) error {
+	var lastErr error
+	for attempt := 0; attempt < p.maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 200ms, 400ms, 800ms... + jitter ±50ms
+			base := time.Duration(200<<uint(attempt-1)) * time.Millisecond
+			jitter := time.Duration(rand.Int63n(100)-50) * time.Millisecond
+			wait := base + jitter
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+
+		err := p.get(ctx, path, dest)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		// Não fazer retry para erros 404 e 4xx permanentes
+		if isNonRetriableProviderError(err) {
+			return err
+		}
+	}
+	return fmt.Errorf("provider: %d tentativas falharam para %s: %w", p.maxRetries, path, lastErr)
+}
+
+// isNonRetriableProviderError indica se o erro não deve ser retriado.
+func isNonRetriableProviderError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "não encontrado") ||
+		strings.Contains(s, "retornou 400") ||
+		strings.Contains(s, "retornou 401") ||
+		strings.Contains(s, "retornou 403") ||
+		strings.Contains(s, "retornou 404") ||
+		strings.Contains(s, "retornou 410")
 }
 
 // ─── helpers internos ─────────────────────────────────────────────────────────
