@@ -37,6 +37,13 @@ func (s *Server) handleWalletTransfer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "erro ao preparar wallet custodial"})
 		return
 	}
+	if !mobileUserKYCApproved(user) {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error":     "kyc obrigatorio para enviar cripto",
+			"kycStatus": user.KYCStatus,
+		})
+		return
+	}
 	if user.WalletAddress == nil || strings.TrimSpace(*user.WalletAddress) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "wallet do usuario nao registrada"})
 		return
