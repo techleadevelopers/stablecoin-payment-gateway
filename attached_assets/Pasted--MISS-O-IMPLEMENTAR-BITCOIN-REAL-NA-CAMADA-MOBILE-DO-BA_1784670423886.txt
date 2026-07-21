@@ -1,0 +1,1234 @@
+# MISSÃO — IMPLEMENTAR BITCOIN REAL NA CAMADA MOBILE DO BACKEND
+
+Atue como um **Staff Backend Engineer especializado em Bitcoin, segurança financeira, sistemas custodiais e infraestrutura de pagamentos**.
+
+Implemente suporte real a Bitcoin no backend utilizado pelo aplicativo mobile.
+
+A implementação deve ser de nível produção, com:
+
+* endereços Bitcoin reais;
+* carteira HD;
+* leitura de UTXOs;
+* saldo confirmado e pendente;
+* detecção de depósitos;
+* criação de transações;
+* cálculo de fee;
+* assinatura;
+* broadcast;
+* acompanhamento de confirmações;
+* idempotência;
+* auditoria;
+* testes automatizados.
+
+## REGRA PRINCIPAL
+
+Não altere, não misture e não quebre os fluxos existentes de:
+
+* BSC;
+* Polygon;
+* EVM;
+* USDT;
+* USDC;
+* buy;
+* sell;
+* swap;
+* settlement;
+* Agent Rail;
+* NFC;
+* signer EVM;
+* workers existentes.
+
+Bitcoin deve ser implementado como uma **rail independente**.
+
+Não tente reaproveitar lógica de:
+
+* nonce EVM;
+* gas;
+* contratos Solidity;
+* endereços `0x`;
+* signer EVM;
+* RPC EVM;
+* transferências ERC-20.
+
+Bitcoin utiliza:
+
+* endereços Bitcoin;
+* UTXOs;
+* inputs e outputs;
+* sats;
+* fees em sats/vbyte;
+* transações Bitcoin;
+* confirmações de bloco.
+
+## ESCOPO DESTA IMPLEMENTAÇÃO
+
+O foco é exclusivamente a camada de backend consumida pelo aplicativo mobile.
+
+Não redesenhe o sistema inteiro.
+
+Não altere o funcionamento atual dos ativos EVM.
+
+Implemente a infraestrutura BTC de modo modular e isolado, pronta para ser ativada gradualmente.
+
+## FASES OBRIGATÓRIAS
+
+Implemente nesta ordem:
+
+1. infraestrutura e configuração BTC;
+2. geração de endereço de recebimento;
+3. detecção de depósitos;
+4. saldo confirmado e pendente;
+5. envio de BTC;
+6. worker de confirmações;
+7. integração com os endpoints mobile;
+8. testes unitários, integração e adversariais;
+9. documentação operacional.
+
+Cada fase deve funcionar antes de avançar para a seguinte.
+
+---
+
+# 1. INVESTIGAÇÃO INICIAL
+
+Antes de escrever código:
+
+1. analise a arquitetura atual;
+2. identifique linguagem, módulos, handlers, services, repositories, workers e migrations;
+3. localize os endpoints mobile existentes;
+4. localize o modelo atual de wallets e ativos;
+5. identifique como autenticação, auditoria, idempotência e tratamento de erros são feitos;
+6. identifique como PostgreSQL, Redis e filas são utilizados;
+7. identifique os padrões de testes já existentes.
+
+Reutilize apenas padrões arquiteturais seguros, como:
+
+* autenticação;
+* logging;
+* repositories;
+* migrations;
+* respostas HTTP;
+* observabilidade;
+* idempotência;
+* filas.
+
+Não reutilize regras específicas de EVM para Bitcoin.
+
+Antes das mudanças, execute os testes atuais e registre o baseline.
+
+---
+
+# 2. ARQUITETURA BTC ISOLADA
+
+Crie um módulo próprio, por exemplo:
+
+```text
+internal/bitcoin/
+  config.go
+  types.go
+  address.go
+  wallet.go
+  provider.go
+  utxo.go
+  balance.go
+  fee.go
+  transaction.go
+  signer.go
+  broadcaster.go
+  service.go
+  repository.go
+  errors.go
+  validator.go
+  worker.go
+```
+
+Adapte os nomes à estrutura real do projeto.
+
+A camada BTC deve possuir interfaces claras para impedir acoplamento com provedores externos.
+
+Exemplo conceitual:
+
+```go
+type BitcoinProvider interface {
+    GetAddressUTXOs(ctx context.Context, address string) ([]UTXO, error)
+    GetTransaction(ctx context.Context, txid string) (*TransactionStatus, error)
+    EstimateFeeRate(ctx context.Context, targetBlocks int) (int64, error)
+    BroadcastTransaction(ctx context.Context, rawTx string) (string, error)
+    GetCurrentBlockHeight(ctx context.Context) (int64, error)
+}
+```
+
+A regra de negócio não deve depender diretamente de uma API pública específica.
+
+---
+
+# 3. CONFIGURAÇÃO
+
+Adicione configurações seguras:
+
+```env
+BTC_ENABLED=false
+BTC_NETWORK=testnet
+BTC_PROVIDER_TYPE=
+BTC_RPC_URL=
+BTC_RPC_USER=
+BTC_RPC_PASSWORD=
+BTC_API_URL=
+BTC_API_TOKEN=
+BTC_XPUB=
+BTC_ENCRYPTED_SEED=
+BTC_ENCRYPTION_KEY=
+BTC_MIN_CONFIRMATIONS=3
+BTC_DEPOSIT_SCAN_INTERVAL=30s
+BTC_TRANSACTION_SCAN_INTERVAL=30s
+BTC_FEE_POLICY=normal
+BTC_FEE_TARGET_BLOCKS=3
+BTC_MIN_FEE_RATE_SAT_VB=1
+BTC_MAX_FEE_RATE_SAT_VB=200
+BTC_DUST_LIMIT_SATS=546
+BTC_MAX_SEND_SATS=
+BTC_DAILY_SEND_LIMIT_SATS=
+BTC_HOT_WALLET_RESERVE_SATS=
+```
+
+## Regras de configuração
+
+* O sistema não deve iniciar a rail BTC se `BTC_ENABLED=true` e configurações obrigatórias estiverem ausentes.
+* Nunca registre seed, xpriv, private key, token ou senha nos logs.
+* `mainnet`, `testnet`, `signet` e `regtest` devem ser tratados explicitamente.
+* Nunca permita que um endereço de outra rede seja usado.
+* Para desenvolvimento e testes, prefira `regtest` ou `testnet`.
+* Produção deve exigir configuração explícita de `mainnet`.
+* Não utilizar valores secretos hardcoded.
+* Não persistir seed ou private key em texto puro.
+
+---
+
+# 4. MODELO DE CARTEIRA HD
+
+Implemente uma estratégia HD adequada para Bitcoin.
+
+Preferência:
+
+* BIP32;
+* BIP39 quando houver seed;
+* BIP84 para Native SegWit;
+* endereços `bc1q...` em mainnet;
+* endereços correspondentes à rede em testnet/regtest.
+
+Caminho conceitual:
+
+```text
+m/84'/0'/0'/0/index
+```
+
+Para testnet:
+
+```text
+m/84'/1'/0'/0/index
+```
+
+## Segurança
+
+A API pública do backend deve gerar endereços usando `xpub`, sem precisar carregar chaves privadas.
+
+A assinatura deve ficar isolada.
+
+Quando possível:
+
+* address service usa somente `xpub`;
+* signer usa seed/xpriv criptografada;
+* signer não expõe endpoint genérico de assinatura;
+* nenhuma função de assinatura arbitrária;
+* nenhuma função equivalente a `execute arbitrary transaction`.
+
+Não derive novamente um índice já usado para outro usuário.
+
+A alocação de índice deve ser transacional e possuir restrição única.
+
+---
+
+# 5. BANCO DE DADOS
+
+Crie migrations próprias para Bitcoin.
+
+Sugestão de tabelas:
+
+## `btc_wallet_addresses`
+
+Campos mínimos:
+
+```text
+id
+user_id
+network
+address
+derivation_path
+derivation_index
+address_type
+status
+created_at
+updated_at
+```
+
+Restrições:
+
+* `UNIQUE(network, address)`;
+* `UNIQUE(network, derivation_index)`;
+* um endereço não pode pertencer a dois usuários;
+* índices para `user_id`, `address` e `status`.
+
+## `btc_utxos`
+
+Campos mínimos:
+
+```text
+id
+network
+user_id
+wallet_address_id
+txid
+vout
+value_sats
+script_pub_key
+block_height
+confirmations
+status
+spent_by_txid
+detected_at
+confirmed_at
+spent_at
+created_at
+updated_at
+```
+
+Restrições:
+
+```text
+UNIQUE(network, txid, vout)
+```
+
+Status possíveis:
+
+```text
+pending
+confirmed
+reserved
+spent
+orphaned
+```
+
+## `btc_transactions`
+
+Campos mínimos:
+
+```text
+id
+user_id
+network
+direction
+txid
+raw_tx_hash
+destination_address
+amount_sats
+fee_sats
+fee_rate_sat_vbyte
+status
+confirmations
+block_height
+idempotency_key
+request_hash
+error_code
+error_message
+broadcast_at
+confirmed_at
+created_at
+updated_at
+```
+
+Direções:
+
+```text
+deposit
+withdrawal
+internal
+```
+
+Status:
+
+```text
+created
+building
+signed
+broadcast
+pending
+confirmed
+failed
+replaced
+dropped
+```
+
+Restrições:
+
+```text
+UNIQUE(network, txid)
+UNIQUE(user_id, idempotency_key)
+```
+
+## `btc_transaction_inputs`
+
+Registre todos os UTXOs usados como inputs.
+
+## `btc_transaction_outputs`
+
+Registre:
+
+* destino;
+* valor;
+* change;
+* tipo de output.
+
+## `btc_wallet_state`
+
+Para controlar:
+
+* próximo índice HD;
+* último bloco escaneado;
+* último scan bem-sucedido;
+* status do scanner.
+
+Não adicione colunas BTC improvisadas nas tabelas EVM quando uma tabela BTC específica for mais segura.
+
+Caso seja necessário referenciar o usuário, use foreign key, mas mantenha os estados financeiros separados.
+
+---
+
+# 6. ENDEREÇO BTC PARA O MOBILE
+
+Crie ou adapte um endpoint mobile para receber BTC.
+
+Exemplo:
+
+```http
+GET /api/mobile/wallets/btc/deposit-address
+```
+
+Resposta:
+
+```json
+{
+  "asset": "BTC",
+  "network": "bitcoin",
+  "bitcoin_network": "testnet",
+  "address": "tb1q...",
+  "address_type": "p2wpkh",
+  "derivation_path": "m/84'/1'/0'/0/42",
+  "minimum_confirmations": 3
+}
+```
+
+Nunca retorne:
+
+* endereço `0x`;
+* chain ID EVM;
+* contrato ERC-20;
+* token address;
+* gas;
+* nonce.
+
+## Comportamento
+
+* Se o usuário não possui endereço, gere um de forma transacional.
+* Se já possui, retorne o endereço existente.
+* Requisições concorrentes não podem gerar vários endereços acidentalmente.
+* O endpoint deve ser autenticado.
+* Registre evento de auditoria sem registrar segredo.
+* Valide que o endereço corresponde à rede configurada.
+
+O endereço BTC deve ser armazenado separadamente do `wallet_address` EVM.
+
+---
+
+# 7. DETECÇÃO DE DEPÓSITOS
+
+Implemente worker de depósitos BTC.
+
+Responsabilidades:
+
+1. obter endereços ativos;
+2. consultar UTXOs;
+3. inserir novos UTXOs de modo idempotente;
+4. identificar depósitos pendentes;
+5. atualizar confirmações;
+6. mover depósito para confirmado ao atingir o mínimo;
+7. detectar reorganização de blockchain;
+8. marcar UTXOs que desapareceram ou ficaram órfãos;
+9. publicar eventos internos após commit.
+
+Eventos sugeridos:
+
+```text
+btc.deposit.detected
+btc.deposit.confirmed
+btc.deposit.reorged
+```
+
+Payload mínimo:
+
+```json
+{
+  "user_id": "...",
+  "network": "bitcoin",
+  "txid": "...",
+  "vout": 0,
+  "amount_sats": 150000,
+  "confirmations": 3,
+  "address": "..."
+}
+```
+
+## Regras
+
+* Nunca creditar o mesmo `txid:vout` duas vezes.
+* Saldo pendente e confirmado devem ser separados.
+* Depósitos não confirmados não podem ser usados como saldo disponível.
+* Reprocessar um bloco deve ser seguro.
+* Falha temporária do provider não deve apagar dados previamente válidos.
+* Use retry com backoff e jitter.
+* Evite scans concorrentes do mesmo endereço.
+* Implemente lock distribuído ou liderança de worker quando houver múltiplas instâncias.
+
+---
+
+# 8. SALDO BTC
+
+Crie endpoint:
+
+```http
+GET /api/mobile/wallets/btc/balance
+```
+
+Resposta:
+
+```json
+{
+  "asset": "BTC",
+  "network": "bitcoin",
+  "confirmed_sats": 250000,
+  "pending_sats": 50000,
+  "reserved_sats": 20000,
+  "available_sats": 230000,
+  "confirmed_btc": "0.00250000",
+  "pending_btc": "0.00050000",
+  "available_btc": "0.00230000",
+  "minimum_confirmations": 3,
+  "updated_at": "..."
+}
+```
+
+## Fórmulas
+
+```text
+confirmed = soma dos UTXOs confirmados e não gastos
+pending = soma dos UTXOs ainda sem confirmações suficientes
+reserved = soma dos UTXOs reservados para withdrawals
+available = confirmed - reserved
+```
+
+Use `int64` para sats.
+
+Nunca use `float32` ou `float64` para representar BTC financeiro.
+
+Para respostas em BTC:
+
+* use decimal exato;
+* sempre 8 casas decimais quando apropriado;
+* conversão determinística entre BTC e sats.
+
+```text
+1 BTC = 100000000 sats
+```
+
+---
+
+# 9. ENVIO DE BTC
+
+Crie endpoint mobile:
+
+```http
+POST /api/mobile/wallets/btc/send
+```
+
+Request:
+
+```json
+{
+  "destination_address": "tb1q...",
+  "amount_sats": 100000,
+  "fee_policy": "normal",
+  "idempotency_key": "..."
+}
+```
+
+Resposta inicial:
+
+```json
+{
+  "transaction_id": "...",
+  "txid": "...",
+  "status": "broadcast",
+  "amount_sats": 100000,
+  "fee_sats": 450,
+  "fee_rate_sat_vbyte": 3,
+  "destination_address": "tb1q...",
+  "network": "bitcoin"
+}
+```
+
+## Processo obrigatório
+
+O envio deve executar:
+
+1. autenticação;
+2. validação do ativo e rede;
+3. validação do endereço;
+4. validação do valor;
+5. validação dos limites;
+6. validação da idempotência;
+7. cálculo do request hash;
+8. leitura de saldo disponível;
+9. estimativa segura da fee;
+10. seleção de UTXOs;
+11. reserva atômica dos UTXOs;
+12. criação do output de destino;
+13. criação do output de change quando necessário;
+14. validação de dust;
+15. montagem da PSBT ou transação;
+16. assinatura isolada;
+17. validação da transação assinada;
+18. broadcast;
+19. persistência do txid;
+20. atualização dos estados dos UTXOs;
+21. publicação de evento após commit.
+
+## UTXO locking
+
+Duas requisições simultâneas nunca podem gastar o mesmo UTXO.
+
+Utilize:
+
+* transação PostgreSQL;
+* `SELECT ... FOR UPDATE SKIP LOCKED`, quando adequado;
+* status `reserved`;
+* expiration para reservas abandonadas;
+* unique constraints;
+* idempotência.
+
+Não mantenha transação de banco aberta durante chamada longa ao provider.
+
+Use uma máquina de estados segura:
+
+```text
+created
+→ utxos_reserved
+→ transaction_built
+→ signed
+→ broadcast
+→ confirmed
+```
+
+Em falha recuperável:
+
+* preservar dados suficientes para reconciliação;
+* não liberar UTXOs indiscriminadamente depois que a transação tiver sido assinada ou enviada;
+* consultar o provider antes de concluir que o broadcast falhou.
+
+## Validação de endereço
+
+Valide:
+
+* checksum;
+* formato;
+* rede;
+* tipo de script suportado;
+* tamanho;
+* caracteres;
+* endereços mainnet em testnet;
+* endereços testnet em mainnet.
+
+Suporte inicialmente:
+
+* P2WPKH Native SegWit;
+* Bech32.
+
+Outros formatos só devem ser aceitos quando a biblioteca usada os validar corretamente.
+
+## Fees
+
+Implemente políticas:
+
+```text
+fast
+normal
+economy
+```
+
+Mapeadas para número-alvo de blocos.
+
+A estimativa deve utilizar sats/vbyte.
+
+Regras:
+
+* aplicar mínimo configurado;
+* aplicar máximo configurado;
+* rejeitar estimativa fora do limite;
+* possuir fallback configurável;
+* registrar a origem da fee;
+* nunca usar uma fee fixa silenciosamente;
+* calcular fee final com base no tamanho virtual da transação.
+
+## Change
+
+O change deve ser enviado para endereço controlado pela carteira Bitcoin.
+
+Não envie change para:
+
+* endereço do destinatário;
+* endereço EVM;
+* endereço arbitrário do request.
+
+O change address deve ser derivado e registrado com segurança.
+
+Evite criar output de change abaixo do dust limit.
+
+Quando o change for dust, avalie adicioná-lo à fee conforme política explícita.
+
+---
+
+# 10. ASSINATURA
+
+Prefira PSBT para separar montagem e assinatura.
+
+A camada de assinatura deve:
+
+* receber apenas transações Bitcoin previamente validadas;
+* conferir network;
+* conferir inputs;
+* conferir outputs;
+* conferir valor;
+* conferir fee;
+* conferir fee rate;
+* conferir change;
+* conferir ownership dos derivation paths;
+* recusar outputs adicionais inesperados;
+* recusar fee acima do máximo;
+* recusar destino alterado;
+* recusar assinatura duplicada indevida.
+
+A seed ou xpriv deve permanecer:
+
+* criptografada em repouso;
+* fora de logs;
+* fora de respostas HTTP;
+* fora de mensagens de erro;
+* fora de telemetry;
+* fora do banco em texto puro.
+
+Não crie endpoint administrativo genérico que permita assinar qualquer PSBT arbitrária.
+
+---
+
+# 11. BROADCAST E RECONCILIAÇÃO
+
+Após assinar:
+
+1. calcule o txid localmente;
+2. envie a raw transaction;
+3. compare o txid local com o retorno do provider;
+4. registre a tentativa;
+5. trate timeout como estado desconhecido, não como falha definitiva;
+6. consulte o txid antes de tentar rebroadcast;
+7. permita rebroadcast idempotente da mesma raw transaction;
+8. nunca construa uma nova transação automaticamente usando os mesmos UTXOs sem reconciliação.
+
+Eventos:
+
+```text
+btc.withdrawal.created
+btc.withdrawal.signed
+btc.withdrawal.broadcast
+btc.withdrawal.confirmed
+btc.withdrawal.failed
+btc.withdrawal.dropped
+```
+
+---
+
+# 12. WORKER DE TRANSAÇÕES
+
+Implemente worker para acompanhar:
+
+* depósitos pendentes;
+* withdrawals enviados;
+* número de confirmações;
+* inclusão em bloco;
+* transações não encontradas;
+* mempool;
+* reorgs;
+* transações substituídas;
+* falhas do provider.
+
+O worker deve ser:
+
+* idempotente;
+* reiniciável;
+* observável;
+* protegido contra execução concorrente indevida;
+* resiliente a timeout;
+* resiliente a rate limit;
+* resiliente a resposta parcial.
+
+Não marque transação como falha definitiva apenas por um timeout.
+
+---
+
+# 13. ENDPOINT DE HISTÓRICO
+
+Crie ou adapte:
+
+```http
+GET /api/mobile/wallets/btc/transactions
+```
+
+Retorne separadamente:
+
+* deposit;
+* withdrawal;
+* pending;
+* confirmed;
+* failed.
+
+Exemplo:
+
+```json
+{
+  "items": [
+    {
+      "id": "...",
+      "direction": "deposit",
+      "txid": "...",
+      "amount_sats": 100000,
+      "fee_sats": 0,
+      "confirmations": 2,
+      "required_confirmations": 3,
+      "status": "pending",
+      "created_at": "..."
+    }
+  ]
+}
+```
+
+Não misture identificadores BTC com hash EVM.
+
+---
+
+# 14. PROVIDER
+
+Implemente adapter de provider.
+
+Pode utilizar uma das seguintes estratégias, conforme a infraestrutura já disponível:
+
+* Bitcoin Core RPC;
+* Electrs;
+* Esplora-compatible API;
+* provider comercial confiável.
+
+Não espalhe chamadas HTTP ao provider por handlers e workers.
+
+Centralize no adapter.
+
+Implemente:
+
+* timeout;
+* retry controlado;
+* backoff;
+* jitter;
+* circuit breaker quando compatível;
+* métricas;
+* erros tipados;
+* validação rigorosa das respostas;
+* limite de payload;
+* autenticação segura;
+* proteção contra URL arbitrária.
+
+Em produção, prefira Bitcoin Core próprio ou infraestrutura confiável.
+
+APIs públicas podem ser usadas em testnet durante desenvolvimento, mas não devem ser assumidas automaticamente como infraestrutura final de produção.
+
+---
+
+# 15. MOBILE
+
+A camada mobile deve distinguir claramente:
+
+```text
+BTC:
+network = bitcoin
+address = bc1... ou tb1...
+unit = sats/BTC
+fee = sats/vbyte
+transaction_id = txid
+
+USDT/USDC:
+network = bsc ou polygon
+address = 0x...
+unit = token decimal
+fee = gas
+transaction_id = EVM hash
+```
+
+Quando o ativo for BTC:
+
+* não usar validação EVM;
+* não mostrar chain ID EVM;
+* não usar token contract;
+* não chamar endpoint de transferência EVM;
+* não reutilizar `wallet_address` EVM;
+* chamar endpoints BTC específicos.
+
+Mantenha compatibilidade com o mobile atual.
+
+Quando `BTC_ENABLED=false`, os endpoints devem responder com erro de feature desativada, sem afetar os demais ativos.
+
+---
+
+# 16. SEGURANÇA E LIMITES
+
+Implemente:
+
+* rate limit;
+* idempotency key obrigatória para envio;
+* request hash;
+* limite por transação;
+* limite diário;
+* mínimo de saque;
+* proteção contra dust;
+* proteção contra fee abusiva;
+* proteção contra double-spend interno;
+* lock de UTXO;
+* auditoria financeira;
+* RBAC para ações administrativas;
+* feature flag;
+* modo de pausa emergencial;
+* health check do provider;
+* reconciliação.
+
+Variáveis adicionais:
+
+```env
+BTC_WITHDRAWALS_ENABLED=false
+BTC_EMERGENCY_LOCKDOWN=false
+```
+
+Quando `BTC_EMERGENCY_LOCKDOWN=true`:
+
+* depósitos ainda podem ser detectados;
+* leitura de saldo continua funcionando;
+* novos envios devem ser bloqueados;
+* workers de confirmação continuam reconciliando transações já enviadas.
+
+---
+
+# 17. OBSERVABILIDADE
+
+Adicione métricas:
+
+```text
+btc_provider_requests_total
+btc_provider_errors_total
+btc_provider_latency_seconds
+btc_addresses_total
+btc_deposits_detected_total
+btc_deposits_confirmed_total
+btc_withdrawals_created_total
+btc_withdrawals_broadcast_total
+btc_withdrawals_failed_total
+btc_utxos_total
+btc_utxos_reserved_total
+btc_balance_confirmed_sats
+btc_balance_pending_sats
+btc_scan_lag_blocks
+btc_last_successful_scan_timestamp
+```
+
+Logs estruturados devem conter:
+
+* operation ID;
+* user ID mascarado ou identificador interno;
+* transaction ID;
+* txid;
+* network;
+* status;
+* amount em sats;
+* fee em sats;
+* latency;
+* provider;
+* error code.
+
+Nunca registrar:
+
+* seed;
+* mnemonic;
+* xpriv;
+* private key;
+* raw encryption key;
+* token do provider;
+* senha RPC;
+* PSBT completa quando contiver informação sensível;
+* raw transaction desnecessariamente.
+
+---
+
+# 18. TESTES OBRIGATÓRIOS
+
+Não considere a implementação concluída sem testes.
+
+## Testes unitários
+
+Cobrir:
+
+* conversão BTC ↔ sats;
+* validação de endereço;
+* separação de redes;
+* derivação HD;
+* seleção de UTXOs;
+* cálculo de fee;
+* cálculo de change;
+* dust;
+* saldo confirmado;
+* saldo pendente;
+* saldo reservado;
+* limites;
+* request hash;
+* idempotência;
+* estados de transação.
+
+## Testes de integração
+
+Cobrir:
+
+* migration;
+* criação concorrente de endereço;
+* depósito novo;
+* reprocessamento do mesmo depósito;
+* confirmação de depósito;
+* depósito com múltiplos outputs;
+* criação de withdrawal;
+* reserva atômica de UTXOs;
+* assinatura;
+* broadcast;
+* confirmação;
+* falha temporária do provider;
+* restart do worker;
+* recuperação de reserva expirada.
+
+## Testes adversariais
+
+Obrigatórios:
+
+1. endereço mainnet enviado em testnet;
+2. endereço testnet enviado em mainnet;
+3. endereço com checksum inválido;
+4. amount zero;
+5. amount negativo;
+6. overflow de sats;
+7. saldo insuficiente;
+8. fee maior que o valor enviado;
+9. fee acima do máximo;
+10. output abaixo de dust;
+11. idempotency key repetida com o mesmo payload;
+12. idempotency key repetida com payload diferente;
+13. duas requisições tentando gastar o mesmo UTXO;
+14. provider retorna timeout no broadcast;
+15. provider transmite, mas a resposta é perdida;
+16. worker processa o mesmo bloco duas vezes;
+17. depósito aparece e depois sofre reorg;
+18. transação desconhecida no provider;
+19. change enviado para endereço incorreto;
+20. signer recebe output extra;
+21. signer recebe fee alterada;
+22. signer recebe derivation path não pertencente à carteira;
+23. configuração mainnet com xpub testnet;
+24. configuração testnet com xpub mainnet;
+25. tentativa de usar endereço `0x` como destino BTC.
+
+## Regtest
+
+Quando possível, crie integração com Bitcoin Core em `regtest`.
+
+O teste deve:
+
+1. iniciar node regtest;
+2. criar wallet de mineração;
+3. minerar blocos;
+4. gerar endereço BTC do usuário;
+5. enviar BTC para o endereço;
+6. detectar depósito;
+7. confirmar depósito;
+8. consultar saldo;
+9. criar envio;
+10. assinar;
+11. transmitir;
+12. minerar bloco;
+13. confirmar withdrawal;
+14. validar saldo e UTXOs finais.
+
+Não use dinheiro real nos testes automatizados.
+
+---
+
+# 19. GARANTIA DE NÃO REGRESSÃO
+
+Antes e depois da implementação:
+
+* execute todos os testes existentes;
+* execute `go test ./...` ou o comando equivalente do projeto;
+* execute linter;
+* execute race detector nas áreas concorrentes;
+* valide migrations;
+* valide build;
+* valide endpoints EVM existentes;
+* valide BSC e Polygon;
+* valide fluxos mobile atuais.
+
+Exemplo:
+
+```bash
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
+Corrija regressões causadas pela implementação.
+
+Não altere testes antigos apenas para esconder falhas.
+
+---
+
+# 20. CRITÉRIOS DE ACEITE
+
+A tarefa só está concluída quando:
+
+* BTC possui endereço real da rede Bitcoin;
+* endereço BTC não usa formato `0x`;
+* endereços são derivados de forma segura e única;
+* depósitos reais podem ser detectados;
+* depósitos possuem estado pendente e confirmado;
+* UTXOs são persistidos;
+* saldo é calculado em sats;
+* envio constrói uma transação Bitcoin válida;
+* fees são calculadas em sats/vbyte;
+* UTXOs são reservados atomicamente;
+* transação é assinada;
+* transação é transmitida;
+* txid é persistido;
+* confirmações são acompanhadas;
+* idempotência está implementada;
+* workers são reiniciáveis;
+* segredos não aparecem em logs;
+* feature flags funcionam;
+* todos os testes passam;
+* BSC, Polygon, USDT e USDC continuam funcionando sem alteração;
+* documentação operacional foi criada.
+
+---
+
+# 21. ENTREGÁVEIS
+
+Ao finalizar, apresente:
+
+## 1. Resumo executivo
+
+Explique o que foi implementado.
+
+## 2. Arquivos criados
+
+Liste cada arquivo novo e sua finalidade.
+
+## 3. Arquivos alterados
+
+Liste cada arquivo alterado e explique exatamente o motivo.
+
+## 4. Migrations
+
+Liste as tabelas, índices e constraints.
+
+## 5. Endpoints
+
+Documente request, response e erros.
+
+## 6. Variáveis de ambiente
+
+Liste todas as variáveis sem expor valores secretos.
+
+## 7. Fluxo de depósito
+
+Descreva do endereço até a confirmação.
+
+## 8. Fluxo de envio
+
+Descreva da requisição até o broadcast e confirmação.
+
+## 9. Testes executados
+
+Informe:
+
+* comando;
+* quantidade de testes;
+* testes aprovados;
+* testes falhos;
+* race detector;
+* linter;
+* build.
+
+## 10. Riscos restantes
+
+Liste claramente qualquer limitação que ainda impeça produção.
+
+## 11. Checklist de produção
+
+Inclua:
+
+* node/provider;
+* backup seguro;
+* gestão de seed;
+* criptografia;
+* monitoramento;
+* alertas;
+* limites;
+* lockdown;
+* reconciliação;
+* recuperação de desastre.
+
+---
+
+# REGRAS FINAIS
+
+* Não simule suporte BTC usando um endereço EVM.
+* Não trate BTC como ERC-20.
+* Não use valores mockados em runtime de produção.
+* Não diga que está pronto se apenas os endpoints foram criados.
+* Não faça broadcast mainnet durante desenvolvimento.
+* Não exponha seed, mnemonic, xpriv ou private key.
+* Não introduza dependência frágil sem justificativa.
+* Não altere fluxos EVM existentes desnecessariamente.
+* Não ignore erros de provider.
+* Não use ponto flutuante para dinheiro.
+* Não permita double-spend interno de UTXOs.
+* Não marque como falha definitiva uma operação cujo broadcast esteja incerto.
+* Não finalize enquanto testes e build não estiverem verdes.
+
+Implemente primeiro com `BTC_NETWORK=regtest` ou `testnet`.
+
+Deixe mainnet protegida por configuração explícita e validações adicionais.
+
+Comece agora analisando o repositório, mostrando o baseline dos testes e propondo o mapa exato dos arquivos que serão criados ou alterados. Em seguida, faça a implementação completa, execute todos os testes e entregue o relatório técnico final.
