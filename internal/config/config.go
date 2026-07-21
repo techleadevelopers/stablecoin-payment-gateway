@@ -222,7 +222,7 @@ func LoadConfig() *Config {
 		Port:                      getEnv("PORT", "8080"),
 		OrderMinBrl:               getEnvAsFloat("ORDER_MIN_BRL", 10.0),
 		OrderMaxBrl:               getEnvAsFloat("ORDER_MAX_BRL", 10000.0),
-		RateLockSec:               getEnvAsInt("RATE_LOCK_SEC", 600),
+		RateLockSec:               getEnvAsInt("RATE_LOCK_SEC", 300),
 		RateLimitWindowMs:         getEnvAsInt("RATE_LIMIT_WINDOW_MS", 60000),
 		RateLimitMax:              getEnvAsInt("RATE_LIMIT_MAX", 100),
 		RateLimitBackend:          strings.ToLower(getEnv("RATE_LIMIT_BACKEND", "memory")),
