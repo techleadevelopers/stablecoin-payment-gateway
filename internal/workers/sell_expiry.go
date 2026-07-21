@@ -41,12 +41,19 @@ func (w *SellExpiryWorker) expire(ctx context.Context) {
 	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	count, err := w.db.ExpireStaleSellOrders(runCtx)
+	sellCount, err := w.db.ExpireStaleSellOrders(runCtx)
 	if err != nil {
 		slog.Warn("SellExpiryWorker: erro ao expirar ordens sell", "err", err)
-		return
 	}
-	if count > 0 {
-		slog.Info("SellExpiryWorker: ordens sell expiradas", "count", count, "ttl", "8m")
+	if sellCount > 0 {
+		slog.Info("SellExpiryWorker: ordens sell expiradas", "count", sellCount, "ttl", "rate_lock_expires_at")
+	}
+
+	buyCount, err := w.db.ExpireStaleBuyOrders(runCtx)
+	if err != nil {
+		slog.Warn("SellExpiryWorker: erro ao expirar ordens buy", "err", err)
+	}
+	if buyCount > 0 {
+		slog.Info("SellExpiryWorker: ordens buy expiradas", "count", buyCount, "ttl", "rate_lock_expires_at")
 	}
 }
