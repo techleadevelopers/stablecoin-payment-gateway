@@ -93,6 +93,37 @@ func IncNFCLiquidityRejection() {
 	global.nfcLiquidityRejections.Add(1)
 }
 
+// RecordNFCAuthorization increments the per-outcome counter for an NFC
+// authorization result. status must be one of: "approved", "declined",
+// "requires_funding". Unknown values increment nfcAuthDeclined.
+func RecordNFCAuthorization(status string) {
+	switch status {
+	case "approved":
+		global.nfcAuthApproved.Add(1)
+	case "requires_funding":
+		global.nfcAuthRequiresFunding.Add(1)
+		global.nfcAuthDeclined.Add(1)
+	default:
+		global.nfcAuthDeclined.Add(1)
+	}
+}
+
+// IncNFCIdempotencyReplay records one NFC authorize request that was served
+// from the idempotency cache (duplicate tap, same key, same payload).
+func IncNFCIdempotencyReplay() {
+	global.nfcIdempotencyReplays.Add(1)
+}
+
+// IncNFCCapture records one successful NFC capture operation.
+func IncNFCCapture() {
+	global.nfcCaptureTotal.Add(1)
+}
+
+// IncNFCReverse records one successful NFC reversal operation.
+func IncNFCReverse() {
+	global.nfcReverseTotal.Add(1)
+}
+
 // ── Gas Station ───────────────────────────────────────────────────────────────
 
 // IncPaymasterRelay records one successfully submitted relay request.
@@ -221,6 +252,12 @@ type registry struct {
 	mcpRateLimitedTotal    atomic.Int64
 	webhookFailureTotal    atomic.Int64
 	nfcLiquidityRejections atomic.Int64
+	nfcAuthApproved        atomic.Int64 // authorizations that held balance
+	nfcAuthDeclined        atomic.Int64 // authorizations declined (any reason)
+	nfcAuthRequiresFunding atomic.Int64 // authorizations declined for low balance
+	nfcIdempotencyReplays  atomic.Int64 // authorize requests answered from idempotency cache
+	nfcCaptureTotal        atomic.Int64
+	nfcReverseTotal        atomic.Int64
 
 	penaltyBoxActiveBans           atomic.Int64
 	penaltyBoxBansTotal            atomic.Int64
@@ -588,6 +625,24 @@ func (reg *registry) render() string {
 	b.WriteString("# HELP nfc_treasury_liquidity_rejections_total NFC authorizations rejected by BRL treasury liquidity policy.\n")
 	b.WriteString("# TYPE nfc_treasury_liquidity_rejections_total counter\n")
 	fmt.Fprintf(&b, "nfc_treasury_liquidity_rejections_total %d\n", reg.nfcLiquidityRejections.Load())
+	b.WriteString("# HELP nfc_authorization_approved_total NFC authorizations where a balance hold was created.\n")
+	b.WriteString("# TYPE nfc_authorization_approved_total counter\n")
+	fmt.Fprintf(&b, "nfc_authorization_approved_total %d\n", reg.nfcAuthApproved.Load())
+	b.WriteString("# HELP nfc_authorization_declined_total NFC authorizations declined for any reason (includes requires_funding).\n")
+	b.WriteString("# TYPE nfc_authorization_declined_total counter\n")
+	fmt.Fprintf(&b, "nfc_authorization_declined_total %d\n", reg.nfcAuthDeclined.Load())
+	b.WriteString("# HELP nfc_authorization_requires_funding_total NFC authorizations declined due to insufficient USDT balance.\n")
+	b.WriteString("# TYPE nfc_authorization_requires_funding_total counter\n")
+	fmt.Fprintf(&b, "nfc_authorization_requires_funding_total %d\n", reg.nfcAuthRequiresFunding.Load())
+	b.WriteString("# HELP nfc_idempotency_replay_total NFC authorize requests answered from the idempotency cache (duplicate tap).\n")
+	b.WriteString("# TYPE nfc_idempotency_replay_total counter\n")
+	fmt.Fprintf(&b, "nfc_idempotency_replay_total %d\n", reg.nfcIdempotencyReplays.Load())
+	b.WriteString("# HELP nfc_capture_total Successful NFC capture operations.\n")
+	b.WriteString("# TYPE nfc_capture_total counter\n")
+	fmt.Fprintf(&b, "nfc_capture_total %d\n", reg.nfcCaptureTotal.Load())
+	b.WriteString("# HELP nfc_reverse_total Successful NFC reversal operations.\n")
+	b.WriteString("# TYPE nfc_reverse_total counter\n")
+	fmt.Fprintf(&b, "nfc_reverse_total %d\n", reg.nfcReverseTotal.Load())
 	b.WriteString("# HELP nfc_settlement_anomalies_total Current open NFC settlement reconciliation anomalies by type.\n")
 	b.WriteString("# TYPE nfc_settlement_anomalies_total gauge\n")
 	for anomalyType, count := range nfcAnomalies {
