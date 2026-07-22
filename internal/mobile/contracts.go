@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -19,13 +20,39 @@ func (s *Server) handleContractVault(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// Cache vault BNB balance for 30 s — vault balance changes only on sweeps,
+	// not on every user action, so a fresh RPC dial per request is wasteful
+	// and adds 200-800 ms of unnecessary latency.
+	type vaultCached struct {
+		balance string
+		errMsg  string
+	}
+	cacheKey := "vault_bnb:" + strings.ToLower(vaultAddr)
+	if raw, ok := s.getMobileCache(cacheKey); ok {
+		if v, ok2 := raw.(vaultCached); ok2 {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"configured":    true,
+				"vault_address": vaultAddr,
+				"bnb_balance":   v.balance,
+				"error":         v.errMsg,
+				"network":       s.cfg.SignerNetwork,
+				"cached":        true,
+			})
+			return
+		}
+	}
+
 	bal, err := fetchBNBBalance(r.Context(), s.cfg.BscRpcUrls, vaultAddr)
+	s.setMobileCache(cacheKey, vaultCached{balance: bal, errMsg: errStr(err)}, 30*time.Second)
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"configured":    true,
 		"vault_address": vaultAddr,
 		"bnb_balance":   bal,
 		"error":         errStr(err),
 		"network":       s.cfg.SignerNetwork,
+		"cached":        false,
 	})
 }
 
