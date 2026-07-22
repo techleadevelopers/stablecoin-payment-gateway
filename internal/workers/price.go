@@ -132,7 +132,8 @@ func (pw *PriceWorker) fetchPrice() {
 	// Só publica evento se houve mudança significativa (evita spam)
 	changed := false
 	for key, value := range prices {
-		if value > 0 {
+		isChange24h := strings.HasSuffix(key, "_CHANGE24H")
+		if value > 0 || isChange24h {
 			if old, exists := pw.prices[key]; !exists || abs(value-old) > 0.0001 {
 				pw.prices[key] = value
 				changed = true
