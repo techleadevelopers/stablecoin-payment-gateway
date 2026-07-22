@@ -219,6 +219,10 @@ func (s *Server) handleNFCAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth.Idempotent = idempotent
+	if idempotent {
+		metrics.IncNFCIdempotencyReplay()
+	}
+	metrics.RecordNFCAuthorization(auth.Status)
 	if auth.Status == database.NFCStatusDeclined && auth.Reason == "efi_treasury_liquidity_unavailable" {
 		metrics.IncNFCLiquidityRejection()
 	}
@@ -287,6 +291,7 @@ func (s *Server) handleNFCCaptureAuthorization(w http.ResponseWriter, r *http.Re
 		return
 	}
 	s.publishNFCEvent("nfc.capture.completed", capture.Authorization, capture.Settlement)
+	metrics.IncNFCCapture()
 	writeJSON(w, http.StatusOK, nfcAuthorizationView(capture.Authorization, capture.Settlement))
 }
 
@@ -324,6 +329,7 @@ func (s *Server) handleNFCReverseAuthorization(w http.ResponseWriter, r *http.Re
 		return
 	}
 	s.publishNFCEvent("nfc.authorization.reversed", auth)
+	metrics.IncNFCReverse()
 	writeJSON(w, http.StatusOK, nfcAuthorizationView(auth))
 }
 
