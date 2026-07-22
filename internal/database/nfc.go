@@ -477,6 +477,38 @@ WHERE id = $1`
 	return auth, err
 }
 
+// ListNFCAuthorizationsByWallet returns the most recent NFC authorizations for a
+// wallet address, ordered newest-first. Used by the mobile history endpoint so a
+// user can see their own tap history without accessing the terminal-facing API.
+func (db *DB) ListNFCAuthorizationsByWallet(ctx context.Context, wallet string, limit int) ([]*NFCAuthorization, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	const q = `
+SELECT id, idempotency_key, token_id, wallet_address, network, merchant_id, terminal_id, COALESCE(external_ref,''),
+       amount_brl_minor, COALESCE(fee_brl_minor,0), COALESCE(total_brl_minor, amount_brl_minor), COALESCE(fee_bps,0),
+       usdt_rate::float8, required_usdt_micro, status, response_code, COALESCE(reason,''),
+       hold_expires_at, created_at, updated_at
+FROM nfc_authorizations
+WHERE wallet_address = $1
+ORDER BY created_at DESC
+LIMIT $2`
+	rows, err := db.SQL.QueryContext(ctx, q, strings.ToLower(strings.TrimSpace(wallet)), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var auths []*NFCAuthorization
+	for rows.Next() {
+		a, err := scanNFCAuthorization(rows)
+		if err != nil {
+			return nil, err
+		}
+		auths = append(auths, a)
+	}
+	return auths, rows.Err()
+}
+
 func (db *DB) CaptureNFCAuthorization(ctx context.Context, id string) (*NFCCaptureResult, error) {
 	return db.captureNFCAuthorization(ctx, id)
 }
