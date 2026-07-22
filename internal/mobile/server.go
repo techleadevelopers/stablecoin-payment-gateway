@@ -4,6 +4,7 @@
 package mobile
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"payment-gateway/internal/database"
 	"payment-gateway/internal/metrics"
 	"payment-gateway/internal/models"
+	rpcpool "payment-gateway/internal/rpc"
 	"payment-gateway/internal/workers"
 )
 
@@ -64,14 +66,19 @@ func loadMobileConfig() *MobileConfig {
 
 // Server is the mobile API server.
 type Server struct {
-	cfg     *config.Config
-	mcfg    *MobileConfig
-	db      *database.DB
-	workers *workers.WorkerManager
-	btcSvc  *bitcoin.Service // nil when BTC_ENABLED=false
-	hub     *wsHub
-	cacheMu sync.RWMutex
-	cache   map[string]mobileCacheEntry
+	cfg        *config.Config
+	mcfg       *MobileConfig
+	db         *database.DB
+	workers    *workers.WorkerManager
+	btcSvc     *bitcoin.Service // nil when BTC_ENABLED=false
+	hub        *wsHub
+	cacheMu    sync.RWMutex
+	cache      map[string]mobileCacheEntry
+	// Persistent RPC pools — created once at startup, reused across all requests.
+	// Creating a new pool per request was the #1 source of unnecessary latency
+	// because each NewPool call allocates circuit-breakers and dials fresh connections.
+	bscPool    *rpcpool.Pool // nil when BSC_RPC_URLS is not configured
+	polygonPool *rpcpool.Pool // nil when POLYGON_RPC_URLS is not configured
 }
 
 // New creates a new mobile Server.
@@ -87,6 +94,35 @@ func New(cfg *config.Config, db *database.DB, wm *workers.WorkerManager, btcSvc 
 		cache:   make(map[string]mobileCacheEntry),
 	}
 	go s.hub.run()
+
+	// Build persistent RPC pools once so they are reused across all requests.
+	// Creating rpcpool.NewPool per-request was the largest source of wasted
+	// latency: each call allocates circuit-breakers and opens fresh TCP conns.
+	if cfg != nil {
+		if bscURLs := strings.TrimSpace(cfg.BscRpcUrls); bscURLs != "" {
+			if p, err := rpcpool.NewPool(bscURLs); err == nil {
+				s.bscPool = p
+			} else {
+				_, _ = os.Stderr.WriteString("[mobile] BSC RPC pool init warning: " + err.Error() + "\n")
+			}
+		}
+		if polyURLs := strings.TrimSpace(cfg.PolygonRpcUrls); polyURLs != "" {
+			if p, err := rpcpool.NewPool(polyURLs); err == nil {
+				s.polygonPool = p
+			} else {
+				_, _ = os.Stderr.WriteString("[mobile] Polygon RPC pool init warning: " + err.Error() + "\n")
+			}
+		}
+	}
+
+	// Run schema migrations once at startup instead of on every query.
+	if db != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := mobileDB(db).InitSchema(ctx); err != nil {
+			_, _ = os.Stderr.WriteString("[mobile] schema init warning: " + err.Error() + "\n")
+		}
+	}
 	return s
 }
 
@@ -217,6 +253,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/mobile/wallet/history", s.requireAuth(s.handleWalletHistory))
 	mux.HandleFunc("GET /api/mobile/nfc/card", s.requireAuth(s.handleNFCCard))
 	mux.HandleFunc("POST /api/mobile/nfc/provision", s.requireAuth(s.handleNFCProvision))
+	mux.HandleFunc("GET /api/mobile/nfc/history", s.requireAuth(s.handleNFCHistory))
+	mux.HandleFunc("GET /api/mobile/nfc/authorizations/{id}", s.requireAuth(s.handleNFCAuthorizationStatus))
 
 	// ── Orders ────────────────────────────────────────────────────────────────
 	mux.HandleFunc("POST /api/mobile/order/buy/quote", s.requireAuth(s.handleMobileBuyQuote))
