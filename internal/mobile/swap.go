@@ -52,8 +52,23 @@ func (s *Server) handleSwapQuote(w http.ResponseWriter, r *http.Request) {
 	netFrom := req.Amount - fee
 	estimatedTo := netFrom * rate
 	minReceived := estimatedTo * (1 - req.Slippage)
-	quoteID := mobileSwapQuoteID()
 	expiresAt := time.Now().Add(60 * time.Second).UTC()
+
+	// Issue a server-signed quote — the execute handler will verify this to
+	// prevent price bypass and replay attacks.
+	quoteID, err := s.issueMobileQuote(mobileQuoteClaims{
+		Side:      "swap",
+		Asset:     req.FromAsset + ":" + req.ToAsset,
+		Amount:    req.Amount,
+		Rate:      rate,
+		Fee:       fee,
+		Total:     estimatedTo,
+		ExpiresAt: expiresAt.Unix(),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": "SWAP_QUOTE_ERROR", "message": "erro interno ao assinar cotacao"})
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"quote_id":       quoteID,
@@ -87,19 +102,38 @@ func (s *Server) handleSwapExecute(w http.ResponseWriter, r *http.Request) {
 		ToAsset   string  `json:"to_asset"`
 		Amount    float64 `json:"amount"`
 		Slippage  float64 `json:"slippage"`
+		QuoteID   string  `json:"quote_id"`
 	}
 	if err := decodeJSON(r, &req); err != nil || req.Amount <= 0 || req.FromAsset == "" || req.ToAsset == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "from_asset, to_asset e amount obrigatorios"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "INVALID_PAYLOAD", "message": "from_asset, to_asset e amount obrigatorios"})
 		return
 	}
 	req.FromAsset = strings.ToUpper(req.FromAsset)
 	req.ToAsset = strings.ToUpper(req.ToAsset)
 	if req.FromAsset == req.ToAsset {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "from_asset e to_asset devem ser diferentes"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "INVALID_PAYLOAD", "message": "from_asset e to_asset devem ser diferentes"})
 		return
 	}
 	if req.Slippage <= 0 {
 		req.Slippage = defaultSlippage
+	}
+
+	// Reject executions that arrive without a signed quote — prevents price
+	// bypass (where a client sends an arbitrary amount without fetching a quote)
+	// and protects against replay of stale or tampered quotes.
+	if strings.TrimSpace(req.QuoteID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"code":    "SWAP_QUOTE_REQUIRED",
+			"message": "quote_id obrigatorio; obtenha uma cotacao em /api/mobile/swap/quote primeiro",
+		})
+		return
+	}
+	if _, err := s.verifyMobileQuote(req.QuoteID, "swap", req.FromAsset+":"+req.ToAsset, req.Amount, time.Now()); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"code":    "SWAP_QUOTE_INVALID",
+			"message": err.Error(),
+		})
+		return
 	}
 
 	fromAsset, _, err := s.mobileAssetBySymbol(r.Context(), req.FromAsset)
