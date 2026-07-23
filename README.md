@@ -169,6 +169,27 @@ $env:SECURITY_RPA_RATE_LIMIT_COUNT="25"
 node tests\security_cloud_adversarial.js
 ```
 
+## Backend: Liquidity Router Cloud Smoke
+
+Smoke operacional para validar se o fluxo BUY com Liquidity Router esta vivo na cloud, com catalogo backend-enforced, quote persistido, taxa ChainFX e spread aplicados:
+
+```powershell
+cd C:\Users\Paulo\Desktop\payment-gateway
+powershell -ExecutionPolicy Bypass -File scripts\liquidity_cloud_probe.ps1 -BaseUrl https://api-production-bc748.up.railway.app -RequirePersistedQuote
+```
+
+Criterios de aceite:
+
+- `/healthz` e `/readyz` retornam 200.
+- `/api/buy/pairs` retorna `routerEnabled=true`, `backendEnforced=true`, pares de `BITCOIN` e `SOLANA`, e `pairCount` coerente com `LIQUIDITY_ALLOWED_PAIRS`.
+- `/api/quote` para `USDT:BSC` e `SOL:SOLANA` retorna `quoteId`, `quotePersisted=true`, `feeFiat`, `feeBreakdown` e `rate > marketRate`.
+- O contrato de lock do quote deve ser `quoteId+side+asset+network+fiatCurrency+paymentMethod+amountFiat`.
+- Par invalido, por exemplo `SOL:BSC`, deve ser rejeitado com 400.
+
+Esse smoke prova precificacao, persistencia do quote e enforcement de par/rede. Ele nao prova `/execute` do provider externo, porque execucao real so ocorre depois do pagamento confirmado e do evento `buy.paid`. Para validar provider sem dinheiro real, use um adapter sandbox/dry-run em `LIQUIDITY_PROVIDER_URLS` expondo `POST /quote` e `POST /execute`.
+
+O modelo suportado nao usa RPA/scraping de sites. Ramp, Transak, MoonPay, Alchemy Pay, OTC ou exchange entram por adapter HTTP oficial; o router escolhe a melhor quote liquida e rejeita qualquer mismatch de asset, network, contract, decimals, destino ou amount antes de executar.
+
 Quando o flood estiver ligado, use o resultado de rate limit para seguranca e nao como SLO principal de latencia.
 
 O script grava relatorios em `tests/security-cloud-report-*.json` e `tests/security-cloud-report-*.txt`. Resultado esperado: `FAIL=0`; `WARN` pode indicar hardening recomendado, como HSTS/CSP ou catch-all HTML para rotas inexistentes.
