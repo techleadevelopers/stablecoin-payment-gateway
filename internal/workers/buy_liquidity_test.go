@@ -2,10 +2,12 @@ package workers
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"payment-gateway/internal/config"
 	"payment-gateway/internal/database"
+	"payment-gateway/internal/liquidity"
 )
 
 func TestResolveLiquidityPairRequiresContractsForEVMTokens(t *testing.T) {
@@ -58,16 +60,63 @@ func TestResolveLiquidityPairHydratesConfiguredUSDTContracts(t *testing.T) {
 	}
 }
 
-func TestTryLiquidityExecutionSkipsUSDTByPolicy(t *testing.T) {
+func TestShouldUseLiquidityRouterKeepsUSDTOnHotWalletWhenBalanceIsSufficient(t *testing.T) {
 	worker := &BuySendWorker{
 		cfg: &config.Config{
-			LiquidityRouterEnabled:    true,
-			LiquidityRouterSkipAssets: "USDT",
-			LiquidityAllowedPairs:     "USDT:BSC",
-			BscUsdtContract:           "0x55d398326f99059ff775485246999027b3197955",
+			LiquidityHotWalletFirstAssets: "USDT",
+			SignerNetwork:                 "bsc",
+		},
+		hotWalletHasBalance: func(context.Context, *database.BuyOrder, liquidity.Pair) (bool, error) {
+			return true, nil
 		},
 	}
-	if worker.tryLiquidityExecution(context.Background(), &database.BuyOrder{ID: "buy-1", Asset: "USDT", Network: "BSC"}) {
-		t.Fatal("USDT must stay on hot-wallet/signer flow and skip liquidity router")
+	pair := liquidity.Pair{Asset: "USDT", Network: "BSC", ContractAddress: "0x55d398326f99059ff775485246999027b3197955", Decimals: 18}
+	if worker.shouldUseLiquidityRouter(context.Background(), &database.BuyOrder{ID: "buy-1", Asset: "USDT", Network: "BSC", CryptoAmount: 10}, pair) {
+		t.Fatal("USDT com saldo suficiente deve continuar no fluxo hot wallet/signer")
+	}
+}
+
+func TestShouldUseLiquidityRouterRoutesUSDTWhenHotWalletBalanceIsInsufficient(t *testing.T) {
+	worker := &BuySendWorker{
+		cfg: &config.Config{
+			LiquidityHotWalletFirstAssets: "USDT",
+			SignerNetwork:                 "bsc",
+		},
+		hotWalletHasBalance: func(context.Context, *database.BuyOrder, liquidity.Pair) (bool, error) {
+			return false, nil
+		},
+	}
+	pair := liquidity.Pair{Asset: "USDT", Network: "BSC", ContractAddress: "0x55d398326f99059ff775485246999027b3197955", Decimals: 18}
+	if !worker.shouldUseLiquidityRouter(context.Background(), &database.BuyOrder{ID: "buy-1", Asset: "USDT", Network: "BSC", CryptoAmount: 10}, pair) {
+		t.Fatal("USDT com saldo insuficiente deve cair no liquidity router")
+	}
+}
+
+func TestShouldUseLiquidityRouterRoutesUSDTWhenHotWalletBalanceCannotBeChecked(t *testing.T) {
+	worker := &BuySendWorker{
+		cfg: &config.Config{
+			LiquidityHotWalletFirstAssets: "USDT",
+			SignerNetwork:                 "bsc",
+		},
+		hotWalletHasBalance: func(context.Context, *database.BuyOrder, liquidity.Pair) (bool, error) {
+			return false, errors.New("rpc unavailable")
+		},
+	}
+	pair := liquidity.Pair{Asset: "USDT", Network: "BSC", ContractAddress: "0x55d398326f99059ff775485246999027b3197955", Decimals: 18}
+	if !worker.shouldUseLiquidityRouter(context.Background(), &database.BuyOrder{ID: "buy-1", Asset: "USDT", Network: "BSC", CryptoAmount: 10}, pair) {
+		t.Fatal("USDT sem prova de saldo suficiente deve tentar liquidity router")
+	}
+}
+
+func TestShouldUseLiquidityRouterRoutesNonHotWalletFirstAssets(t *testing.T) {
+	worker := &BuySendWorker{
+		cfg: &config.Config{
+			LiquidityHotWalletFirstAssets: "USDT",
+			SignerNetwork:                 "bsc",
+		},
+	}
+	pair := liquidity.Pair{Asset: "BTC", Network: "BITCOIN", Decimals: 8}
+	if !worker.shouldUseLiquidityRouter(context.Background(), &database.BuyOrder{ID: "buy-1", Asset: "BTC", Network: "BITCOIN", CryptoAmount: 0.01}, pair) {
+		t.Fatal("BTC deve usar liquidity router quando o par for permitido")
 	}
 }
