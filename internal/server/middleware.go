@@ -198,7 +198,7 @@ func smartRateLimitRouteClass(r *http.Request) string {
 	if method == http.MethodPost && path == "/agent/v1/eips/prepare" {
 		return "read"
 	}
-	if path == "/api/rates" || path == "/rates" || path == "/api/price" || path == "/price" || path == "/api/quote" || path == "/quote" {
+	if path == "/api/rates" || path == "/rates" || path == "/api/price" || path == "/price" || path == "/api/quote" || path == "/quote" || path == "/api/buy/pairs" {
 		return "read"
 	}
 	if method == http.MethodGet && (path == "/openapi.json" || path == "/llms.txt" || path == "/robots.txt" || path == "/sitemap.xml" || strings.HasPrefix(path, "/.well-known/")) {
@@ -580,7 +580,7 @@ func (s *Server) shouldSkipDeveloperRequestLog(r *http.Request) bool {
 	}
 	switch r.URL.Path {
 	case "/healthz", "/readyz", "/api/mobile/health",
-		"/api/rates", "/rates", "/api/price", "/price", "/api/quote", "/quote",
+		"/api/rates", "/rates", "/api/price", "/price", "/api/quote", "/quote", "/api/buy/pairs",
 		"/mcp/initialize", "/mcp/tools/list", "/mcp/resources/list", "/mcp/prompts/list",
 		"/api/admin/overview":
 		return true
