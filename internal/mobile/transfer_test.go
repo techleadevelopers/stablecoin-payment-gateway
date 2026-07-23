@@ -137,6 +137,82 @@ func TestMobileTransferTokenSupportsNewEVMUSDCNetworks(t *testing.T) {
 	}
 }
 
+func TestMobileTransferTokenSupportsRegistryERC20AndNativeEVMPairs(t *testing.T) {
+	s := &Server{cfg: &config.Config{
+		LiquidityAllowedPairs: "USDT:ETHEREUM:0xdAC17F958D2ee523a2206206994597C13D831ec7:6,USDT:ARBITRUM:0xfd086bc7CD5C481DCC9C85ebe478A1C0b69FCbb9:6,LINK:ETHEREUM:0x514910771AF9Ca656af840dff83E8264EcF986CA:18,LINK:ARBITRUM:0xf97f4df75117a78c1A5a0DBb814Af92458539FB4:18,ETH:BASE::18,ETH:ARBITRUM::18,ETH:ETHEREUM::18",
+		SupportedNetworks:     "BASE,ARBITRUM,ETHEREUM",
+		BaseChainID:           8453,
+		ArbitrumChainID:       42161,
+		EthereumChainID:       1,
+	}}
+
+	for _, tt := range []struct {
+		asset    string
+		network  string
+		decimals int
+		chainID  int
+		native   bool
+	}{
+		{"USDT", "ETHEREUM", 6, 1, false},
+		{"USDT", "ARBITRUM", 6, 42161, false},
+		{"LINK", "ETHEREUM", 18, 1, false},
+		{"LINK", "ARBITRUM", 18, 42161, false},
+		{"ETH", "BASE", 18, 8453, true},
+		{"ETH", "ARBITRUM", 18, 42161, true},
+		{"ETH", "ETHEREUM", 18, 1, true},
+	} {
+		t.Run(tt.asset+"_"+tt.network, func(t *testing.T) {
+			token, decimals, chainID, err := s.mobileTransferToken(tt.asset, tt.network)
+			if err != nil {
+				t.Fatalf("mobileTransferToken: %v", err)
+			}
+			if decimals != tt.decimals || chainID != tt.chainID {
+				t.Fatalf("decimals=%d chainID=%d, want %d/%d", decimals, chainID, tt.decimals, tt.chainID)
+			}
+			if tt.native && token != "" {
+				t.Fatalf("native pair token=%q, want empty contract", token)
+			}
+			if !tt.native && !common.IsHexAddress(token) {
+				t.Fatalf("ERC20 pair token=%q, want EVM contract", token)
+			}
+		})
+	}
+}
+
+func TestMobileTransferTokenSupportsBingXERC20AssetsOnBSCAndPolygon(t *testing.T) {
+	s := &Server{cfg: &config.Config{
+		BscUsdtContract:     "0x0000000000000000000000000000000000000001",
+		PolygonUsdtContract: "0x0000000000000000000000000000000000000002",
+		BscChainID:          56,
+		PolygonChainID:      137,
+	}}
+
+	tests := []struct {
+		asset   string
+		network string
+		chainID int
+	}{
+		{"ETH", "BSC", 56},
+		{"LINK", "BSC", 56},
+		{"AVAX", "BSC", 56},
+		{"ETH", "POLYGON", 137},
+		{"LINK", "POLYGON", 137},
+		{"AVAX", "POLYGON", 137},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.asset+"_"+tt.network, func(t *testing.T) {
+			token, decimals, chainID, err := s.mobileTransferToken(tt.asset, tt.network)
+			if err != nil {
+				t.Fatalf("mobileTransferToken: %v", err)
+			}
+			if !common.IsHexAddress(token) || decimals != 18 || chainID != tt.chainID {
+				t.Fatalf("token=%q decimals=%d chainID=%d, want ERC20/18/%d", token, decimals, chainID, tt.chainID)
+			}
+		})
+	}
+}
+
 func TestNormalizeMobileTransferNetworkRejectsNonEVMRails(t *testing.T) {
 	for _, network := range []string{"BITCOIN", "SOLANA", "APTOS"} {
 		if got := normalizeMobileTransferNetwork(network); got != "" {
