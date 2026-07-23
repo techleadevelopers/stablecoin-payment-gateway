@@ -23,11 +23,17 @@ import (
 const walletBalanceCacheTTL = 30 * time.Second
 
 type walletBalanceCacheEntry struct {
-	bscUSDT   float64
-	bnb       float64
-	polyUSDT  float64
-	matic     float64
-	expiresAt time.Time
+	bscUSDT      float64
+	bnb          float64
+	polyUSDT     float64
+	matic        float64
+	baseUSDC     float64
+	baseETH      float64
+	arbitrumUSDC float64
+	arbitrumETH  float64
+	ethereumUSDC float64
+	ethereumETH  float64
+	expiresAt    time.Time
 }
 
 var (
@@ -76,13 +82,21 @@ func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
 	balResult := s.mobileOnchainWalletBalancesAll(r.Context(), walletAddr)
 
 	usdtPrice := mobileAssetPriceBRL(s.PriceCache(), "USDT")
+	usdcPrice := mobileAssetPriceBRL(s.PriceCache(), "USDC")
 	bnbPrice := mobileAssetPriceBRL(s.PriceCache(), "BNB")
 	maticPrice := mobileAssetPriceBRL(s.PriceCache(), "MATIC")
+	ethPrice := mobileAssetPriceBRL(s.PriceCache(), "ETH")
 
 	usdtValueBRL := balResult.bscUSDT * usdtPrice
 	bnbValueBRL := balResult.bnb * bnbPrice
 	polyUSDTValueBRL := balResult.polyUSDT * usdtPrice
 	maticValueBRL := balResult.matic * maticPrice
+	baseUSDCValueBRL := balResult.baseUSDC * usdcPrice
+	baseETHValueBRL := balResult.baseETH * ethPrice
+	arbitrumUSDCValueBRL := balResult.arbitrumUSDC * usdcPrice
+	arbitrumETHValueBRL := balResult.arbitrumETH * ethPrice
+	ethereumUSDCValueBRL := balResult.ethereumUSDC * usdcPrice
+	ethereumETHValueBRL := balResult.ethereumETH * ethPrice
 
 	balances := []map[string]any{
 		{
@@ -105,9 +119,15 @@ func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
 			"amount": balResult.matic, "value_brl": maticValueBRL,
 			"price_brl": maticPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "MATIC"),
 		},
+		{"symbol": "USDC", "name": "USD Coin", "network": "BASE", "amount": balResult.baseUSDC, "value_brl": baseUSDCValueBRL, "price_brl": usdcPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "USDC")},
+		{"symbol": "ETH", "name": "Ethereum", "network": "BASE", "amount": balResult.baseETH, "value_brl": baseETHValueBRL, "price_brl": ethPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "ETH")},
+		{"symbol": "USDC", "name": "USD Coin", "network": "ARBITRUM", "amount": balResult.arbitrumUSDC, "value_brl": arbitrumUSDCValueBRL, "price_brl": usdcPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "USDC")},
+		{"symbol": "ETH", "name": "Ethereum", "network": "ARBITRUM", "amount": balResult.arbitrumETH, "value_brl": arbitrumETHValueBRL, "price_brl": ethPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "ETH")},
+		{"symbol": "USDC", "name": "USD Coin", "network": "ETHEREUM", "amount": balResult.ethereumUSDC, "value_brl": ethereumUSDCValueBRL, "price_brl": usdcPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "USDC")},
+		{"symbol": "ETH", "name": "Ethereum", "network": "ETHEREUM", "amount": balResult.ethereumETH, "value_brl": ethereumETHValueBRL, "price_brl": ethPrice, "change_24h": mobileAssetChange24h(s.PriceCache(), "ETH")},
 	}
 
-	seen := map[string]bool{"USDT": true, "BNB": true, "MATIC": true}
+	seen := map[string]bool{"USDT": true, "BNB": true, "MATIC": true, "USDC": true, "ETH": true}
 	imported, err := mobileDB(s.db).ListWalletTokens(r.Context(), uid)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -161,7 +181,7 @@ func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	totalBRL := usdtValueBRL + bnbValueBRL + polyUSDTValueBRL + maticValueBRL + btcValueBRL
+	totalBRL := usdtValueBRL + bnbValueBRL + polyUSDTValueBRL + maticValueBRL + baseUSDCValueBRL + baseETHValueBRL + arbitrumUSDCValueBRL + arbitrumETHValueBRL + ethereumUSDCValueBRL + ethereumETHValueBRL + btcValueBRL
 	writeJSON(w, http.StatusOK, map[string]any{
 		"wallet_address": walletAddr,
 		"balances":       balances,
@@ -197,7 +217,7 @@ func (s *Server) mobileOnchainWalletBalancesAll(ctx context.Context, walletAddr 
 	defer cancel()
 
 	// ── BSC — reuse persistent pool ───────────────────────────────────────────
-	if pool := s.bscPool; pool != nil {
+	if pool := s.evmPool("BSC"); pool != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -219,7 +239,7 @@ func (s *Server) mobileOnchainWalletBalancesAll(ctx context.Context, walletAddr 
 	}
 
 	// ── Polygon — reuse persistent pool ───────────────────────────────────────
-	if pool := s.polygonPool; pool != nil {
+	if pool := s.evmPool("POLYGON"); pool != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -230,7 +250,7 @@ func (s *Server) mobileOnchainWalletBalancesAll(ctx context.Context, walletAddr 
 			usdtContract := strings.TrimSpace(s.cfg.PolygonUsdtContract)
 			if usdtContract != "" && common.IsHexAddress(usdtContract) {
 				if raw, err := mobileERC20BalanceOf(balCtx, pool, wallet, common.HexToAddress(usdtContract)); err == nil && raw != nil {
-					polyUSDT = bigIntToFloat(raw, 18)
+					polyUSDT = bigIntToFloat(raw, 6)
 				}
 			}
 			mu.Lock()
@@ -239,6 +259,19 @@ func (s *Server) mobileOnchainWalletBalancesAll(ctx context.Context, walletAddr 
 			mu.Unlock()
 		}()
 	}
+
+	s.fetchEVMUSDCAndNativeBalance(balCtx, &wg, &mu, wallet, "BASE", strings.TrimSpace(s.cfg.BaseUsdcContract), func(usdc, native float64) {
+		result.baseUSDC = usdc
+		result.baseETH = native
+	})
+	s.fetchEVMUSDCAndNativeBalance(balCtx, &wg, &mu, wallet, "ARBITRUM", strings.TrimSpace(s.cfg.ArbitrumUsdcContract), func(usdc, native float64) {
+		result.arbitrumUSDC = usdc
+		result.arbitrumETH = native
+	})
+	s.fetchEVMUSDCAndNativeBalance(balCtx, &wg, &mu, wallet, "ETHEREUM", strings.TrimSpace(s.cfg.EthereumUsdcContract), func(usdc, native float64) {
+		result.ethereumUSDC = usdc
+		result.ethereumETH = native
+	})
 
 	wg.Wait()
 	setWalletBalanceCache(cacheKey, result)
@@ -250,6 +283,29 @@ func (s *Server) mobileOnchainWalletBalancesAll(ctx context.Context, walletAddr 
 func (s *Server) mobileOnchainWalletBalances(ctx context.Context, walletAddr string) (usdtAmount, bnbAmount float64) {
 	r := s.mobileOnchainWalletBalancesAll(ctx, walletAddr)
 	return r.bscUSDT, r.bnb
+}
+
+func (s *Server) fetchEVMUSDCAndNativeBalance(ctx context.Context, wg *sync.WaitGroup, mu *sync.Mutex, wallet common.Address, network, usdcContract string, set func(usdc, native float64)) {
+	pool := s.evmPool(network)
+	if pool == nil || set == nil {
+		return
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var usdc, native float64
+		if rawNative, err := pool.BalanceAt(ctx, wallet); err == nil && rawNative != nil {
+			native = bigIntToFloat(rawNative, 18)
+		}
+		if common.IsHexAddress(usdcContract) {
+			if raw, err := mobileERC20BalanceOf(ctx, pool, wallet, common.HexToAddress(usdcContract)); err == nil && raw != nil {
+				usdc = bigIntToFloat(raw, 6)
+			}
+		}
+		mu.Lock()
+		set(usdc, native)
+		mu.Unlock()
+	}()
 }
 
 func mobileERC20BalanceOf(ctx context.Context, pool *rpcpool.Pool, wallet, token common.Address) (*big.Int, error) {
@@ -302,13 +358,21 @@ func (s *Server) handleWalletTokens(w http.ResponseWriter, r *http.Request) {
 	price := mobileAssetPriceBRL(s.PriceCache(), "USDT")
 	bnbPrice := mobileAssetPriceBRL(s.PriceCache(), "BNB")
 	maticPrice := mobileAssetPriceBRL(s.PriceCache(), "MATIC")
+	usdcPrice := mobileAssetPriceBRL(s.PriceCache(), "USDC")
+	ethPrice := mobileAssetPriceBRL(s.PriceCache(), "ETH")
 	tokens := []map[string]any{
 		{"symbol": "USDT", "name": "Tether USD", "network": "BSC", "contract": s.cfg.BscUsdtContract, "price_brl": price, "decimals": 18},
 		{"symbol": "BNB", "name": "BNB", "network": "BSC", "contract": "", "price_brl": bnbPrice, "decimals": 18},
 		{"symbol": "USDT", "name": "Tether USD", "network": "POLYGON", "contract": s.cfg.PolygonUsdtContract, "price_brl": price, "decimals": 6},
 		{"symbol": "MATIC", "name": "Polygon", "network": "POLYGON", "contract": "", "price_brl": maticPrice, "decimals": 18},
+		{"symbol": "USDC", "name": "USD Coin", "network": "BASE", "contract": s.cfg.BaseUsdcContract, "price_brl": usdcPrice, "decimals": 6},
+		{"symbol": "ETH", "name": "Ethereum", "network": "BASE", "contract": "", "price_brl": ethPrice, "decimals": 18},
+		{"symbol": "USDC", "name": "USD Coin", "network": "ARBITRUM", "contract": s.cfg.ArbitrumUsdcContract, "price_brl": usdcPrice, "decimals": 6},
+		{"symbol": "ETH", "name": "Ethereum", "network": "ARBITRUM", "contract": "", "price_brl": ethPrice, "decimals": 18},
+		{"symbol": "USDC", "name": "USD Coin", "network": "ETHEREUM", "contract": s.cfg.EthereumUsdcContract, "price_brl": usdcPrice, "decimals": 6},
+		{"symbol": "ETH", "name": "Ethereum", "network": "ETHEREUM", "contract": "", "price_brl": ethPrice, "decimals": 18},
 	}
-	seen := map[string]bool{"USDT": true, "BNB": true, "MATIC": true}
+	seen := map[string]bool{"USDT": true, "BNB": true, "MATIC": true, "USDC": true, "ETH": true}
 	imported, err := mobileDB(s.db).ListWalletTokens(r.Context(), userIDFromCtx(r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
