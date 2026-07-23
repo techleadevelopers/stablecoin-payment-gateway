@@ -29,6 +29,7 @@ type BuySendWorker struct {
 	client *http.Client
 	sem    chan struct{}
 	router *liquidity.Router
+	hotWalletHasBalance func(context.Context, *database.BuyOrder, liquidity.Pair) (bool, error)
 }
 
 func NewBuySendWorker(bus *EventBus, db *database.DB, cfg *config.Config) *BuySendWorker {
