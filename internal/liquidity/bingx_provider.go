@@ -273,6 +273,14 @@ func (p *BingXProvider) publicGET(ctx context.Context, path string, params map[s
 	return p.do(req)
 }
 
+func (p *BingXProvider) PublicGETRaw(ctx context.Context, path string, params map[string]string) ([]byte, error) {
+	return p.publicGET(ctx, path, params)
+}
+
+func (p *BingXProvider) SignedGETRaw(ctx context.Context, path string, params map[string]string) ([]byte, error) {
+	return p.signedRequest(ctx, http.MethodGet, path, params)
+}
+
 func (p *BingXProvider) signedRequest(ctx context.Context, method, path string, params map[string]string) ([]byte, error) {
 	if params == nil {
 		params = map[string]string{}
