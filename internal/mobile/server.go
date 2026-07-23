@@ -18,6 +18,7 @@ import (
 	"payment-gateway/internal/metrics"
 	"payment-gateway/internal/models"
 	rpcpool "payment-gateway/internal/rpc"
+	"payment-gateway/internal/solana"
 	"payment-gateway/internal/workers"
 )
 
@@ -71,6 +72,7 @@ type Server struct {
 	db      *database.DB
 	workers *workers.WorkerManager
 	btcSvc  *bitcoin.Service // nil when BTC_ENABLED=false
+	solSvc  *solana.Service  // nil when SOLANA_ENABLED=false or RPC is absent
 	hub     *wsHub
 	cacheMu sync.RWMutex
 	cache   map[string]mobileCacheEntry
@@ -82,13 +84,18 @@ type Server struct {
 
 // New creates a new mobile Server.
 // btcSvc may be nil — the BTC endpoints will respond with 503 BTC_DISABLED.
-func New(cfg *config.Config, db *database.DB, wm *workers.WorkerManager, btcSvc *bitcoin.Service) *Server {
+func New(cfg *config.Config, db *database.DB, wm *workers.WorkerManager, btcSvc *bitcoin.Service, solSvcs ...*solana.Service) *Server {
+	var solSvc *solana.Service
+	if len(solSvcs) > 0 {
+		solSvc = solSvcs[0]
+	}
 	s := &Server{
 		cfg:      cfg,
 		mcfg:     loadMobileConfig(),
 		db:       db,
 		workers:  wm,
 		btcSvc:   btcSvc,
+		solSvc:   solSvc,
 		hub:      newWsHub(),
 		cache:    make(map[string]mobileCacheEntry),
 		evmPools: make(map[string]*rpcpool.Pool),
@@ -257,6 +264,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/mobile/wallet/tokens", s.requireAuth(s.handleWalletTokens))
 	mux.HandleFunc("GET /api/mobile/wallet/address", s.requireAuth(s.handleWalletAddress))
 	mux.HandleFunc("GET /api/mobile/sol/address", s.requireAuth(s.handleSolanaAddress))
+	mux.HandleFunc("GET /api/mobile/sol/balance", s.requireAuth(s.handleSolanaBalance))
+	mux.HandleFunc("GET /api/mobile/sol/fee-estimate", s.requireAuth(s.handleSolanaFeeEstimate))
+	mux.HandleFunc("GET /api/mobile/sol/transactions", s.requireAuth(s.handleSolanaTransactions))
+	mux.HandleFunc("POST /api/mobile/sol/send", s.requireAuth(s.requireIdempotency("mobile.sol.send", s.handleSolanaSend)))
 	mux.HandleFunc("GET /api/mobile/aptos/address", s.requireAuth(s.handleAptosAddress))
 	mux.HandleFunc("POST /api/mobile/wallet/generate", s.requireAuth(s.handleWalletGenerate))
 	mux.HandleFunc("POST /api/mobile/wallet/transfer/quote", s.requireAuth(s.handleWalletTransferQuote))
