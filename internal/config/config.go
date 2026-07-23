@@ -52,7 +52,7 @@ type Config struct {
 	LiquidityAllowedPairs         string
 	LiquidityAllowedAssets        string
 	LiquidityAllowedNetworks      string
-	SupportedNetworks            string
+	SupportedNetworks             string
 	LiquidityHotWalletFirstAssets string
 	LiquidityProviderURLs         string
 	LiquidityProviderAPIKey       string
@@ -107,6 +107,15 @@ type Config struct {
 	PolygonUsdtContract     string
 	PolygonChainID          int64
 	PolygonTreasuryContract string
+	BaseRpcUrls             string
+	BaseUsdcContract        string
+	BaseChainID             int64
+	ArbitrumRpcUrls         string
+	ArbitrumUsdcContract    string
+	ArbitrumChainID         int64
+	EthereumRpcUrls         string
+	EthereumUsdcContract    string
+	EthereumChainID         int64
 	EnableSweepWorker       bool
 	EnableSweepStub         bool
 	SweepBatchUsdtMin       float64
@@ -259,10 +268,10 @@ func LoadConfig() *Config {
 		BuyRateSpreadBps:              getEnvPercentAsBps("FEE_BUY_SPREAD_PERCENT", getEnvAsInt("FEE_BUY_SPREAD_BPS", 100)),
 		LiquidityRouterEnabled:        getEnvAsBool("LIQUIDITY_ROUTER_ENABLED", false),
 		LiquidityQuoteTimeoutMs:       getEnvAsInt("LIQUIDITY_QUOTE_TIMEOUT_MS", 2500),
-		LiquidityAllowedPairs:         strings.ToUpper(getEnv("LIQUIDITY_ALLOWED_PAIRS", "USDT:BSC,BTC:BITCOIN::8,BNB:BSC::18")),
-		LiquidityAllowedAssets:        strings.ToUpper(getEnv("LIQUIDITY_ALLOWED_ASSETS", "USDT,BTC,BNB")),
-		LiquidityAllowedNetworks:      strings.ToUpper(getEnv("LIQUIDITY_ALLOWED_NETWORKS", "BSC,POLYGON,BITCOIN")),
-		SupportedNetworks:            strings.ToUpper(getEnv("SUPPORTED_NETWORKS", getEnv("LIQUIDITY_ALLOWED_NETWORKS", "BSC,POLYGON,BITCOIN"))),
+		LiquidityAllowedPairs:         strings.ToUpper(getEnv("LIQUIDITY_ALLOWED_PAIRS", "USDT:BSC,BTC:BITCOIN::8,BNB:BSC::18,USDC:BASE:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913:6,ETH:BASE::18,USDC:ARBITRUM:0xaf88d065e77c8cC2239327C5EDb3A432268e5831:6,ETH:ARBITRUM::18,USDC:ETHEREUM:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48:6,ETH:ETHEREUM::18")),
+		LiquidityAllowedAssets:        strings.ToUpper(getEnv("LIQUIDITY_ALLOWED_ASSETS", "USDT,BTC,BNB,USDC,ETH")),
+		LiquidityAllowedNetworks:      strings.ToUpper(getEnv("LIQUIDITY_ALLOWED_NETWORKS", "BSC,POLYGON,BITCOIN,BASE,ARBITRUM,ETHEREUM")),
+		SupportedNetworks:             strings.ToUpper(getEnv("SUPPORTED_NETWORKS", getEnv("LIQUIDITY_ALLOWED_NETWORKS", "BSC,POLYGON,BITCOIN,BASE,ARBITRUM,ETHEREUM"))),
 		LiquidityHotWalletFirstAssets: strings.ToUpper(getEnv("LIQUIDITY_ROUTER_HOT_WALLET_FIRST_ASSETS", getEnv("LIQUIDITY_ROUTER_SKIP_ASSETS", "USDT"))),
 		LiquidityProviderURLs:         getEnv("LIQUIDITY_PROVIDER_URLS", ""),
 		LiquidityProviderAPIKey:       getEnv("LIQUIDITY_PROVIDER_API_KEY", ""),
@@ -314,6 +323,15 @@ func LoadConfig() *Config {
 		PolygonUsdtContract:     getEnv("POLYGON_USDT_CONTRACT", getEnv("POLYGON_TOKEN_CONTRACT", "")),
 		PolygonChainID:          int64(getEnvAsInt("POLYGON_CHAIN_ID", 137)),
 		PolygonTreasuryContract: getEnv("POLYGON_TREASURY_CONTRACT", ""),
+		BaseRpcUrls:             getChainRpcUrls("BASE", []string{"BASE_RPC_URLS", "BASE_RPC_URL", "ALCHEMY_BASE_RPC_URL_1", "ALCHEMY_BASE_RPC_URL_2", "ALCHEMY_BASE_RPC_URL", "ALCHEMY_BASE_FALLBACK_RPC_URL"}),
+		BaseUsdcContract:        getEnv("BASE_USDC_CONTRACT", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
+		BaseChainID:             int64(getEnvAsInt("BASE_CHAIN_ID", 8453)),
+		ArbitrumRpcUrls:         getChainRpcUrls("ARBITRUM", []string{"ARBITRUM_RPC_URLS", "ARBITRUM_RPC_URL", "ARB_RPC_URLS", "ARB_RPC_URL", "ALCHEMY_ARBITRUM_RPC_URL_1", "ALCHEMY_ARBITRUM_RPC_URL_2", "ALCHEMY_ARBITRUM_RPC_URL", "ALCHEMY_ARBITRUM_FALLBACK_RPC_URL"}),
+		ArbitrumUsdcContract:    getEnv("ARBITRUM_USDC_CONTRACT", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"),
+		ArbitrumChainID:         int64(getEnvAsInt("ARBITRUM_CHAIN_ID", 42161)),
+		EthereumRpcUrls:         getChainRpcUrls("ETHEREUM", []string{"ETHEREUM_RPC_URLS", "ETHEREUM_RPC_URL", "ETH_RPC_URLS", "ETH_RPC_URL", "ALCHEMY_ETHEREUM_RPC_URL_1", "ALCHEMY_ETHEREUM_RPC_URL_2", "ALCHEMY_ETHEREUM_RPC_URL", "ALCHEMY_ETHEREUM_FALLBACK_RPC_URL"}),
+		EthereumUsdcContract:    getEnv("ETHEREUM_USDC_CONTRACT", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+		EthereumChainID:         int64(getEnvAsInt("ETHEREUM_CHAIN_ID", 1)),
 		EnableSweepWorker:       getEnvAsBool("ENABLE_SWEEP_WORKER", false),
 		EnableSweepStub:         getEnvAsBool("ENABLE_SWEEP_STUB", false),
 		SweepBatchUsdtMin:       getEnvAsFloat("SWEEP_BATCH_USDT_MIN", 0),
@@ -546,6 +564,30 @@ func getPolygonRpcUrls() string {
 			if !seen[url] {
 				urls = append(urls, url)
 				seen[url] = true
+			}
+		}
+	}
+	return strings.Join(urls, ",")
+}
+
+func getChainRpcUrls(prefix string, keys []string) string {
+	var urls []string
+	seen := map[string]bool{}
+	for _, key := range keys {
+		for _, url := range splitConfigCSV(getEnv(key, "")) {
+			if !seen[url] {
+				urls = append(urls, url)
+				seen[url] = true
+			}
+		}
+	}
+	if len(urls) == 0 {
+		for _, key := range []string{prefix + "_RPC_URLS", prefix + "_RPC_URL"} {
+			for _, url := range splitConfigCSV(getEnv(key, "")) {
+				if !seen[url] {
+					urls = append(urls, url)
+					seen[url] = true
+				}
 			}
 		}
 	}
