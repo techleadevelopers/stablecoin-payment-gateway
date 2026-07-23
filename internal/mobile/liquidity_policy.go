@@ -59,6 +59,9 @@ func (s *Server) mobileLiquiditySupportedPairs() []map[string]any {
 		sendEnabled := s.mobilePairSendEnabled(pair)
 		networkMeta, _ := liquidity.NetworkMetadata(pair.Network)
 		receiveEnabled := networkMeta.ReceiveEnabled
+		if pair.Network == "SOLANA" {
+			receiveEnabled = s.solSvc != nil
+		}
 		if !buyEnabled && !sendEnabled && !receiveEnabled {
 			continue
 		}
@@ -90,7 +93,7 @@ func (s *Server) mobilePairSendEnabled(pair liquidity.Pair) bool {
 	}
 	pair = liquidity.EnrichPair(pair)
 	if !liquidity.IsEVMNetwork(pair.Network) || pair.TokenStandard != "ERC20" {
-		return false
+		return pair.Asset == "SOL" && pair.Network == "SOLANA" && s.solSvc != nil && s.cfg.SolanaWithdrawalsEnabled
 	}
 	_, _, _, err := s.mobileTransferToken(pair.Asset, pair.Network)
 	return err == nil
