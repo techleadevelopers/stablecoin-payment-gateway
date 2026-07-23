@@ -14,14 +14,14 @@ func TestBech32Encode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("segwitAddrEncode: %v", err)
 	}
-	want := "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+	want := "tb1qw508d6qejxt08rfah20hkz7wup9kul0yuthvdd"
 	if addr != want {
 		t.Errorf("got %q want %q", addr, want)
 	}
 }
 
 func TestBech32Decode(t *testing.T) {
-	addr := "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+	addr := "tb1qw508d6qejxt08rfah20hkz7wup9kul0yuthvdd"
 	ver, prog, err := segwitAddrDecode("tb", addr)
 	if err != nil {
 		t.Fatalf("segwitAddrDecode: %v", err)
@@ -32,11 +32,14 @@ func TestBech32Decode(t *testing.T) {
 	if len(prog) != 20 {
 		t.Errorf("program length: got %d want 20", len(prog))
 	}
+	if string(prog) != string(mustHexBytes(t, "751e76e8199196f38d3dba9f7b0bcee04b6e7de4")) {
+		t.Errorf("program bytes mismatch")
+	}
 }
 
 func TestValidateAddress_Valid(t *testing.T) {
 	tests := []struct{ addr, hrp string }{
-		{"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx", "tb"},
+		{"tb1qw508d6qejxt08rfah20hkz7wup9kul0yuthvdd", "tb"},
 	}
 	for _, tt := range tests {
 		if err := ValidateAddress(tt.addr, tt.hrp); err != nil {
@@ -157,7 +160,7 @@ func TestSelectUTXOs_DustChange(t *testing.T) {
 		{ID: "u1", ValueSats: 10_000, Status: UTXOStatusConfirmed},
 	}
 	// Pedir quase todo o saldo para forçar troco < dust
-	selected, change, _, err := SelectUTXOs(utxos, 9_500, 5, 546)
+	selected, change, _, err := SelectUTXOs(utxos, 9_400, 5, 546)
 	if err != nil {
 		t.Fatalf("SelectUTXOs: %v", err)
 	}
