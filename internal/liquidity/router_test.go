@@ -99,3 +99,24 @@ func TestRouterExecuteBestReturnsExecution(t *testing.T) {
 		t.Fatalf("unexpected execution: best=%+v exec=%+v", best, exec)
 	}
 }
+
+func TestPairPolicyAllowsOnlyExplicitAssetNetworkPairs(t *testing.T) {
+	policy := NewPairPolicy("USDT:BSC:0x55d398326f99059ff775485246999027b3197955:18,AVAX:BSC:0x0000000000000000000000000000000000000001:18,ETH:POLYGON:0x7ceb23fd6bc0add59e62ac25578270cff1b9f619:18")
+
+	avaxBSC, ok := policy.Resolve("avax", "bep-20")
+	if !ok {
+		t.Fatal("expected AVAX/BSC to be allowed")
+	}
+	if avaxBSC.Asset != "AVAX" || avaxBSC.Network != "BSC" || avaxBSC.ContractAddress == "" || avaxBSC.Decimals != 18 {
+		t.Fatalf("unexpected AVAX/BSC pair: %+v", avaxBSC)
+	}
+	if policy.Allows("AVAX", "AVALANCHE") {
+		t.Fatal("AVAX native network must not be allowed unless explicitly configured")
+	}
+	if policy.Allows("AVAX", "POLYGON") {
+		t.Fatal("AVAX/POLYGON must not be allowed unless explicitly configured")
+	}
+	if !policy.Allows("ETH", "MATIC") {
+		t.Fatal("expected ETH/POLYGON alias to resolve")
+	}
+}
