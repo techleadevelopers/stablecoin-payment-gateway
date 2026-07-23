@@ -82,7 +82,7 @@ func (s *Server) buyRate(marketRate float64) float64 {
 
 func buyAssetSupported(asset string) bool {
 	switch strings.ToUpper(strings.TrimSpace(asset)) {
-	case "USDT", "BTC", "BNB", "ETH", "LINK", "AVAX":
+	case "USDT", "BTC", "BNB", "ETH", "SOL", "LINK", "AVAX":
 		return true
 	default:
 		return false
@@ -125,6 +125,14 @@ func (s *Server) buyAssetMarketRate(fiatCurrency, asset string) float64 {
 		}
 		if ethUSD > 0 && usdtBRL > 0 {
 			return ethUSD * usdtBRL
+		}
+	case "SOL":
+		solUSD := s.workers.PriceWorker.GetPrice("SOLUSDT_SOURCE")
+		if solUSD <= 0 {
+			solUSD = s.workers.PriceWorker.GetPrice("SOLUSDT")
+		}
+		if solUSD > 0 && usdtBRL > 0 {
+			return solUSD * usdtBRL
 		}
 	case "LINK":
 		linkUSD := s.workers.PriceWorker.GetPrice("LINKUSDT_SOURCE")
