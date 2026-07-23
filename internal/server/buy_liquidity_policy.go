@@ -19,26 +19,42 @@ func normalizeBuyDeliveryNetwork(network string) string {
 }
 
 func (s *Server) buyLiquidityPairSupported(asset, network string) bool {
+	_, ok := s.resolveExecutableBuyPair(asset, network)
+	return ok
+}
+
+func (s *Server) resolveExecutableBuyPair(asset, network string) (liquidity.Pair, bool) {
 	if s == nil || s.cfg == nil {
-		return false
+		return liquidity.Pair{}, false
 	}
 	asset = strings.ToUpper(strings.TrimSpace(asset))
 	network = normalizeBuyDeliveryNetwork(network)
 	if asset == "" || network == "" {
-		return false
+		return liquidity.Pair{}, false
 	}
 	if !s.buyNetworkEnabled(network) {
-		return false
+		return liquidity.Pair{}, false
 	}
 	if !s.cfg.LiquidityRouterEnabled && !buyPairExecutableWithoutRouter(asset, network) {
-		return false
+		return liquidity.Pair{}, false
 	}
 	policy := liquidity.NewPairPolicy(s.cfg.LiquidityAllowedPairs)
 	if !policy.Empty() {
-		return policy.Allows(asset, network)
+		pair, ok := policy.Resolve(asset, network)
+		if !ok {
+			return liquidity.Pair{}, false
+		}
+		return s.hydrateAndValidateBuyPair(pair)
 	}
-	return containsCSVFoldServer(s.cfg.LiquidityAllowedAssets, asset) &&
-		containsCSVFoldServer(s.cfg.LiquidityAllowedNetworks, network)
+	if !containsCSVFoldServer(s.cfg.LiquidityAllowedAssets, asset) ||
+		!containsCSVFoldServer(s.cfg.LiquidityAllowedNetworks, network) {
+		return liquidity.Pair{}, false
+	}
+	pair, ok := liquidity.ParsePair(asset + ":" + network)
+	if !ok {
+		return liquidity.Pair{}, false
+	}
+	return s.hydrateAndValidateBuyPair(pair)
 }
 
 func buyPairExecutableWithoutRouter(asset, network string) bool {
@@ -99,10 +115,18 @@ func (s *Server) executableBuyPairs() []liquidity.Pair {
 	}
 
 	out := make([]liquidity.Pair, 0, len(candidates))
+	seen := map[string]bool{}
 	for _, pair := range candidates {
-		if s.buyLiquidityPairSupported(pair.Asset, pair.Network) {
-			out = append(out, liquidity.EnrichPair(pair))
+		resolved, ok := s.resolveExecutableBuyPair(pair.Asset, pair.Network)
+		if !ok {
+			continue
 		}
+		key := resolved.Asset + ":" + resolved.Network
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, resolved)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Asset == out[j].Asset {
@@ -111,6 +135,60 @@ func (s *Server) executableBuyPairs() []liquidity.Pair {
 		return out[i].Asset < out[j].Asset
 	})
 	return out
+}
+
+func (s *Server) hydrateAndValidateBuyPair(pair liquidity.Pair) (liquidity.Pair, bool) {
+	if s == nil || s.cfg == nil {
+		return liquidity.Pair{}, false
+	}
+	pair.Asset = strings.ToUpper(strings.TrimSpace(pair.Asset))
+	pair.Network = normalizeBuyDeliveryNetwork(pair.Network)
+	pair.ContractAddress = strings.TrimSpace(pair.ContractAddress)
+	if pair.Asset == "" || pair.Network == "" {
+		return liquidity.Pair{}, false
+	}
+	if pair.Decimals <= 0 {
+		pair.Decimals = liquidity.DefaultDecimals(pair.Asset, pair.Network)
+	}
+	if pair.ContractAddress == "" {
+		switch pair.Asset + ":" + pair.Network {
+		case "USDT:BSC":
+			pair.ContractAddress = strings.TrimSpace(s.cfg.BscUsdtContract)
+		case "USDT:POLYGON":
+			pair.ContractAddress = strings.TrimSpace(s.cfg.PolygonUsdtContract)
+			if pair.Decimals == 18 {
+				pair.Decimals = 6
+			}
+		case "USDC:BASE":
+			pair.ContractAddress = strings.TrimSpace(s.cfg.BaseUsdcContract)
+			pair.Decimals = 6
+		case "USDC:ARBITRUM":
+			pair.ContractAddress = strings.TrimSpace(s.cfg.ArbitrumUsdcContract)
+			pair.Decimals = 6
+		case "USDC:ETHEREUM":
+			pair.ContractAddress = strings.TrimSpace(s.cfg.EthereumUsdcContract)
+			pair.Decimals = 6
+		}
+	}
+	pair = liquidity.EnrichPair(pair)
+	if buyPairIsNative(pair) {
+		return pair, true
+	}
+	if liquidity.IsEVMNetwork(pair.Network) {
+		return pair, isEVMDeliveryAddress(pair.ContractAddress)
+	}
+	if pair.Network == "SOLANA" {
+		return pair, solana.ValidateAddress(pair.ContractAddress) == nil
+	}
+	if pair.Network == "APTOS" {
+		return pair, looksLikeFixedHexAddress(pair.ContractAddress, 64)
+	}
+	return liquidity.Pair{}, false
+}
+
+func buyPairIsNative(pair liquidity.Pair) bool {
+	return liquidity.IsNativeAsset(pair.Asset, pair.Network) ||
+		(pair.Asset == "BTC" && pair.Network == "BITCOIN")
 }
 
 func validBuyDeliveryAddress(network, address string) bool {
