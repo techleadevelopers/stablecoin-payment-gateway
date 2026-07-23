@@ -2,7 +2,9 @@ package workers
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
+	"strings"
 	"time"
 
 	"payment-gateway/internal/config"
@@ -116,7 +118,7 @@ func (dw *DCAWorker) execute(ctx context.Context, s dcaStrategy) {
 
 	slog.Info("DCAWorker: executando DCA",
 		"strategy_id", s.ID, "user_id", s.UserID,
-		"token", s.TokenSymbol, "amount_brl", s.AmountBRL)
+		"token", s.TokenSymbol, "network", s.Network, "amount_brl", s.AmountBRL)
 
 	if dw.cfg.AllowSimulations && !dw.cfg.IsProduction() {
 		// Dev simulation: record the investment directly
@@ -131,15 +133,50 @@ func (dw *DCAWorker) execute(ctx context.Context, s dcaStrategy) {
 		return
 	}
 
-	// Production: emit event consumed by BuySendWorker
+	destAddress, err := dw.userWalletAddress(execCtx, s.UserID)
+	if err != nil {
+		slog.Warn("DCAWorker: erro ao buscar carteira do usuario", "strategy_id", s.ID, "user_id", s.UserID, "err", err)
+		dw.dlq.Push(Event{
+			Type:    "dca.buy.requested",
+			OrderID: s.ID,
+			Payload: map[string]any{
+				"user_id": s.UserID, "asset": s.TokenSymbol, "token_symbol": s.TokenSymbol,
+				"network": s.Network, "amount_brl": s.AmountBRL, "source": "dca", "strategy_id": s.ID,
+				"error": err.Error(),
+			},
+		}, 1, err.Error())
+		return
+	}
+	if destAddress == "" {
+		slog.Warn("DCAWorker: usuario sem carteira para DCA", "strategy_id", s.ID, "user_id", s.UserID)
+		return
+	}
+
+	// Production: emit buy request with the same fields used by mobile buy.
 	dw.bus.Publish(Event{
 		Type:    "dca.buy.requested",
 		OrderID: s.ID,
 		Payload: map[string]any{
-			"user_id": s.UserID, "token_symbol": s.TokenSymbol,
-			"network": s.Network, "amount_brl": s.AmountBRL, "source": "dca", "strategy_id": s.ID,
+			"user_id": s.UserID, "asset": s.TokenSymbol, "token_symbol": s.TokenSymbol,
+			"network": s.Network, "amount_brl": s.AmountBRL, "dest_address": destAddress,
+			"source": "dca", "strategy_id": s.ID,
 		},
 	})
+}
+
+func (dw *DCAWorker) userWalletAddress(ctx context.Context, userID string) (string, error) {
+	var address sql.NullString
+	err := dw.db.SQL.QueryRowContext(ctx, `
+		SELECT wallet_address
+		FROM users
+		WHERE id=$1::uuid AND deleted_at IS NULL`, userID).Scan(&address)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(address.String), nil
 }
 
 func nextExecution(frequency string) time.Time {
