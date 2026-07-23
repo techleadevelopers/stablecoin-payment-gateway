@@ -32,7 +32,7 @@ func (s *Server) handleMobileBuyQuote(w http.ResponseWriter, r *http.Request) {
 	}
 	asset := strings.ToUpper(firstNonEmptyStr(req.Asset, "USDT"))
 	network := normalizeMobileBuyNetwork(firstNonEmptyStr(req.Network, "BSC"))
-	if !s.mobileLiquidityPairSupported(asset, network) {
+	if !s.mobileBuyLiquidityPairSupported(asset, network) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "par asset/network nao suportado para compra"})
 		return
 	}
@@ -154,7 +154,7 @@ func (s *Server) handleMobileBuy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Asset = strings.ToUpper(firstNonEmptyStr(req.Asset, "USDT"))
-	if !s.mobileLiquidityPairSupported(req.Asset, network) {
+	if !s.mobileBuyLiquidityPairSupported(req.Asset, network) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "par asset/network nao suportado para compra"})
 		return
 	}
@@ -280,7 +280,7 @@ func (s *Server) writeDegradedMobileBuy(w http.ResponseWriter, r *http.Request, 
 	if !liquidity.IsEVMNetwork(network) {
 		return false
 	}
-	if !s.mobileLiquidityPairSupported(asset, network) {
+	if !s.mobileBuyLiquidityPairSupported(asset, network) {
 		return false
 	}
 	if min := s.mobileBuyMinBRL(); min > 0 && amountBRL < min {
