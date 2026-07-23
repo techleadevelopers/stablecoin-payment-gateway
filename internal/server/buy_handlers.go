@@ -157,6 +157,7 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 		PayoutBRL:         payout,
 		CryptoAmount:      cryptoAmount,
 		Asset:             asset,
+		Network:           deliveryNetwork,
 		DestAddress:       strings.TrimSpace(req.Address),
 		RateLocked:        rate,
 		RateLockExpiresAt: time.Now().Add(time.Duration(s.cfg.RateLockSec) * time.Second),
