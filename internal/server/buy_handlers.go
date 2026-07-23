@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"payment-gateway/internal/database"
+	"payment-gateway/internal/money"
 	"payment-gateway/internal/transactions"
 	"payment-gateway/internal/workers"
 )
@@ -83,12 +84,40 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("valor fora dos limites (%.2f - %.2f BRL)", s.buyMinBRL(), s.cfg.OrderMaxBrl)})
 		return
 	}
+	var consumedQuote *database.Quote
+	if strings.TrimSpace(req.QuoteID) != "" {
+		if s.db == nil {
+			writeAPIError(w, r, http.StatusServiceUnavailable, "QUOTE_PERSISTENCE_UNAVAILABLE", "Quote persistence unavailable.")
+			return
+		}
+		quote, err := s.db.ConsumeQuote(r.Context(), database.QuoteConsumeInput{
+			ID:            req.QuoteID,
+			Side:          "buy",
+			Asset:         asset,
+			Network:       deliveryNetwork,
+			FiatCurrency:  fiatCurrency,
+			PaymentMethod: paymentMethod,
+			AmountMinor:   int64(money.MoneyFromFloat(amountFiat)),
+		})
+		if err != nil {
+			writeAPIError(w, r, http.StatusBadRequest, "QUOTE_LOCK_INVALID", "Quote lock expired, already used, or does not match this buy request.")
+			return
+		}
+		consumedQuote = quote
+	}
 	marketRate := s.buyAssetMarketRate(fiatCurrency, asset)
 	if marketRate <= 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "cotacao ainda nao carregada"})
 		return
 	}
-	rate := req.RateLocked
+	rate := 0.0
+	if consumedQuote != nil {
+		rate = consumedQuote.Rate
+		marketRate = consumedQuote.MarketRate
+	}
+	if rate <= 0 {
+		rate = req.RateLocked
+	}
 	if rate <= 0 {
 		rate = s.buyRate(marketRate)
 	}
@@ -138,6 +167,11 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 	if len(customerAudit) > 0 {
 		paymentPayload["customer"] = customerAudit
 	}
+	if consumedQuote != nil {
+		paymentPayload["quoteId"] = consumedQuote.ID
+		paymentPayload["quoteRate"] = consumedQuote.Rate
+		paymentPayload["quoteExpiresAt"] = consumedQuote.ExpiresAt
+	}
 	amountBRL := totalFiat
 	status := "aguardando_" + paymentMethod
 	buy, err := s.db.CreateBuyOrder(r.Context(), database.BuyOrderInput{
@@ -164,7 +198,7 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	_ = s.db.AddBuyEvent(r.Context(), buy.ID, "buy.meta", map[string]any{"requestId": requestID(r), "ip": clientIP(r), "userAgent": r.UserAgent(), "customer": customerAudit})
+	_ = s.db.AddBuyEvent(r.Context(), buy.ID, "buy.meta", map[string]any{"requestId": requestID(r), "ip": clientIP(r), "userAgent": r.UserAgent(), "customer": customerAudit, "quoteId": strings.TrimSpace(req.QuoteID)})
 	s.workers.Bus.Publish(workers.Event{Type: "buy.created", OrderID: buy.ID, Payload: map[string]any{"requestId": requestID(r), "amountFiat": totalFiat, "fiatCurrency": fiatCurrency, "paymentMethod": paymentMethod}})
 	contract := transactions.Build(transactions.BuildInput{
 		Side:               transactions.SideBuy,
@@ -190,10 +224,12 @@ func (s *Server) handleCreateBuy(w http.ResponseWriter, r *http.Request) {
 			"surface":           "api",
 			"rateLockExpiresAt": buy.RateLockExpiresAt,
 			"providerPaymentId": firstNonEmpty(req.ProviderPaymentID, mapString(paymentPayload, "providerPaymentId"), mapString(paymentPayload, "txid")),
+			"quoteId":           strings.TrimSpace(req.QuoteID),
 		},
 	})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"buyId": buy.ID, "id": buy.ID, "accessToken": buy.AccessToken, "status": buy.Status, "amountFiat": totalFiat, "subtotalFiat": amountFiat, "fiatCurrency": fiatCurrency, "paymentMethod": paymentMethod, "feeFiat": fee, "totalFiat": totalFiat, "payoutFiat": payout,
+		"quoteId": strings.TrimSpace(req.QuoteID), "quoteConsumed": consumedQuote != nil,
 		"rate": rate, "marketRate": roundRate(marketRate), "cryptoAmount": cryptoAmount, "asset": asset, "network": deliveryNetwork, "destAddress": buy.DestAddress,
 		"feePolicy": s.feePolicy(fiatCurrency, rate), "feeBreakdown": s.buyFeeBreakdown(amountFiat),
 		"pixKey": paymentPayload["pixKey"], "qrCodeUrl": paymentPayload["qrCodeUrl"], "payment": paymentPayload,
