@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS buy_liquidity_quotes (
   external_quote_id TEXT,
   asset TEXT NOT NULL,
   network TEXT NOT NULL,
+  token_contract TEXT,
+  token_decimals INTEGER NOT NULL DEFAULT 18,
   fiat_cost_brl NUMERIC(18,2) NOT NULL DEFAULT 0,
   provider_fee_brl NUMERIC(18,2) NOT NULL DEFAULT 0,
   network_fee_brl NUMERIC(18,2) NOT NULL DEFAULT 0,
@@ -24,6 +26,9 @@ CREATE TABLE IF NOT EXISTS buy_liquidity_quotes (
 
 CREATE INDEX IF NOT EXISTS idx_buy_liquidity_quotes_order_selected
   ON buy_liquidity_quotes(buy_order_id, selected, created_at DESC);
+
+ALTER TABLE buy_liquidity_quotes ADD COLUMN IF NOT EXISTS token_contract TEXT;
+ALTER TABLE buy_liquidity_quotes ADD COLUMN IF NOT EXISTS token_decimals INTEGER NOT NULL DEFAULT 18;
 
 CREATE TABLE IF NOT EXISTS buy_liquidity_executions (
   id UUID PRIMARY KEY,
