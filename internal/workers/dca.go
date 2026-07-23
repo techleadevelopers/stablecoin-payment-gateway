@@ -16,10 +16,10 @@ import (
 // Uses SELECT FOR UPDATE SKIP LOCKED so multiple pod instances never
 // process the same strategy simultaneously.
 type DCAWorker struct {
-	bus *EventBus
-	db  *database.DB
-	cfg *config.Config
-	dlq *DeadLetterQueue
+	bus    *EventBus
+	db     *database.DB
+	cfg    *config.Config
+	dlq    *DeadLetterQueue
 	prices interface {
 		GetPrice(string) float64
 	}
@@ -157,6 +157,20 @@ func (dw *DCAWorker) execute(ctx context.Context, s dcaStrategy) {
 		slog.Warn("DCAWorker: usuario sem carteira para DCA", "strategy_id", s.ID, "user_id", s.UserID)
 		return
 	}
+	if !dw.dcaPairExecutable(s) {
+		err := fmt.Errorf("par DCA sem rota executavel: %s/%s", s.TokenSymbol, s.Network)
+		slog.Warn("DCAWorker: par sem rota executavel", "strategy_id", s.ID, "asset", s.TokenSymbol, "network", s.Network)
+		dw.dlq.Push(Event{
+			Type:    "dca.buy.requested",
+			OrderID: s.ID,
+			Payload: map[string]any{
+				"user_id": s.UserID, "asset": s.TokenSymbol, "token_symbol": s.TokenSymbol,
+				"network": s.Network, "amount_brl": s.AmountBRL, "dest_address": destAddress,
+				"source": "dca", "strategy_id": s.ID, "error": err.Error(),
+			},
+		}, 1, err.Error())
+		return
+	}
 
 	buy, err := dw.createPaidBuyOrder(execCtx, s, destAddress)
 	if err != nil {
@@ -181,6 +195,20 @@ func (dw *DCAWorker) execute(ctx context.Context, s dcaStrategy) {
 			"source": "dca", "strategy_id": s.ID,
 		},
 	})
+}
+
+func (dw *DCAWorker) dcaPairExecutable(s dcaStrategy) bool {
+	if dw == nil || dw.cfg == nil {
+		return false
+	}
+	pair, ok := resolveLiquidityPair(dw.cfg, s.TokenSymbol, s.Network)
+	if !ok {
+		return false
+	}
+	if dw.cfg.LiquidityRouterEnabled {
+		return true
+	}
+	return strings.EqualFold(pair.Asset, "USDT") && strings.EqualFold(pair.Network, "BSC")
 }
 
 func (dw *DCAWorker) createPaidBuyOrder(ctx context.Context, s dcaStrategy, destAddress string) (*database.BuyOrder, error) {
