@@ -129,6 +129,11 @@ func (bw *BuySendWorker) processBuyOnchainSend(event Event) {
 		return
 	}
 
+	if bw.tryLiquidityExecution(ctx, buy) {
+		slog.Info("BUY entregue por roteador de liquidez", "buy_order_id", orderID, "duration_ms", time.Since(start).Milliseconds())
+		return
+	}
+
 	// Validação do signer
 	if bw.cfg.SignerUrl == "" || bw.cfg.SignerHmacSecret == "" {
 		if bw.cfg.AllowSimulations && !bw.cfg.IsProduction() {
