@@ -117,6 +117,8 @@ type LiquidityQuoteRecord struct {
 	ExternalQuoteID    string
 	Asset              string
 	Network            string
+	TokenContract      string
+	TokenDecimals      int
 	FiatCostBRL        float64
 	ProviderFeeBRL     float64
 	NetworkFeeBRL      float64
@@ -956,16 +958,18 @@ func (db *DB) RecordLiquidityQuotes(ctx context.Context, buyOrderID string, quot
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO buy_liquidity_quotes
 			  (id, buy_order_id, provider, provider_type, external_quote_id, asset, network,
-			   fiat_cost_brl, provider_fee_brl, network_fee_brl, spread_brl, total_cost_brl,
+			   token_contract, token_decimals, fiat_cost_brl, provider_fee_brl, network_fee_brl, spread_brl, total_cost_brl,
 			   crypto_amount, delivery_sla_seconds, reliability_bps, direct_delivery, selected, expires_at, payload)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 			ON CONFLICT (buy_order_id, provider, external_quote_id) DO UPDATE SET
 			  selected=EXCLUDED.selected,
 			  total_cost_brl=EXCLUDED.total_cost_brl,
+			  token_contract=EXCLUDED.token_contract,
+			  token_decimals=EXCLUDED.token_decimals,
 			  payload=EXCLUDED.payload,
 			  created_at=buy_liquidity_quotes.created_at
 		`, id, buyOrderID, quote.Provider, quote.ProviderType, nullableString(quote.ExternalQuoteID),
-			quote.Asset, quote.Network, quote.FiatCostBRL, quote.ProviderFeeBRL, quote.NetworkFeeBRL,
+			quote.Asset, quote.Network, nullableString(quote.TokenContract), quote.TokenDecimals, quote.FiatCostBRL, quote.ProviderFeeBRL, quote.NetworkFeeBRL,
 			quote.SpreadBRL, quote.TotalCostBRL, quote.CryptoAmount, quote.DeliverySLASeconds,
 			quote.ReliabilityBps, quote.DirectDelivery, quote.Selected, quote.ExpiresAt, raw)
 		if err != nil {
@@ -1675,6 +1679,8 @@ CREATE TABLE IF NOT EXISTS buy_liquidity_quotes (
   external_quote_id TEXT,
   asset TEXT NOT NULL,
   network TEXT NOT NULL,
+  token_contract TEXT,
+  token_decimals INTEGER NOT NULL DEFAULT 18,
   fiat_cost_brl NUMERIC(18,2) NOT NULL DEFAULT 0,
   provider_fee_brl NUMERIC(18,2) NOT NULL DEFAULT 0,
   network_fee_brl NUMERIC(18,2) NOT NULL DEFAULT 0,
