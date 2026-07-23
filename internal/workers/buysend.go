@@ -23,12 +23,12 @@ import (
 )
 
 type BuySendWorker struct {
-	bus    *EventBus
-	db     *database.DB
-	cfg    *config.Config
-	client *http.Client
-	sem    chan struct{}
-	router *liquidity.Router
+	bus                 *EventBus
+	db                  *database.DB
+	cfg                 *config.Config
+	client              *http.Client
+	sem                 chan struct{}
+	router              *liquidity.Router
 	hotWalletHasBalance func(context.Context, *database.BuyOrder, liquidity.Pair) (bool, error)
 }
 
@@ -132,6 +132,13 @@ func (bw *BuySendWorker) processBuyOnchainSend(event Event) {
 
 	if bw.tryLiquidityExecution(ctx, buy) {
 		slog.Info("BUY entregue por roteador de liquidez", "buy_order_id", orderID, "duration_ms", time.Since(start).Milliseconds())
+		return
+	}
+	pair, ok := resolveLiquidityPair(bw.cfg, buy.Asset, buy.Network)
+	if !ok || !bw.hotWalletDeliverySupported(pair) {
+		errMsg := "par asset/network sem rota executavel: router indisponivel ou sem provider e hot wallet nao suporta o par"
+		_ = bw.db.UpdateBuyOrderStatus(ctx, orderID, "erro", map[string]any{"error": errMsg, "asset": buy.Asset, "network": buy.Network})
+		slog.Error("Envio BUY bloqueado: sem rota executavel", "buy_order_id", orderID, "asset", buy.Asset, "network", buy.Network)
 		return
 	}
 
