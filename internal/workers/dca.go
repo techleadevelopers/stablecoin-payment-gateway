@@ -235,7 +235,7 @@ func (dw *DCAWorker) createPaidBuyOrder(ctx context.Context, s dcaStrategy, dest
 }
 
 func (dw *DCAWorker) dcaBuyRate(asset string) float64 {
-	if dw == nil || dw.prices == nil {
+	if dw == nil || dw.cfg == nil || dw.prices == nil {
 		return 0
 	}
 	asset = strings.ToUpper(strings.TrimSpace(asset))
