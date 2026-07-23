@@ -71,6 +71,7 @@ type DCAStrategy struct {
 	ID            string       `json:"id"             db:"id"`
 	UserID        string       `json:"user_id"        db:"user_id"`
 	TokenSymbol   string       `json:"token_symbol"   db:"token_symbol"`
+	Network       string       `json:"network"        db:"network"`
 	AmountBRL     float64      `json:"amount_brl"     db:"amount_brl"`
 	Frequency     DCAFrequency `json:"frequency"      db:"frequency"`
 	Active        bool         `json:"active"         db:"active"`
