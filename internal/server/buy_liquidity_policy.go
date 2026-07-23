@@ -29,12 +29,19 @@ func (s *Server) buyLiquidityPairSupported(asset, network string) bool {
 	if asset == "" || network == "" {
 		return false
 	}
+	if !s.cfg.LiquidityRouterEnabled && !buyPairExecutableWithoutRouter(asset, network) {
+		return false
+	}
 	policy := liquidity.NewPairPolicy(s.cfg.LiquidityAllowedPairs)
 	if !policy.Empty() {
 		return policy.Allows(asset, network)
 	}
 	return containsCSVFoldServer(s.cfg.LiquidityAllowedAssets, asset) &&
 		containsCSVFoldServer(s.cfg.LiquidityAllowedNetworks, network)
+}
+
+func buyPairExecutableWithoutRouter(asset, network string) bool {
+	return strings.EqualFold(asset, "USDT") && normalizeBuyDeliveryNetwork(network) == "BSC"
 }
 
 func validBuyDeliveryAddress(network, address string) bool {
