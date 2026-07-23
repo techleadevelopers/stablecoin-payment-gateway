@@ -56,10 +56,12 @@ func (s *Server) mobileLiquiditySupportedPairs() []map[string]any {
 		hotWalletEnabled := s.mobileBuyPairExecutableWithoutRouter(pair.Asset, pair.Network)
 		routerEnabled := s.cfg.LiquidityRouterEnabled
 		buyEnabled := hotWalletEnabled || routerEnabled
-		if !s.cfg.LiquidityRouterEnabled && !s.mobileBuyPairExecutableWithoutRouter(pair.Asset, pair.Network) {
+		sendEnabled := s.mobilePairSendEnabled(pair)
+		networkMeta, _ := liquidity.NetworkMetadata(pair.Network)
+		receiveEnabled := networkMeta.ReceiveEnabled
+		if !buyEnabled && !sendEnabled && !receiveEnabled {
 			continue
 		}
-		networkMeta, _ := liquidity.NetworkMetadata(pair.Network)
 		out = append(out, map[string]any{
 			"asset":                    pair.Asset,
 			"network":                  pair.Network,
@@ -67,8 +69,8 @@ func (s *Server) mobileLiquiditySupportedPairs() []map[string]any {
 			"contract_address":         pair.ContractAddress,
 			"decimals":                 pair.Decimals,
 			"token_standard":           pair.TokenStandard,
-			"receive_enabled":          networkMeta.ReceiveEnabled,
-			"send_enabled":             networkMeta.SendEnabled && hotWalletEnabled,
+			"receive_enabled":          receiveEnabled,
+			"send_enabled":             networkMeta.SendEnabled && sendEnabled,
 			"buy_enabled":              networkMeta.BuyEnabled && buyEnabled,
 			"dca_enabled":              networkMeta.DCAEnabled && buyEnabled,
 			"hot_wallet_enabled":       hotWalletEnabled,
@@ -80,6 +82,18 @@ func (s *Server) mobileLiquiditySupportedPairs() []map[string]any {
 
 func (s *Server) mobileBuyPairExecutableWithoutRouter(asset, network string) bool {
 	return strings.EqualFold(asset, "USDT") && normalizeMobileBuyNetwork(network) == "BSC"
+}
+
+func (s *Server) mobilePairSendEnabled(pair liquidity.Pair) bool {
+	if s == nil || s.cfg == nil {
+		return false
+	}
+	pair = liquidity.EnrichPair(pair)
+	if !liquidity.IsEVMNetwork(pair.Network) || pair.TokenStandard != "ERC20" {
+		return false
+	}
+	_, _, _, err := s.mobileTransferToken(pair.Asset, pair.Network)
+	return err == nil
 }
 
 func (s *Server) mobileSupportedNetworks() []liquidity.NetworkMeta {
