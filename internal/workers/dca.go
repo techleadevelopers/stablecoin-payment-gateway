@@ -10,6 +10,7 @@ import (
 
 	"payment-gateway/internal/config"
 	"payment-gateway/internal/database"
+	"payment-gateway/internal/liquidity"
 )
 
 // DCAWorker executes due Dollar-Cost-Averaging buy strategies.
@@ -139,7 +140,7 @@ func (dw *DCAWorker) execute(ctx context.Context, s dcaStrategy) {
 		return
 	}
 
-	destAddress, err := dw.userWalletAddress(execCtx, s.UserID)
+	destAddress, err := dw.userWalletAddress(execCtx, s.UserID, s.Network)
 	if err != nil {
 		slog.Warn("DCAWorker: erro ao buscar carteira do usuario", "strategy_id", s.ID, "user_id", s.UserID, "err", err)
 		dw.dlq.Push(Event{
@@ -292,7 +293,46 @@ func dcaAddBps(value float64, bps int) float64 {
 	return value * (1 + float64(bps)/10000)
 }
 
-func (dw *DCAWorker) userWalletAddress(ctx context.Context, userID string) (string, error) {
+func (dw *DCAWorker) userWalletAddress(ctx context.Context, userID, network string) (string, error) {
+	network = liquidity.NormalizeNetwork(network)
+	if network == "BITCOIN" {
+		var address sql.NullString
+		err := dw.db.SQL.QueryRowContext(ctx, `
+			SELECT address
+			FROM btc_wallet_addresses
+			WHERE user_id=$1 AND status='active'
+			ORDER BY created_at DESC
+			LIMIT 1`, userID).Scan(&address)
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(address.String), nil
+	}
+	if network == "SOLANA" || network == "APTOS" {
+		var table string
+		if network == "SOLANA" {
+			table = "sol_wallet_addresses"
+		} else {
+			table = "aptos_wallet_addresses"
+		}
+		var address sql.NullString
+		err := dw.db.SQL.QueryRowContext(ctx, fmt.Sprintf(`
+			SELECT address
+			FROM %s
+			WHERE user_id=$1 AND status='active'
+			ORDER BY created_at DESC
+			LIMIT 1`, table), userID).Scan(&address)
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(address.String), nil
+	}
 	var address sql.NullString
 	err := dw.db.SQL.QueryRowContext(ctx, `
 		SELECT wallet_address
