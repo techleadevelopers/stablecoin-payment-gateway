@@ -808,7 +808,7 @@ func (q *mobileQueries) ListOrdersByUser(ctx context.Context, userID string, lim
                                COALESCE(payout_brl, 0)::float8 AS payout_brl,
                                status,
                                asset,
-                               'BSC'::text AS network,
+                               COALESCE(network, 'BSC') AS network,
                                rate_locked::float8,
                                tx_hash_out AS tx_hash,
                                created_at,
@@ -858,18 +858,18 @@ func (q *mobileQueries) GetBuyOrderByUser(ctx context.Context, orderID, userID s
                        amount_brl::float8, COALESCE(amount_fiat, amount_brl)::float8,
                        COALESCE(fiat_currency, 'BRL'), COALESCE(payment_method, 'pix'), provider_payment_id,
                        COALESCE(fee_brl,0)::float8, COALESCE(payout_brl,0)::float8,
-                       crypto_amount::float8, asset, dest_address, rate_locked::float8, rate_lock_expires_at,
+                       crypto_amount::float8, asset, COALESCE(network, 'BSC'), dest_address, rate_locked::float8, rate_lock_expires_at,
                        COALESCE(pix_payload, '{}'::jsonb), tx_hash_out, error, paid_at, settled_at, delivered_at, created_at, updated_at
                   FROM buy_orders
                  WHERE id=$1::uuid AND user_id=$2::uuid`, orderID, userID)
-	var id, accessToken, status, fiatCurrency, paymentMethod, asset, destAddress string
+	var id, accessToken, status, fiatCurrency, paymentMethod, asset, network, destAddress string
 	var requestID, providerPaymentID, txHashOut, errMsg sql.NullString
 	var amountBRL, amountFiat, feeBRL, payoutBRL, cryptoAmount, rateLocked float64
 	var rateLockExpiresAt, createdAt, updatedAt time.Time
 	var pixPayload []byte
 	var paidAt, settledAt, deliveredAt sql.NullTime
 	if err := row.Scan(&id, &accessToken, &requestID, &status, &amountBRL, &amountFiat, &fiatCurrency, &paymentMethod, &providerPaymentID,
-		&feeBRL, &payoutBRL, &cryptoAmount, &asset, &destAddress, &rateLocked, &rateLockExpiresAt, &pixPayload, &txHashOut, &errMsg,
+		&feeBRL, &payoutBRL, &cryptoAmount, &asset, &network, &destAddress, &rateLocked, &rateLockExpiresAt, &pixPayload, &txHashOut, &errMsg,
 		&paidAt, &settledAt, &deliveredAt, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -897,6 +897,7 @@ func (q *mobileQueries) GetBuyOrderByUser(ctx context.Context, orderID, userID s
 		"crypto_amount":        cryptoAmount,
 		"cryptoAmount":         cryptoAmount,
 		"asset":                asset,
+		"network":              network,
 		"dest_address":         destAddress,
 		"destAddress":          destAddress,
 		"rate_locked":          rateLocked,
