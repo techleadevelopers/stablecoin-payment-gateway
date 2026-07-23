@@ -138,25 +138,46 @@ func (r *Router) ExecuteBest(ctx context.Context, req Request) (Quote, []Quote, 
 	if err != nil {
 		return Quote{}, quotes, Execution{}, err
 	}
+	providersByName := make(map[string]Provider, len(r.providers))
 	for _, provider := range r.providers {
-		if !strings.EqualFold(provider.Name(), best.Provider) {
+		providersByName[strings.ToUpper(strings.TrimSpace(provider.Name()))] = provider
+	}
+	var firstErr error
+	for _, quote := range quotes {
+		provider := providersByName[strings.ToUpper(strings.TrimSpace(quote.Provider))]
+		if provider == nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%w: %s", ErrNoExecutable, quote.Provider)
+			}
 			continue
 		}
 		executor, ok := provider.(Executor)
 		if !ok {
-			return best, quotes, Execution{}, ErrNoExecutable
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%w: %s", ErrNoExecutable, quote.Provider)
+			}
+			continue
 		}
-		exec, err := executor.Execute(ctx, normalizeRequest(req), best)
+		exec, err := executor.Execute(ctx, normalizeRequest(req), quote)
 		if err != nil {
-			return best, quotes, Execution{}, err
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
-		if exec.Provider == "" {
-			exec.Provider = best.Provider
+		if strings.TrimSpace(exec.Provider) == "" {
+			exec.Provider = quote.Provider
 		}
 		if !executionMatchesRequest(req, exec) {
-			return best, quotes, exec, fmt.Errorf("liquidity: provider execution mismatch")
+			if firstErr == nil {
+				firstErr = fmt.Errorf("liquidity: provider execution mismatch")
+			}
+			continue
 		}
-		return best, quotes, exec, nil
+		return quote, quotes, exec, nil
+	}
+	if firstErr != nil {
+		return best, quotes, Execution{}, firstErr
 	}
 	return best, quotes, Execution{}, fmt.Errorf("%w: %s", ErrNoExecutable, best.Provider)
 }
