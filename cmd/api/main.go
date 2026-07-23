@@ -86,7 +86,7 @@ func main() {
 	}
 	api.StartWebhooks(ctx)
 
-	mob := mobile.New(cfg, db, workerMgr, workerMgr.BTCSvc)
+	mob := mobile.New(cfg, db, workerMgr, workerMgr.BTCSvc, workerMgr.SolanaSvc)
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      mob.Wrap(api.Handler()),
