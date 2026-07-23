@@ -64,6 +64,8 @@ func (s *Server) handleListAssets(w http.ResponseWriter, r *http.Request) {
 	response := map[string]any{
 		"assets":                     out,
 		"count":                      len(out),
+		"supported_networks":         s.mobileSupportedNetworks(),
+		"supported_pairs":            s.mobileLiquiditySupportedPairs(),
 		"liquidity_supported_pairs":  s.mobileLiquiditySupportedPairs(),
 		"liquidity_supported_tokens": s.mobileLiquiditySupportedTokens(),
 	}
