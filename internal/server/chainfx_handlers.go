@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"payment-gateway/internal/database"
 )
 
 func (s *Server) handleChainFXRates(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +88,7 @@ func (s *Server) handleChainFXQuote(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "rates are not loaded yet"})
 		return
 	}
+	network := normalizeBuyDeliveryNetwork(s.deliveryNetwork())
 	expiresAt := time.Now().Add(time.Duration(s.cfg.RateLockSec) * time.Second).UTC()
 	if side == "sell" {
 		amountUSDT := amountFiat
@@ -98,43 +97,81 @@ func (s *Server) handleChainFXQuote(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("payout outside limits (%.2f - %.2f BRL)", s.cfg.OrderMinBrl, s.cfg.OrderMaxBrl)})
 			return
 		}
+		quoteID, persisted, err := s.persistPublicQuote(r, publicQuoteInput{
+			Side:          side,
+			Asset:         asset,
+			Network:       network,
+			FiatCurrency:  "BRL",
+			PaymentMethod: paymentMethod,
+			AmountFiat:    amountFiat,
+			CryptoAmount:  amountUSDT,
+			Rate:          rate,
+			MarketRate:    marketRate,
+			FeeFiat:       spreadBRL,
+			ExpiresAt:     expiresAt,
+		})
+		if err != nil {
+			writeAPIError(w, r, http.StatusServiceUnavailable, "QUOTE_PERSISTENCE_UNAVAILABLE", "Quote persistence unavailable.")
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"quoteId":      "qt_" + strings.ReplaceAll(database.NewID(), "-", ""),
-			"side":         side,
-			"fiat":         "BRL",
-			"asset":        asset,
-			"rate":         rate,
-			"marketRate":   roundRate(marketRate),
-			"cryptoAmount": amountUSDT,
-			"fiatAmount":   payoutBRL,
-			"feeFiat":      spreadBRL,
-			"spreadFiat":   spreadBRL,
-			"payoutFiat":   payoutBRL,
-			"totalFiat":    payoutBRL,
-			"paymentRail":  paymentMethod,
-			"sellPolicy":   s.sellPolicy(marketRate, rate),
-			"expiresAt":    expiresAt,
-			"sandbox":      s.chainFXAuthContext(r).Sandbox,
+			"quoteId":        quoteID,
+			"quotePersisted": persisted,
+			"side":           side,
+			"fiat":           "BRL",
+			"asset":          asset,
+			"network":        network,
+			"rate":           rate,
+			"marketRate":     roundRate(marketRate),
+			"cryptoAmount":   amountUSDT,
+			"fiatAmount":     payoutBRL,
+			"feeFiat":        spreadBRL,
+			"spreadFiat":     spreadBRL,
+			"payoutFiat":     payoutBRL,
+			"totalFiat":      payoutBRL,
+			"paymentRail":    paymentMethod,
+			"sellPolicy":     s.sellPolicy(marketRate, rate),
+			"expiresAt":      expiresAt,
+			"sandbox":        s.chainFXAuthContext(r).Sandbox,
 		})
 		return
 	}
 	rate := s.buyRate(marketRate)
 	fee := s.transactionFee(amountFiat, fiatCurrency, rate)
+	quoteID, persisted, err := s.persistPublicQuote(r, publicQuoteInput{
+		Side:          side,
+		Asset:         asset,
+		Network:       network,
+		FiatCurrency:  fiatCurrency,
+		PaymentMethod: paymentMethod,
+		AmountFiat:    amountFiat,
+		CryptoAmount:  amountFiat / rate,
+		Rate:          rate,
+		MarketRate:    marketRate,
+		FeeFiat:       fee,
+		ExpiresAt:     expiresAt,
+	})
+	if err != nil {
+		writeAPIError(w, r, http.StatusServiceUnavailable, "QUOTE_PERSISTENCE_UNAVAILABLE", "Quote persistence unavailable.")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"quoteId":      "qt_" + strings.ReplaceAll(database.NewID(), "-", ""),
-		"side":         side,
-		"fiat":         fiatCurrency,
-		"asset":        asset,
-		"rate":         rate,
-		"marketRate":   roundRate(marketRate),
-		"fiatAmount":   amountFiat,
-		"feeFiat":      fee,
-		"feeBreakdown": s.buyFeeBreakdown(amountFiat),
-		"totalFiat":    amountFiat + fee,
-		"cryptoAmount": amountFiat / rate,
-		"paymentRail":  paymentMethod,
-		"expiresAt":    expiresAt,
-		"sandbox":      s.chainFXAuthContext(r).Sandbox,
+		"quoteId":        quoteID,
+		"quotePersisted": persisted,
+		"side":           side,
+		"fiat":           fiatCurrency,
+		"asset":          asset,
+		"network":        network,
+		"rate":           rate,
+		"marketRate":     roundRate(marketRate),
+		"fiatAmount":     amountFiat,
+		"feeFiat":        fee,
+		"feeBreakdown":   s.buyFeeBreakdown(amountFiat),
+		"totalFiat":      amountFiat + fee,
+		"cryptoAmount":   amountFiat / rate,
+		"paymentRail":    paymentMethod,
+		"expiresAt":      expiresAt,
+		"sandbox":        s.chainFXAuthContext(r).Sandbox,
 	})
 }
 
@@ -177,6 +214,7 @@ func (s *Server) handleChainFXBuy(w http.ResponseWriter, r *http.Request) {
 		wallet = chainFXFakeWallet()
 	}
 	payload := map[string]any{
+		"quoteId":        req.QuoteID,
 		"amountFiat":     req.Amount,
 		"fiatCurrency":   defaultString(req.Fiat, "BRL"),
 		"paymentMethod":  defaultString(req.PaymentMethod, "pix"),
