@@ -24,6 +24,11 @@ func (s *Server) mobileLiquidityPairSupported(asset, network string) bool {
 	return ok
 }
 
+func (s *Server) mobileBuyLiquidityPairSupported(asset, network string) bool {
+	pair, ok := s.resolveMobileLiquidityPair(asset, network)
+	return ok && s.mobileBuyPairHasExecutionRoute(pair)
+}
+
 func (s *Server) resolveMobileLiquidityPair(asset, network string) (liquidity.Pair, bool) {
 	if s == nil || s.cfg == nil {
 		return liquidity.Pair{}, false
@@ -36,26 +41,29 @@ func (s *Server) resolveMobileLiquidityPair(asset, network string) (liquidity.Pa
 	if !s.mobileNetworkEnabled(network) {
 		return liquidity.Pair{}, false
 	}
-	if !s.mobileBuyPairExecutableWithoutRouter(asset, network) && !s.cfg.LiquidityRouterEnabled {
-		return liquidity.Pair{}, false
-	}
 	policy := liquidity.NewPairPolicy(s.cfg.LiquidityAllowedPairs)
+	var pair liquidity.Pair
+	var ok bool
 	if !policy.Empty() {
-		pair, ok := policy.Resolve(asset, network)
+		pair, ok = policy.Resolve(asset, network)
 		if !ok {
 			return liquidity.Pair{}, false
 		}
-		return s.hydrateAndValidateMobileLiquidityPair(pair)
+	} else {
+		if !containsCSVFoldMobile(s.cfg.LiquidityAllowedAssets, asset) ||
+			!containsCSVFoldMobile(s.cfg.LiquidityAllowedNetworks, network) {
+			return liquidity.Pair{}, false
+		}
+		pair, ok = liquidity.ParsePair(asset + ":" + network)
+		if !ok {
+			return liquidity.Pair{}, false
+		}
 	}
-	if !containsCSVFoldMobile(s.cfg.LiquidityAllowedAssets, asset) ||
-		!containsCSVFoldMobile(s.cfg.LiquidityAllowedNetworks, network) {
-		return liquidity.Pair{}, false
-	}
-	pair, ok := liquidity.ParsePair(asset + ":" + network)
+	pair, ok = s.hydrateAndValidateMobileLiquidityPair(pair)
 	if !ok {
 		return liquidity.Pair{}, false
 	}
-	return s.hydrateAndValidateMobileLiquidityPair(pair)
+	return pair, true
 }
 
 func (s *Server) mobileLiquiditySupportedPairs() []map[string]any {
@@ -85,8 +93,9 @@ func (s *Server) mobileLiquiditySupportedPairs() []map[string]any {
 		}
 		seen[key] = true
 		hotWalletEnabled := s.mobileBuyPairExecutableWithoutRouter(pair.Asset, pair.Network)
-		routerEnabled := s.cfg.LiquidityRouterEnabled
-		buyEnabled := hotWalletEnabled || routerEnabled
+		buyRouteEnabled := s.mobileBuyPairHasExecutionRoute(pair)
+		routerEnabled := buyRouteEnabled && !hotWalletEnabled
+		buyEnabled := hotWalletEnabled || buyRouteEnabled
 		sendEnabled := s.mobilePairSendEnabled(pair)
 		networkMeta, _ := liquidity.NetworkMetadata(pair.Network)
 		receiveEnabled := networkMeta.ReceiveEnabled
@@ -172,12 +181,42 @@ func (s *Server) mobileBuyPairExecutableWithoutRouter(asset, network string) boo
 	return strings.EqualFold(asset, "USDT") && normalizeMobileBuyNetwork(network) == "BSC"
 }
 
+func (s *Server) mobileBuyPairHasExecutionRoute(pair liquidity.Pair) bool {
+	if s == nil || s.cfg == nil {
+		return false
+	}
+	pair = liquidity.EnrichPair(pair)
+	if s.mobileBuyPairExecutableWithoutRouter(pair.Asset, pair.Network) {
+		return true
+	}
+	if !s.cfg.LiquidityRouterEnabled {
+		return false
+	}
+	if strings.TrimSpace(s.cfg.LiquidityProviderURLs) != "" {
+		return true
+	}
+	if !s.cfg.BingXEnabled || !s.cfg.BingXTradeEnabled || !s.cfg.BingXWithdrawEnabled {
+		return false
+	}
+	if strings.TrimSpace(s.cfg.BingXAPIKey) == "" || strings.TrimSpace(s.cfg.BingXAPISecret) == "" {
+		return false
+	}
+	if strings.EqualFold(pair.Asset, "USDT") {
+		return false
+	}
+	return containsCSVFoldMobile(s.cfg.BingXAllowedAssets, pair.Asset) &&
+		containsCSVFoldMobile(s.cfg.BingXAllowedNetworks, pair.Network)
+}
+
 func (s *Server) mobilePairSendEnabled(pair liquidity.Pair) bool {
 	if s == nil || s.cfg == nil {
 		return false
 	}
 	pair = liquidity.EnrichPair(pair)
-	if !liquidity.IsEVMNetwork(pair.Network) || pair.TokenStandard != "ERC20" {
+	if len(s.mobileTransferRPCURLs(pair.Network)) == 0 {
+		return false
+	}
+	if !liquidity.IsEVMNetwork(pair.Network) {
 		return pair.Asset == "SOL" && pair.Network == "SOLANA" && s.solSvc != nil && s.cfg.SolanaWithdrawalsEnabled
 	}
 	_, _, _, err := s.mobileTransferToken(pair.Asset, pair.Network)
