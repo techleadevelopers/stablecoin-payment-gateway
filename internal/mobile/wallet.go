@@ -433,10 +433,18 @@ func (s *Server) handleWalletAddress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user != nil && user.WalletAddress != nil && *user.WalletAddress != "" {
+		evmNetworks := s.mobileEVMNetworks()
+		// Return all supported EVM networks; the same address is valid on every EVM chain.
+		// "network" is kept for backward-compatibility but reflects the primary network
+		// rather than being hardcoded to BSC.
+		primaryNetwork := "BSC"
+		if len(evmNetworks) > 0 {
+			primaryNetwork = evmNetworks[0]
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"wallet_address": *user.WalletAddress,
-			"networks":       s.mobileEVMNetworks(),
-			"network":        "BSC", // compatibilidade retroativa
+			"networks":       evmNetworks,
+			"network":        primaryNetwork,
 		})
 		return
 	}
