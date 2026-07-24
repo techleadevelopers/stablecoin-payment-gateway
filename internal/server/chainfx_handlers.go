@@ -137,7 +137,7 @@ func (s *Server) handleChainFXQuote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rate := s.buyRate(marketRate)
-	fee := s.transactionFee(amountFiat, fiatCurrency, rate)
+	pricing := s.buyQuotePricing(amountFiat, fiatCurrency, rate, marketRate)
 	quoteID, persisted, err := s.persistPublicQuote(r, publicQuoteInput{
 		Side:          side,
 		Asset:         asset,
@@ -145,10 +145,10 @@ func (s *Server) handleChainFXQuote(w http.ResponseWriter, r *http.Request) {
 		FiatCurrency:  fiatCurrency,
 		PaymentMethod: paymentMethod,
 		AmountFiat:    amountFiat,
-		CryptoAmount:  amountFiat / rate,
-		Rate:          rate,
+		CryptoAmount:  pricing.CryptoAmount,
+		Rate:          pricing.Rate,
 		MarketRate:    marketRate,
-		FeeFiat:       fee,
+		FeeFiat:       pricing.FeeFiat,
 		ExpiresAt:     expiresAt,
 	})
 	if err != nil {
@@ -162,13 +162,13 @@ func (s *Server) handleChainFXQuote(w http.ResponseWriter, r *http.Request) {
 		"fiat":           fiatCurrency,
 		"asset":          asset,
 		"network":        network,
-		"rate":           rate,
+		"rate":           pricing.Rate,
 		"marketRate":     roundRate(marketRate),
 		"fiatAmount":     amountFiat,
-		"feeFiat":        fee,
-		"feeBreakdown":   s.buyFeeBreakdown(amountFiat),
-		"totalFiat":      amountFiat + fee,
-		"cryptoAmount":   amountFiat / rate,
+		"feeFiat":        pricing.FeeFiat,
+		"feeBreakdown":   pricing.FeeBreakdown,
+		"totalFiat":      pricing.TotalFiat,
+		"cryptoAmount":   pricing.CryptoAmount,
 		"paymentRail":    paymentMethod,
 		"expiresAt":      expiresAt,
 		"sandbox":        s.chainFXAuthContext(r).Sandbox,
