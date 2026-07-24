@@ -2,6 +2,7 @@ package mobile
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"math/big"
@@ -138,7 +139,23 @@ func (s *Server) handleWalletTransfer(w http.ResponseWriter, r *http.Request) {
 	// This ensures that if the HTTP response fails after a successful broadcast,
 	// the idempotency key will block a duplicate retry from double-sending.
 	idempKey := idempotencyKeyFromCtx(r.Context())
-	_ = mobileDB(s.db).RecordMobileWalletTransfer(
+	if strings.TrimSpace(idempKey) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "idempotency key obrigatorio"})
+		return
+	}
+	if existing, ok, err := s.mobileTransferByIdempotency(r.Context(), user.ID, idempKey); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "erro ao verificar idempotencia da transferencia"})
+		return
+	} else if ok {
+		status := strings.TrimSpace(existing["status"].(string))
+		httpStatus := http.StatusAccepted
+		if status == "failed" {
+			httpStatus = http.StatusConflict
+		}
+		writeJSON(w, httpStatus, existing)
+		return
+	}
+	if err := mobileDB(s.db).RecordMobileWalletTransfer(
 		r.Context(),
 		user.ID,
 		from,
@@ -150,7 +167,10 @@ func (s *Server) handleWalletTransfer(w http.ResponseWriter, r *http.Request) {
 		rawAmount.String(),
 		"pending:"+idempKey, // placeholder until broadcast confirms
 		idempKey,
-	)
+	); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "erro ao registrar transferencia pendente"})
+		return
+	}
 
 	var txHash string
 	if nativeTransfer {
@@ -179,19 +199,37 @@ func (s *Server) handleWalletTransfer(w http.ResponseWriter, r *http.Request) {
 		// Update the pending record with the failure so the idempotency entry reflects reality.
 		_, _ = s.db.SQL.ExecContext(r.Context(), `
 			UPDATE mobile_wallet_transfers
-			SET tx_hash = $1, status = 'failed'
-			WHERE idempotency_key = $2
-		`, "failed:"+err.Error(), idempKey)
+			SET status = 'failed'
+			WHERE user_id = $1::uuid AND idempotency_key = $2
+		`, user.ID, idempKey)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
 
 	// Broadcast succeeded — update the record with the real txHash.
-	_, _ = s.db.SQL.ExecContext(r.Context(), `
+	res, err := s.db.SQL.ExecContext(r.Context(), `
 		UPDATE mobile_wallet_transfers
 		SET tx_hash = $1, status = 'submitted'
-		WHERE idempotency_key = $2
-	`, txHash, idempKey)
+		WHERE user_id = $2::uuid AND idempotency_key = $3
+	`, txHash, user.ID, idempKey)
+	if err != nil {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"mode":        mode,
+			"tx_hash":     txHash,
+			"status":      "submitted",
+			"audit_error": "broadcast concluido, mas falhou atualizar auditoria local",
+		})
+		return
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"mode":        mode,
+			"tx_hash":     txHash,
+			"status":      "submitted",
+			"audit_error": "broadcast concluido, mas registro pendente nao foi encontrado",
+		})
+		return
+	}
 
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"mode":           mode,
@@ -207,6 +245,34 @@ func (s *Server) handleWalletTransfer(w http.ResponseWriter, r *http.Request) {
 		"decimals":       decimals,
 		"status":         "submitted",
 	})
+}
+
+func (s *Server) mobileTransferByIdempotency(ctx context.Context, userID, idempotencyKey string) (map[string]any, bool, error) {
+	var txHash, status, asset, network, amount, amountRaw, toAddress, tokenContract string
+	err := s.db.SQL.QueryRowContext(ctx, `
+		SELECT tx_hash, status, asset, network, amount, amount_raw, to_address, token_contract
+		FROM mobile_wallet_transfers
+		WHERE user_id = $1::uuid AND idempotency_key = $2
+		LIMIT 1
+	`, userID, idempotencyKey).Scan(&txHash, &status, &asset, &network, &amount, &amountRaw, &toAddress, &tokenContract)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return map[string]any{
+		"mode":           "backend_custodial_transfer",
+		"tx_hash":        txHash,
+		"status":         status,
+		"network":        network,
+		"asset":          asset,
+		"token_contract": tokenContract,
+		"recipient":      toAddress,
+		"amount":         amount,
+		"amount_raw":     amountRaw,
+		"idempotent":     true,
+	}, true, nil
 }
 
 func (s *Server) handleWalletTransferQuote(w http.ResponseWriter, r *http.Request) {
