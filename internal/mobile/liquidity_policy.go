@@ -87,7 +87,7 @@ func (s *Server) mobileLiquiditySupportedPairs() []map[string]any {
 			Decimals:        18,
 		})
 	}
-	out := make([]map[string]any, 0, len(pairs))
+	out := make([]map[string]any, 0, len(pairs)+2)
 	seen := map[string]bool{}
 	for _, pair := range pairs {
 		resolved, ok := s.resolveMobileLiquidityPair(pair.Asset, pair.Network)
@@ -131,6 +131,49 @@ func (s *Server) mobileLiquiditySupportedPairs() []map[string]any {
 			"liquidity_router_enabled": routerEnabled,
 		})
 	}
+
+	// BTC — always included when the Bitcoin service is configured.
+	// It is never in LiquidityAllowedPairs (which governs the EVM/Solana buy pipeline)
+	// so it would otherwise be invisible to the frontend for Receive and Send filtering.
+	if s.btcSvc != nil && !seen["BTC:BITCOIN"] {
+		btcMeta, _ := liquidity.NetworkMetadata("BITCOIN")
+		btcSendEnabled := s.mobilePairSendEnabled(liquidity.Pair{Asset: "BTC", Network: "BITCOIN", Decimals: 8})
+		out = append(out, map[string]any{
+			"asset":                    "BTC",
+			"network":                  "BITCOIN",
+			"family":                   "BITCOIN",
+			"contract_address":         "",
+			"decimals":                 8,
+			"token_standard":           "BTC",
+			"receive_enabled":          true,
+			"send_enabled":             btcMeta.SendEnabled && btcSendEnabled,
+			"buy_enabled":              btcMeta.BuyEnabled,
+			"dca_enabled":              btcMeta.DCAEnabled,
+			"hot_wallet_enabled":       false,
+			"liquidity_router_enabled": false,
+		})
+	}
+
+	// SOL — always included when the Solana service is configured.
+	if s.solSvc != nil && !seen["SOL:SOLANA"] {
+		solMeta, _ := liquidity.NetworkMetadata("SOLANA")
+		solSendEnabled := s.cfg.SolanaWithdrawalsEnabled
+		out = append(out, map[string]any{
+			"asset":                    "SOL",
+			"network":                  "SOLANA",
+			"family":                   "SOLANA",
+			"contract_address":         "",
+			"decimals":                 9,
+			"token_standard":           "NATIVE",
+			"receive_enabled":          true,
+			"send_enabled":             solMeta.SendEnabled && solSendEnabled,
+			"buy_enabled":              solMeta.BuyEnabled,
+			"dca_enabled":              solMeta.DCAEnabled,
+			"hot_wallet_enabled":       false,
+			"liquidity_router_enabled": false,
+		})
+	}
+
 	return out
 }
 
