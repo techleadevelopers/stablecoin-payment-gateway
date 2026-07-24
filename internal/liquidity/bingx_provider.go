@@ -52,9 +52,13 @@ func (p *BingXProvider) Quote(ctx context.Context, req Request) (Quote, error) {
 		return Quote{}, err
 	}
 	symbol := bingXSpotSymbol(req.Asset)
-	askUSDT, err := p.depthAskUSDT(ctx, symbol)
-	if err != nil {
-		return Quote{}, err
+	askUSDT := 1.0
+	if req.Asset != "USDT" {
+		var err error
+		askUSDT, err = p.depthAskUSDT(ctx, symbol)
+		if err != nil {
+			return Quote{}, err
+		}
 	}
 	cryptoAmount := req.CryptoAmount
 	if cryptoAmount <= 0 && req.AmountBRL > 0 && req.QuoteLockedRate > 0 {
@@ -138,9 +142,14 @@ func (p *BingXProvider) Execute(ctx context.Context, req Request, quote Quote) (
 	if amount <= 0 {
 		return Execution{}, fmt.Errorf("bingx: quantidade invalida")
 	}
-	orderID, orderPayload, err := p.placeMarketBuy(ctx, symbol, amount, parseFloatAny(quote.Metadata["providerCostUSDT"]))
-	if err != nil {
-		return Execution{}, err
+	orderID := ""
+	orderPayload := map[string]any{}
+	if req.Asset != "USDT" {
+		var err error
+		orderID, orderPayload, err = p.placeMarketBuy(ctx, symbol, amount, parseFloatAny(quote.Metadata["providerCostUSDT"]))
+		if err != nil {
+			return Execution{}, err
+		}
 	}
 	exec := Execution{
 		Provider:        p.Name(),
@@ -180,9 +189,6 @@ func (p *BingXProvider) Execute(ctx context.Context, req Request, quote Quote) (
 func (p *BingXProvider) validateRequest(req Request) error {
 	if req.Asset == "" || req.Network == "" {
 		return fmt.Errorf("bingx: asset/network ausentes")
-	}
-	if req.Asset == "USDT" {
-		return fmt.Errorf("bingx: USDT direto fica no hot-wallet/provider primario")
 	}
 	if !csvAllows(p.AllowedAssets, req.Asset) {
 		return fmt.Errorf("bingx: asset nao permitido")
@@ -449,7 +455,11 @@ func bingXSign(payload, secret string) string {
 }
 
 func bingXSpotSymbol(asset string) string {
-	return strings.ToUpper(strings.TrimSpace(asset)) + "-USDT"
+	asset = strings.ToUpper(strings.TrimSpace(asset))
+	if asset == "USDT" {
+		return "USDT"
+	}
+	return asset + "-USDT"
 }
 
 func bingXWithdrawNetwork(network string) string {
