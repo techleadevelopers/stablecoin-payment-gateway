@@ -227,6 +227,9 @@ func (s *Server) mobileBuyPairHasExecutionRoute(pair liquidity.Pair) bool {
 	if !s.cfg.LiquidityRouterEnabled {
 		return false
 	}
+	if strings.EqualFold(pair.Asset, "USDT") {
+		return strings.TrimSpace(s.cfg.LiquidityProviderURLs) != ""
+	}
 	if strings.TrimSpace(s.cfg.LiquidityProviderURLs) != "" {
 		return true
 	}
@@ -234,9 +237,6 @@ func (s *Server) mobileBuyPairHasExecutionRoute(pair liquidity.Pair) bool {
 		return false
 	}
 	if strings.TrimSpace(s.cfg.BingXAPIKey) == "" || strings.TrimSpace(s.cfg.BingXAPISecret) == "" {
-		return false
-	}
-	if strings.EqualFold(pair.Asset, "USDT") {
 		return false
 	}
 	return containsCSVFoldMobile(s.cfg.BingXAllowedAssets, pair.Asset) &&
